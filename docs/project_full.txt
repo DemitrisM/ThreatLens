@@ -1,0 +1,689 @@
+================================================================================
+        MALWARE TRIAGE TOOL — COMPLETE PROJECT DOCUMENTATION
+        Final Year Project | Ubuntu Linux | Python
+        Last updated: March 2026
+================================================================================
+
+This document describes the full scope, architecture, features, build order,
+and implementation notes for a portable malware triage and analysis tool.
+It is intended as a complete reference so development can be resumed at any
+point without losing context.
+
+================================================================================
+SECTION 1 — PROJECT OVERVIEW
+================================================================================
+
+WHAT IS IT?
+-----------
+A portable, command-line malware analysis tool that accepts a suspicious file
+as input and produces a structured threat report. The tool performs static
+analysis across multiple file types, enriches findings with external threat
+intelligence, scores the sample using a transparent confidence system, and
+outputs results in multiple formats.
+
+The tool is designed for:
+  - Security students and researchers
+  - Junior SOC analysts performing file triage
+  - CTF participants
+  - Anyone who needs to analyse a suspicious file without uploading it to
+    a cloud sandbox
+
+CORE DESIGN PRINCIPLES
+-----------------------
+  1. Portable — runs on Linux or Windows with minimal setup
+  2. Modular — every analysis module is independent and optional
+  3. Graceful degradation — missing dependencies skip that module, not crash
+  4. Pluggable dynamic backends — static core works standalone; dynamic
+     analysis is an optional layer bolted on top
+  5. Transparent scoring — every score contribution includes a reason string
+  6. Privacy-first — never sends the actual file anywhere; only hashes to VT
+
+DEVELOPMENT ENVIRONMENT
+-----------------------
+  OS:       Ubuntu Linux (daily driver)
+  IDE:      VSCode
+  Language: Python 3.x
+  AI tools: Claude Pro (chat + Claude Code CLI), GitHub Copilot (auto mode)
+
+================================================================================
+SECTION 2 — COMPLETE FEATURE LIST
+================================================================================
+
+FOUNDATION LAYER
+----------------
+  - File intake and validation
+  - python-magic for true file type detection (not extension-based)
+  - Hash generation: MD5, SHA256, TLSH (fuzzy hash)
+  - OS detection for cross-platform binary paths
+  - Graceful degradation: missing module = warning + skip, not crash
+  - Configurable via config.yaml (paths, API keys, enabled modules)
+  - Per-module timeouts to prevent pipeline hangs
+  - Parallel module execution where modules are independent
+
+STATIC PE ANALYSIS (Windows Executables)
+-----------------------------------------
+  Library: pefile
+  Extracts:
+  - PE headers (machine type, compile timestamp, entry point)
+  - Sections (name, size, virtual address, raw size)
+  - Per-section entropy (Shannon entropy — flags packed/encrypted sections)
+  - Imports and exports (DLL names, function names)
+  - Digital signature presence, validity, signer identity
+  - Packer/obfuscator detection (UPX, MPRESS, Themida, VMProtect signatures)
+  - Suspicious import flagging (VirtualAlloc, WriteProcessMemory, etc.)
+  - Resources (language, type, size)
+
+STRING ANALYSIS
+---------------
+  Libraries: FLOSS, regex
+  - FLOSS for deobfuscated string extraction (handles encoded/stacked strings)
+  - Raw string extraction pass
+  - IOC extractor module (dedicated regex patterns):
+      * IPv4 and IPv6 addresses
+      * Domain names and URLs
+      * File paths (Windows and Linux)
+      * Registry keys
+      * Mutex names
+      * Email addresses
+      * Base64 blobs
+      * Windows API function names
+
+CAPABILITY DETECTION
+--------------------
+  Library: capa (Mandiant FLARE team)
+  - Detects what the binary is capable of doing
+  - Maps capabilities to MITRE ATT&CK TTPs (Tactics, Techniques, Procedures)
+  - Example output:
+      Capability: HTTP communication
+      ATT&CK:     T1071.001 - Application Layer Protocol: Web Protocols
+  - Example output:
+      Capability: inject into process
+      ATT&CK:     T1055 - Process Injection
+
+SIGNATURE MATCHING
+------------------
+  Library: YARA
+  - Matches sample against YARA rule collections
+  - Recommended free rulesets to bundle:
+      * Malpedia rules (community)
+      * ESET public rules
+      * Neo23x0 / Florian Roth rules (signature-base on GitHub)
+      * Custom rules authored during development
+  - Each match contributes to confidence score with rule name as reason
+
+DOCUMENT ANALYSIS
+-----------------
+  Library: oletools (olevba, mraptor, oleid)
+  File types: .doc, .docx, .xls, .xlsx, .ppt, .pptx, .rtf
+  - VBA macro extraction and analysis
+  - Suspicious macro behaviour detection (auto-execution, shell calls)
+  - OLE structure inspection
+  - Embedded object detection
+
+  Library: peepdf
+  File types: .pdf
+  - PDF object and stream inspection
+  - Embedded JavaScript extraction
+  - Suspicious element detection (launch actions, URI actions)
+  - Entropy analysis of streams
+
+THREAT INTELLIGENCE ENRICHMENT
+-------------------------------
+  API: VirusTotal (free tier — 4 lookups/minute)
+  Method: HASH ONLY — the actual file is never uploaded
+  Returns:
+  - Detection ratio (e.g. 43/72 engines flagged)
+  - Known malware family names
+  - First submission date
+  - Community reputation score
+  Note: If no VT API key is configured, this module is silently skipped
+
+CONFIDENCE SCORING SYSTEM
+--------------------------
+  This is the most important differentiator of the tool.
+
+  Every module returns:
+    - data (the raw findings)
+    - score_delta (integer, positive or negative)
+    - reason (human-readable string explaining the score contribution)
+
+  Final report example:
+    ┌─────────────────────────────────────────────┐
+    │  THREAT SCORE: 78 / 100   [HIGH RISK]       │
+    ├─────────────────────────────────────────────┤
+    │  [+20] High entropy in .text section (7.8)  │
+    │         → likely packed or encrypted        │
+    │  [+25] YARA match: Emotet_dropper_v3        │
+    │  [+18] capa: process injection capability   │
+    │         ATT&CK T1055                        │
+    │  [+15] No valid digital signature found     │
+    │  [+10] Suspicious imports: VirtualAlloc,    │
+    │         WriteProcessMemory, CreateRemote     │
+    │         Thread                              │
+    │  [-5]  0/72 VirusTotal detections           │
+    │         (hash not previously seen)          │
+    │  [-5]  Compile timestamp appears legitimate │
+    └─────────────────────────────────────────────┘
+
+  Score bands (suggested):
+    0-30:   LOW RISK
+    31-55:  MEDIUM RISK
+    56-75:  HIGH RISK
+    76-100: CRITICAL
+
+OUTPUT FORMATS
+--------------
+  1. JSON — full structured output, machine-readable, for pipeline integration
+  2. Terminal (rich library) — colour-coded, progress bars, formatted tables,
+     threat score in colour based on band
+  3. HTML report — self-contained, styled with Jinja2 templating, includes:
+     - Summary header with filename, hashes, file type, threat score
+     - Collapsible sections per module
+     - MITRE ATT&CK table with TTP IDs and descriptions
+     - IOC table (categorised: IPs, domains, file paths, registry keys)
+     - Score breakdown table with reasons
+     - YARA matches table
+
+================================================================================
+SECTION 3 — DYNAMIC ANALYSIS BACKENDS (OPTIONAL LAYER)
+================================================================================
+
+The static core works completely standalone. Dynamic analysis is an optional
+layer added after the static pipeline is complete and stable.
+
+PLUGGABLE PROVIDER ARCHITECTURE
+---------------------------------
+Each dynamic provider implements the same interface:
+  - run(sample_path) -> dict (structured behavioural results)
+  - is_available() -> bool (checks if provider is configured and reachable)
+
+The main pipeline calls each enabled provider in order and merges results.
+
+BACKEND A — SPEAKEASY (Default Dynamic Option)
+-----------------------------------------------
+  What it is: Windows binary emulator by Mandiant. Runs PE files, drivers,
+  and shellcode in a modelled Windows runtime. Does not require a real Windows
+  VM. Runs as a Python library with structured JSON output.
+
+  Why first: Lightweight, Linux-native, safe (no real execution), easy to
+  parse and merge into the report.
+
+  What it adds:
+  - API call log (what Windows APIs the sample calls)
+  - File system activity (what files it tries to create/read/delete)
+  - Registry activity
+  - Network activity (DNS queries, socket connections)
+  - Behaviour-level hints that static analysis cannot see
+
+  Limitations: Some malware detects emulation and changes behaviour.
+
+BACKEND B — Windows VM Worker (Optional, Higher Fidelity)
+----------------------------------------------------------
+  What it is: A real Windows VM (VMware or VirtualBox) that executes selected
+  samples and collects telemetry.
+
+  Setup requirements:
+  - VMware Workstation or VirtualBox on Ubuntu host
+  - Windows VM with Sysmon installed and configured
+  - Snapshot taken BEFORE any sample execution
+  - Snapshot reverted AFTER each run (mandatory for repeatable analysis)
+  - Disable VMware convenience features: drag-and-drop, copy-paste,
+    shared folders — reduces malware evasion triggers
+
+  Telemetry to collect:
+  - Sysmon event logs (process creation, network connections, file events,
+    registry events, pipe events)
+  - Process list before and after
+  - Network captures (optional, FakeNet-NG recommended)
+
+  Important: Some malware detects virtualisation and alters behaviour. A VM
+  improves fidelity over emulation but does not guarantee full detonation.
+
+  Integration: The VM worker is an optional execution worker, not the default
+  path. Only selected samples (e.g. those scoring HIGH or CRITICAL on static)
+  should be sent to the VM. The tool calls the VM worker via a local API or
+  CLI wrapper script.
+
+BACKEND C — CAPE Sandbox (Advanced, Document Only)
+---------------------------------------------------
+  What it is: Full open-source malware sandbox with payload extraction,
+  config extraction, and rich behavioural reporting. Much heavier than
+  Speakeasy, requires a dedicated setup.
+
+  When to add: Only after Speakeasy is working and the static pipeline is
+  complete. Treat as a research-grade optional backend, not a core feature.
+
+  For the final year submission: Document CAPE as a supported optional
+  backend that was not implemented due to time constraints. This is entirely
+  legitimate and shows architectural foresight.
+
+================================================================================
+SECTION 4 — PORTABILITY AND DEPLOYMENT
+================================================================================
+
+Portability means two things:
+  1. The tool can run in different environments without painful setup
+  2. The tool degrades gracefully when dependencies are missing
+
+IMPLEMENTATION PRIORITIES (ordered by impact):
+
+1. GRACEFUL DEGRADATION (Low effort, High impact)
+   Every module wrapped in try/except. If import fails or binary not found:
+   - Log a warning: "FLOSS not found — string deobfuscation skipped"
+   - Set module result to None
+   - Continue pipeline
+   - Note skipped modules in the report
+
+2. pyproject.toml + INSTALL SCRIPT (Low effort, High impact)
+   pyproject.toml with all Python dependencies pinned.
+   install.sh handles:
+   - System packages (libmagic, build tools)
+   - Python virtual environment creation
+   - pip install of all dependencies
+   - Download of default YARA rulesets
+   - Verification step confirming tools are available
+
+   User experience target:
+     git clone <repo>
+     cd malware-triage
+     ./install.sh
+     python main.py --help
+
+3. CONFIG FILE (Medium effort, High impact)
+   config.yaml with:
+   - virustotal_api_key: ""
+   - yara_rules_dir: "./rules"
+   - floss_binary: "./bin/floss"
+   - output_dir: "./reports"
+   - enabled_modules: [pefile, floss, capa, yara, oletools, peepdf, virustotal]
+   - dynamic_provider: "speakeasy"  # or "vm_worker" or "cape" or "none"
+   - log_level: "INFO"
+
+   Use pathlib.Path throughout — never hardcode / or \ separators.
+   Use tempfile.mkdtemp() — never hardcode /tmp.
+
+4. DOCKER CONTAINER (Medium-High effort, Very High impact)
+   Dockerfile that includes:
+   - Python environment
+   - All system dependencies (libmagic, etc.)
+   - FLOSS binary
+   - Default YARA rulesets
+   - Tool code
+
+   Usage:
+     docker build -t malware-triage .
+     docker run -v ./samples:/samples malware-triage analyse /samples/file.exe
+
+   This means zero setup for the end user. One command.
+   Add docker-compose.yml for convenience.
+
+5. WINDOWS COMPATIBILITY (Low priority, do last)
+   - pathlib.Path already handles this if used throughout
+   - python-magic needs libmagic DLL on Windows — abstract behind wrapper
+   - FLOSS ships Windows and Linux binaries — detect OS and call correct one
+   - Test on Windows after everything else works
+
+================================================================================
+SECTION 5 — PROJECT ARCHITECTURE
+================================================================================
+
+DIRECTORY STRUCTURE
+-------------------
+malware-triage/
+├── main.py                    # Entry point, CLI argument parsing
+├── config.yaml                # User configuration
+├── pyproject.toml             # Python dependencies
+├── install.sh                 # Setup script
+├── Dockerfile                 # Container definition
+├── docker-compose.yml
+├── README.md
+│
+├── core/
+│   ├── pipeline.py            # Orchestrates all modules
+│   ├── file_intake.py         # File validation, type detection, hashing
+│   ├── scoring.py             # Confidence scoring engine
+│   └── config_loader.py       # Loads and validates config.yaml
+│
+├── modules/
+│   ├── static/
+│   │   ├── pe_analysis.py     # pefile: headers, sections, imports, entropy
+│   │   ├── string_analysis.py # FLOSS + raw strings
+│   │   ├── ioc_extractor.py   # Regex-based IOC extraction
+│   │   ├── capa_analysis.py   # capa: capabilities + ATT&CK mapping
+│   │   ├── yara_scanner.py    # YARA rule matching
+│   │   ├── doc_analysis.py    # oletools: Office documents
+│   │   └── pdf_analysis.py    # peepdf: PDF files
+│   │
+│   ├── enrichment/
+│   │   └── virustotal.py      # VirusTotal hash lookup
+│   │
+│   └── dynamic/
+│       ├── provider_base.py   # Abstract base class for all providers
+│       ├── speakeasy_provider.py
+│       ├── vm_worker_provider.py
+│       └── cape_provider.py
+│
+├── reporting/
+│   ├── json_reporter.py       # JSON output
+│   ├── terminal_reporter.py   # rich-based terminal output
+│   ├── html_reporter.py       # Jinja2 HTML report
+│   └── templates/
+│       └── report.html.j2     # HTML report template
+│
+├── rules/
+│   └── yara/                  # YARA rule collections (downloaded at install)
+│
+├── tests/
+│   ├── samples/               # Test samples (clean + known-malicious)
+│   ├── test_pe_analysis.py
+│   ├── test_ioc_extractor.py
+│   ├── test_scoring.py
+│   └── test_pipeline.py
+│
+└── .github/
+    └── workflows/
+        └── test.yml           # CI/CD — runs pytest on every push
+
+MODULE INTERFACE STANDARD
+--------------------------
+Every module returns a dict with this structure:
+
+  {
+    "module": "pe_analysis",
+    "status": "success",          # or "skipped" or "error"
+    "data": { ... },              # raw findings
+    "score_delta": 20,            # contribution to confidence score
+    "reason": "High entropy in .text section (7.8) suggests packing"
+  }
+
+The pipeline collects all module results, sums score_deltas, and passes
+everything to the reporter.
+
+================================================================================
+SECTION 6 — BUILD ORDER
+================================================================================
+
+PHASE 1 — FOUNDATION (Target: 2 weeks)
+----------------------------------------
+Week 1:
+  [ ] Project structure setup (directories, pyproject.toml, config.yaml)
+  [ ] main.py with CLI argument parsing (argparse or click)
+  [ ] config_loader.py — load and validate config.yaml
+  [ ] file_intake.py:
+        - python-magic file type detection
+        - MD5, SHA256 hash generation
+        - TLSH fuzzy hash generation
+        - Return structured file metadata dict
+  [ ] Basic pipeline.py skeleton (accepts module results, passes to reporter)
+  [ ] json_reporter.py — simple JSON output
+  [ ] terminal_reporter.py — basic print output (rich formatting later)
+
+Week 2:
+  [ ] pe_analysis.py:
+        - pefile headers (machine type, compile timestamp, entry point)
+        - Section analysis with Shannon entropy per section
+        - Import/export extraction
+        - Suspicious import flagging
+        - Digital signature check
+        - Packer detection (UPX at minimum)
+        - Score delta + reason strings for all findings
+  [ ] Wire pe_analysis into pipeline
+  [ ] Test with real PE samples from MalwareBazaar
+  [ ] scoring.py — sum score_deltas, assign risk band, format breakdown
+
+Milestone: Tool accepts a PE file, analyses it, outputs JSON with score.
+
+PHASE 2 — DEEPER STATIC INTELLIGENCE (Target: 2 weeks)
+---------------------------------------------------------
+Week 3:
+  [ ] string_analysis.py:
+        - FLOSS binary invocation (subprocess, capture JSON output)
+        - Raw string extraction fallback
+        - Merge and deduplicate strings
+  [ ] ioc_extractor.py:
+        - IPv4, IPv6 regex
+        - Domain and URL regex
+        - Windows file path regex
+        - Registry key regex
+        - Mutex name patterns
+        - Email regex
+        - Return categorised IOC dict
+  [ ] Wire both into pipeline
+
+Week 4:
+  [ ] capa_analysis.py:
+        - capa binary or library invocation
+        - Parse capa JSON output
+        - Extract capabilities list
+        - Extract ATT&CK TTP mappings (tactic, technique ID, technique name)
+        - Score delta for high-risk capabilities
+  [ ] yara_scanner.py:
+        - Load rules from config yara_rules_dir
+        - Match against sample
+        - Return list of matching rules with metadata
+        - Score delta per match (weighted by rule severity if tagged)
+  [ ] Wire both into pipeline
+
+Milestone: Full static PE pipeline working with MITRE ATT&CK output.
+
+PHASE 3 — ENRICHMENT + DOCUMENT COVERAGE (Target: 2 weeks)
+------------------------------------------------------------
+Week 5:
+  [ ] virustotal.py:
+        - Hash-only lookup (never upload file)
+        - Parse detection ratio, family names, first seen
+        - Graceful skip if API key not configured
+        - Score adjustment (high detections = positive, zero detections = small
+          negative to account for new/unknown samples)
+  [ ] doc_analysis.py:
+        - oletools: olevba macro extraction, mraptor behaviour flags
+        - Score delta for auto-execution macros, shell calls, suspicious URLs
+  [ ] pdf_analysis.py:
+        - peepdf: object inspection, JS extraction, action detection
+        - Score delta for embedded JS, launch actions
+
+Week 6:
+  [ ] Entropy analysis formalised as standalone contribution in pe_analysis
+  [ ] terminal_reporter.py upgraded with rich:
+        - Progress bar per module
+        - Colour-coded threat score
+        - Formatted tables for IOCs, YARA matches, ATT&CK TTPs
+  [ ] HTML reporter (Jinja2):
+        - report.html.j2 template
+        - Summary section, module sections, IOC table, ATT&CK table,
+          score breakdown
+
+Milestone: Multi-file-type coverage. Clean terminal and HTML output.
+
+PHASE 4 — PORTABILITY + QUALITY (Target: 1-2 weeks)
+-----------------------------------------------------
+  [ ] Audit all file paths — replace with pathlib.Path throughout
+  [ ] Replace all /tmp references with tempfile.mkdtemp()
+  [ ] Per-module timeout implementation
+  [ ] Parallel module execution (concurrent.futures.ThreadPoolExecutor)
+  [ ] install.sh — system deps, venv, pip install, YARA rule download
+  [ ] Full graceful degradation audit — every module must handle missing deps
+  [ ] Logging throughout (Python logging module, --verbose / --debug flags)
+  [ ] pytest test suite:
+        - Unit tests per module
+        - Integration test: known-malicious sample scores HIGH or CRITICAL
+        - Integration test: clean sample scores LOW
+  [ ] Dockerfile + docker-compose.yml
+  [ ] GitHub Actions CI/CD (.github/workflows/test.yml)
+  [ ] README.md (installation, usage, config reference, architecture diagram)
+
+Milestone: One-command install. Tests passing. Docker working.
+
+PHASE 5 — DYNAMIC ANALYSIS (Target: 2-3 weeks, after Phase 4)
+--------------------------------------------------------------
+  [ ] provider_base.py — abstract interface (run, is_available)
+  [ ] speakeasy_provider.py:
+        - Invoke Speakeasy as Python library
+        - Parse API call log, file/registry/network activity
+        - Merge into report as dynamic_analysis section
+        - Score delta for high-risk API sequences
+  [ ] Wire dynamic provider into pipeline (disabled by default, opt-in via
+      config or --dynamic flag)
+
+  --- If time allows ---
+  [ ] vm_worker_provider.py:
+        - CLI wrapper to trigger sample execution in Windows VM
+        - Sysmon log collection and parsing
+        - Snapshot revert automation
+  [ ] cape_provider.py — REST API client for remote CAPE instance
+
+================================================================================
+SECTION 7 — TOOLS AND LIBRARIES
+================================================================================
+
+PYTHON LIBRARIES
+----------------
+  pefile          — PE file parsing
+  python-magic    — File type detection (requires libmagic system library)
+  tlsh            — Fuzzy hashing (TLSH algorithm)
+  ssdeep          — Fuzzy hashing (ssdeep algorithm, alternative/supplement)
+  yara-python     — YARA rule matching
+  oletools        — Office document analysis (olevba, mraptor, oleid)
+  peepdf          — PDF analysis
+  requests        — VirusTotal API calls
+  rich            — Terminal formatting
+  jinja2          — HTML report templating
+  pyyaml          — config.yaml loading
+  pytest          — Testing framework
+  concurrent.futures — Parallel module execution (stdlib)
+  pathlib         — Cross-platform file paths (stdlib)
+  tempfile        — Safe temp directory creation (stdlib)
+  logging         — Application logging (stdlib)
+
+EXTERNAL BINARIES (downloaded at install time)
+----------------------------------------------
+  FLOSS           — FireEye/Mandiant string deobfuscation tool
+                    GitHub: mandiant/flare-floss
+                    Ships Linux and Windows binaries
+
+  capa            — Capability detection
+                    GitHub: mandiant/capa
+                    Ships Linux and Windows binaries
+
+YARA RULE SOURCES (downloaded at install time)
+----------------------------------------------
+  Neo23x0 signature-base  — https://github.com/Neo23x0/signature-base
+  Malpedia rules           — https://malpedia.caad.fkie.fraunhofer.de/
+  ESET malware indicators  — https://github.com/eset/malware-ioc
+
+TEST SAMPLE SOURCES (for development and testing only)
+------------------------------------------------------
+  MalwareBazaar   — https://bazaar.abuse.ch (free, API access, tagged samples)
+  theZoo          — https://github.com/ytisf/theZoo (defanged research samples)
+
+REFERENCE ENVIRONMENTS
+----------------------
+  REMnux          — Linux distro for malware analysis (most deps pre-installed)
+                    Test compatibility with REMnux during Phase 4
+  FLARE-VM        — Windows malware analysis environment (for future testing)
+
+================================================================================
+SECTION 8 — OPEN SOURCE RELEASE PLAN
+================================================================================
+
+When releasing on GitHub:
+
+  README.md should include:
+  - What the tool does (one paragraph)
+  - Screenshot of terminal output and HTML report
+  - Installation instructions (install.sh + Docker)
+  - Usage examples (PE, Office doc, PDF)
+  - Config file reference
+  - Architecture diagram
+  - Supported file types
+  - Contributing guide
+  - License (MIT or Apache 2.0 recommended)
+
+  Repository hygiene:
+  - .gitignore (exclude samples, reports, venv, __pycache__)
+  - CHANGELOG.md
+  - CONTRIBUTING.md
+  - GitHub Actions badge in README (tests passing)
+  - Releases with versioned tags
+
+  Suggested name ideas (just brainstorming):
+  - TriageX
+  - MalScan
+  - Scout
+  - Vigil
+  - Recon (check for conflicts)
+
+================================================================================
+SECTION 9 — ACADEMIC NOTES (FINAL YEAR PROJECT CONTEXT)
+================================================================================
+
+WHAT MAKES THIS STAND OUT FOR SUBMISSION
+------------------------------------------
+  1. Confidence scoring with per-module reasoning — no existing free tool does
+     this. Every examiner question about "why did this score X" is answered
+     by the tool itself.
+
+  2. MITRE ATT&CK mapping — maps findings to the industry standard framework.
+     Shows awareness of professional security practice.
+
+  3. Pluggable dynamic backend architecture — demonstrates software engineering
+     maturity. The design handles future extension without modifying core code.
+
+  4. Multi-file-type coverage — PE + Office + PDF covers the three most common
+     real-world malware delivery mechanisms.
+
+  5. Portability design — Docker, install script, graceful degradation. Shows
+     you thought about usability, not just functionality.
+
+FOR THE VIVA
+------------
+  Be prepared to explain:
+  - Why you chose each library (alternatives exist — know why you picked these)
+  - How the scoring system works and how you calibrated the weights
+  - What graceful degradation means and why it matters
+  - The difference between static and dynamic analysis, and why static-first
+  - What MITRE ATT&CK is and why it matters in a professional context
+  - What TLSH fuzzy hashing adds over MD5/SHA256
+  - Why you never send the actual file to VirusTotal (only the hash)
+  - What capa actually does under the hood (rule-based capability matching)
+
+THINGS TO DOCUMENT IN YOUR WRITE-UP
+-------------------------------------
+  - CAPE listed as a supported optional backend, not implemented due to time
+    constraints — this is legitimate and shows architectural thinking
+  - VM worker documented as optional — same reasoning
+  - Windows compatibility not implemented — Linux is the standard platform for
+    this class of tool
+  - Acknowledge that no AI tool can fully automate pentesting or analysis —
+    this tool is a triage aid, not a replacement for human analysis
+
+================================================================================
+SECTION 10 — QUICK REFERENCE COMMANDS
+================================================================================
+
+INSTALL
+  git clone <repo-url>
+  cd malware-triage
+  ./install.sh
+
+BASIC USAGE
+  python main.py analyse suspicious.exe
+  python main.py analyse invoice.docx
+  python main.py analyse document.pdf
+
+WITH OPTIONS
+  python main.py analyse suspicious.exe --output json
+  python main.py analyse suspicious.exe --output html
+  python main.py analyse suspicious.exe --dynamic speakeasy
+  python main.py analyse suspicious.exe --verbose
+
+DOCKER
+  docker build -t malware-triage .
+  docker run -v ./samples:/samples malware-triage analyse /samples/file.exe
+
+TESTS
+  pytest tests/ -v
+
+================================================================================
+END OF DOCUMENT
+================================================================================
