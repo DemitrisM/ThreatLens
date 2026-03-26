@@ -1,4 +1,6 @@
-# Malware Triage Tool — Claude Code Context
+## What this project is
+**Tool name: ThreatLens**
+GitHub repo: github.com/DemitrisM/ThreatLens
 
 ## What this project is
 A portable CLI malware analysis tool (final year cybersecurity project).
