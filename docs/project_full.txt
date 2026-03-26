@@ -13,6 +13,10 @@ point without losing context.
 SECTION 1 — PROJECT OVERVIEW
 ================================================================================
 
+## What this project is
+**Tool name: ThreatLens**
+GitHub repo: github.com/[yourusername]/ThreatLens
+
 WHAT IS IT?
 -----------
 A portable, command-line malware analysis tool that accepts a suspicious file
