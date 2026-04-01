@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "malware-triage"
@@ -11,12 +11,6 @@ license = {text = "MIT"}
 
 dependencies = [
     "pefile>=2023.2.7",
-    "python-magic>=0.4.27",
-    "tlsh>=4.5.0",
-    "ssdeep>=3.4",
-    "yara-python>=4.3.0",
-    "oletools>=0.60.1",
-    "peepdf-3>=4.0.0",
     "requests>=2.31.0",
     "rich>=13.7.0",
     "jinja2>=3.1.3",
@@ -25,6 +19,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+analysis = [
+    "python-magic>=0.4.27",
+    "yara-python>=4.3.0",
+    "oletools>=0.60.1",
+    "peepdf-3>=4.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
