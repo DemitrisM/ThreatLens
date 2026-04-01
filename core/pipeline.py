@@ -61,8 +61,13 @@ def _run_module(mod: object, name: str, file_path: Path, config: dict) -> dict:
     or returns a non-dict, a safe ``status: "error"`` result is
     returned instead.
     """
+    run_fn = getattr(mod, "run", None)
+    if not callable(run_fn):
+        logger.debug("Module %s has no run() — skipped (not yet implemented)", name)
+        return _skipped_result(name, "Module not yet implemented")
+
     try:
-        result = mod.run(file_path, config)  # type: ignore[attr-defined]
+        result = run_fn(file_path, config)
 
         if not isinstance(result, dict):
             logger.warning("Module %s returned non-dict — treating as error", name)
