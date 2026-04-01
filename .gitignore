@@ -1,0 +1,12 @@
+CLAUDE.md
+docs/project_full.txt
+
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+reports/
+tests/samples/
+
+config.yaml
