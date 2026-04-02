@@ -129,7 +129,8 @@ def run(file_path: Path, config: dict) -> dict:
         Standard module result dict.
     """
     capa_path = Path(config.get("capa_binary", "./bin/capa"))
-    timeout = config.get("module_timeout_seconds", 60)
+    timeout = config.get("capa_timeout_seconds",
+                         config.get("module_timeout_seconds", 60))
 
     if not capa_path.is_file():
         logger.info(

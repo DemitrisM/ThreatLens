@@ -19,6 +19,7 @@ DEFAULTS = {
     "output_dir": "./reports",
     "log_level": "INFO",
     "module_timeout_seconds": 60,
+    "capa_timeout_seconds": 120,
     "enabled_modules": [
         "file_intake",
         "pe_analysis",

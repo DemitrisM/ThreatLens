@@ -21,6 +21,8 @@ dependencies = [
 [project.optional-dependencies]
 analysis = [
     "python-magic>=0.4.27",
+    "py-tlsh>=4.12.0",
+    "ppdeep>=20200000",
     "yara-python>=4.3.0",
     "oletools>=0.60.1",
     "peepdf-3>=4.0.0",
