@@ -1,5 +1,9 @@
 CLAUDE.md
-docs/project_full.txt
+docs/academic.md
+docs/modules.md
+docs/architecture.md
+docs/scoring.md
+docs/testing.md
 
 __pycache__/
 *.pyc
