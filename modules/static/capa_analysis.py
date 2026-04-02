@@ -23,7 +23,11 @@ logger = logging.getLogger(__name__)
 _CAPABILITY_RULES: list[tuple[re.Pattern, str, int]] = [
     # Process injection / code injection — highest risk
     (
-        re.compile(r"inject|process.*hollow|shellcode.*inject|dll.*inject", re.IGNORECASE),
+        re.compile(
+            r"inject|process.*hollow|shellcode|dll.*inject|hollowing"
+            r"|allocate.*shellcode|write.*shellcode",
+            re.IGNORECASE,
+        ),
         "Process injection",
         20,
     ),
@@ -31,17 +35,19 @@ _CAPABILITY_RULES: list[tuple[re.Pattern, str, int]] = [
     (
         re.compile(
             r"anti.?debug|anti.?analys|anti.?sandbox|anti.?vm|anti.?emulat"
-            r"|evad.*detect|check.*debugger|detect.*sandbox",
+            r"|evad.*detect|check.*debugger|detect.*sandbox|detect.*vm"
+            r"|check.*virtual|obfuscat.*call",
             re.IGNORECASE,
         ),
         "Anti-analysis / anti-debug",
         15,
     ),
-    # Credential access
+    # Credential access — browser data, LSASS, keystroke logging
     (
         re.compile(
             r"credential|lsass|sam.database|keylog|steal.*password|steal.*credential"
-            r"|dump.*hash|mimikatz",
+            r"|dump.*hash|mimikatz|browser.*password|browser.*cookie"
+            r"|browser.*history|read.*browser|access.*browser",
             re.IGNORECASE,
         ),
         "Credential access",
@@ -51,44 +57,50 @@ _CAPABILITY_RULES: list[tuple[re.Pattern, str, int]] = [
     (
         re.compile(
             r"persist|autorun|run.key|startup|scheduled.task|registry.*run"
-            r"|install.*service|create.*service",
+            r"|install.*service|create.*service|boot.*logon|logon.*autostart",
             re.IGNORECASE,
         ),
         "Persistence mechanism",
         10,
     ),
-    # Network / C2 communication
+    # Network / C2 / data transfer — broad to catch capa's human-readable names
     (
         re.compile(
-            r"http.*communicat|network.*communicat|send.*http|receive.*http"
-            r"|resolve.*dns|connect.*socket|c2.*communicat|beacon",
+            r"download|upload|receive.*data|send.*data|read.*internet"
+            r"|write.*internet|http|socket|connect.*server|dns|beacon"
+            r"|network.*communicat|c2|command.*control|url|ftp|smtp"
+            r"|receive and write|download.*file|get.*url",
             re.IGNORECASE,
         ),
         "Network communication",
         10,
     ),
-    # Data collection / exfiltration
+    # Data collection / reconnaissance
     (
         re.compile(
-            r"collect.*data|steal.*data|exfil|screenshot|clipboard|keylog.*data",
+            r"screenshot|clipboard|exfil|access.*wmi|reference.*wmi"
+            r"|collect.*system|gather.*system|enumerate.*process"
+            r"|list.*process|take.*screenshot|capture.*screen",
             re.IGNORECASE,
         ),
-        "Data collection",
+        "Data collection / reconnaissance",
         10,
     ),
-    # Privilege escalation
+    # Privilege escalation / token manipulation
     (
         re.compile(
-            r"privilege.*escalat|elevat.*privilege|impersonat.*token|bypass.*uac|uac.*bypass",
+            r"privilege.*escalat|elevat.*privilege|impersonat.*token|bypass.*uac"
+            r"|uac.*bypass|token.*impersonat|adjust.*token|enable.*privilege",
             re.IGNORECASE,
         ),
         "Privilege escalation",
         10,
     ),
-    # Packing / encryption / obfuscation
+    # Encryption / obfuscation / packing
     (
         re.compile(
-            r"encrypt.*data|decrypt.*data|obfuscat|pack.*execut|xor.*encrypt",
+            r"encrypt|decrypt|obfuscat|base64|bcrypt|dpapi|xor|rc4|aes"
+            r"|pack.*execut|compress|deobfuscat|decode.*data|encode.*data",
             re.IGNORECASE,
         ),
         "Encryption / obfuscation",
@@ -193,23 +205,30 @@ def _run_capa(file_path: Path, capa_path: Path, timeout: int) -> dict | None:
             check=False,
         )
     except subprocess.TimeoutExpired:
-        logger.warning("capa timed out after %ds — skipping capability detection", timeout)
+        logger.warning(
+            "capa timed out after %ds on %s — skipping (complex binary or unsupported format)",
+            timeout,
+            file_path.name,
+        )
         return None
     except OSError as exc:
         logger.warning("capa invocation failed: %s — skipping", exc)
         return None
 
-    # Exit code 1 is "no matches found" in some capa versions — still valid JSON.
-    if proc.returncode not in (0, 1):
+    # capa exit codes:
+    #   0  — success, rules matched
+    #   1  — no rules matched (analysis succeeded, some versions)
+    #  14  — file limitation warning (AutoIt, .NET etc.) but may still produce JSON
+    # Other non-zero codes indicate real errors; still attempt JSON parse from stdout.
+    if proc.returncode not in (0, 1, 14) and proc.returncode is not None:
         stderr_snippet = (
             proc.stderr[:400].decode("utf-8", errors="replace") if proc.stderr else ""
         )
-        logger.warning(
-            "capa exited with code %d: %s — skipping",
+        logger.info(
+            "capa exited with code %d — will still attempt JSON parse. stderr: %s",
             proc.returncode,
-            stderr_snippet,
+            stderr_snippet[:200],
         )
-        return None
 
     if not proc.stdout:
         logger.info("capa produced no output — no capabilities detected")
