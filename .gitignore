@@ -5,8 +5,17 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+*.egg-info/
 
 reports/
 tests/samples/
 
 config.yaml
+
+# External binaries (downloaded by install.sh)
+bin/capa
+bin/floss
+
+# Downloaded YARA rule sets (cloned by install.sh)
+rules/yara/signature-base/
+rules/yara/eset-malware-ioc/

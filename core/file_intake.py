@@ -33,8 +33,13 @@ try:
 
     _HAS_SSDEEP = True
 except ImportError:
-    _HAS_SSDEEP = False
-    logger.warning("ssdeep not available — ssdeep fuzzy hashing disabled")
+    try:
+        import ppdeep as ssdeep  # Pure-python fallback
+
+        _HAS_SSDEEP = True
+    except ImportError:
+        _HAS_SSDEEP = False
+        logger.warning("ssdeep/ppdeep not available — ssdeep fuzzy hashing disabled")
 
 
 _BUF_SIZE = 65536  # 64 KiB read chunks for hashing
@@ -55,7 +60,6 @@ def _compute_hashes(file_path: Path) -> dict:
         tlsh_hasher = None
 
     with file_path.open("rb") as fh:
-        raw_bytes = b""
         while True:
             chunk = fh.read(_BUF_SIZE)
             if not chunk:
@@ -64,7 +68,6 @@ def _compute_hashes(file_path: Path) -> dict:
             sha256.update(chunk)
             if tlsh_hasher is not None:
                 tlsh_hasher.update(chunk)
-            raw_bytes += chunk
 
     tlsh_digest = None
     if tlsh_hasher is not None:
@@ -78,6 +81,9 @@ def _compute_hashes(file_path: Path) -> dict:
     ssdeep_digest = None
     if _HAS_SSDEEP:
         try:
+            # Read file again for ssdeep — avoids holding entire file in
+            # memory during the hash loop above.
+            raw_bytes = file_path.read_bytes()
             ssdeep_digest = ssdeep.hash(raw_bytes)
         except Exception:  # noqa: BLE001
             logger.debug("ssdeep hashing failed")
