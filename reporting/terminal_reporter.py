@@ -60,6 +60,7 @@ def print_terminal_report(report: dict, *, detail_level: int = 0) -> None:
     _print_ioc_table(module_results, detail_level)
     _print_suspicious_strings(module_results, detail_level)
     _print_capabilities(module_results, detail_level)
+    _print_virustotal(module_results, detail_level)
 
     if detail_level >= 1:
         _print_timing_table(module_results, timing)
@@ -195,6 +196,15 @@ def _build_verdict(module_results: list[dict], scoring: dict) -> str:
             if iocs.get("url") or iocs.get("ipv4"):
                 indicators.append("network IOC indicators")
 
+        elif module == "virustotal":
+            if data.get("found"):
+                detections = data.get("malicious", 0) + data.get("suspicious", 0)
+                if detections > 10:
+                    label = data.get("threat_label")
+                    indicators.append(f"VirusTotal: {detections} engines flagged" + (f" ({label})" if label else ""))
+                elif detections >= 1:
+                    indicators.append("low VirusTotal detections")
+
         elif module == "string_analysis":
             for cat in data.get("suspicious_categories", []):
                 cat_l = cat.lower()
@@ -281,14 +291,8 @@ def _print_module_table(module_results: list[dict], file_path: str) -> None:
         delta = result.get("score_delta", 0)
         reason = result.get("reason", "")
 
-        # Smart skip message for inapplicable modules
-        if status == "skipped" and reason == "Module not yet implemented":
-            if name in _DOC_ONLY_MODULES and not is_doc:
-                reason = "Not applicable — not an Office document"
-            elif name in _PDF_ONLY_MODULES and not is_pdf:
-                reason = "Not applicable — not a PDF file"
-            elif name == "virustotal":
-                reason = "Not yet implemented"
+        # Smart skip messages are now set by the modules themselves
+        # (doc_analysis and pdf_analysis return "Not applicable — ..." directly)
 
         status_colour = _STATUS_COLOURS.get(status, "white")
         status_cell = f"[{status_colour}]{status}[/{status_colour}]"
@@ -536,6 +540,83 @@ def _print_capabilities(module_results: list[dict], detail_level: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# VirusTotal Results
+# ---------------------------------------------------------------------------
+
+
+def _print_virustotal(module_results: list[dict], detail_level: int) -> None:
+    """Print VirusTotal lookup results."""
+    vt = next(
+        (r for r in module_results if r.get("module") == "virustotal"), None
+    )
+    if not vt or vt.get("status") != "success":
+        return
+
+    data = vt.get("data", {})
+
+    table = Table(
+        title="[bold]VirusTotal Results[/bold]",
+        box=box.ROUNDED,
+        show_header=False,
+        padding=(0, 1),
+    )
+    table.add_column("Key", style="bold dim", no_wrap=True)
+    table.add_column("Value", overflow="fold")
+
+    if not data.get("found"):
+        table.add_row("Status", "[yellow]Hash not found in VirusTotal database[/yellow]")
+        table.add_row("SHA256", data.get("sha256", "N/A"))
+        table.add_row("Link", data.get("permalink", ""))
+        console.print()
+        console.print(table)
+        return
+
+    # Detection ratio — colour-coded
+    detections = data.get("malicious", 0) + data.get("suspicious", 0)
+    total = data.get("total_engines", 0)
+    ratio = data.get("detection_ratio", f"{detections}/{total}")
+
+    if detections > 10:
+        ratio_style = "bold red"
+    elif detections >= 1:
+        ratio_style = "yellow"
+    else:
+        ratio_style = "green"
+
+    table.add_row("Detection", f"[{ratio_style}]{ratio} engines[/{ratio_style}]")
+
+    if data.get("threat_label"):
+        table.add_row("Threat Label", f"[bold red]{data['threat_label']}[/bold red]")
+
+    if detail_level >= 1:
+        table.add_row("Malicious", str(data.get("malicious", 0)))
+        if data.get("suspicious", 0) > 0:
+            table.add_row("Suspicious", str(data["suspicious"]))
+        table.add_row("Undetected", str(data.get("undetected", 0)))
+
+    if data.get("first_seen"):
+        first_seen = data["first_seen"]
+        # VT returns Unix timestamp — convert to readable date
+        if isinstance(first_seen, (int, float)):
+            from datetime import datetime, timezone
+            try:
+                first_seen = datetime.fromtimestamp(first_seen, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            except (OSError, ValueError):
+                first_seen = str(first_seen)
+        table.add_row("First Seen", str(first_seen))
+
+    if data.get("community_score") is not None and detail_level >= 1:
+        cs = data["community_score"]
+        cs_style = "red" if cs > 0 else "green" if cs < 0 else "dim"
+        table.add_row("Community Score", f"[{cs_style}]{cs}[/{cs_style}]")
+
+    table.add_row("Link", data.get("permalink", ""))
+
+    console.print()
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
 # Per-Module Timing
 # ---------------------------------------------------------------------------
 
@@ -616,9 +697,21 @@ def _print_recommendations(
                 top = ", ".join(domains[:3])
                 recs.append(f"Check network logs for connections to: {top}")
 
-        elif module == "virustotal" and status == "skipped":
-            if sha256:
-                recs.append(f"Submit SHA256 to VirusTotal: {sha256[:16]}…")
+        elif module == "virustotal":
+            if status == "skipped":
+                if sha256:
+                    recs.append(f"Submit SHA256 to VirusTotal: {sha256[:16]}…")
+            elif status == "success" and data.get("found"):
+                detections = data.get("malicious", 0) + data.get("suspicious", 0)
+                if detections > 10:
+                    label = data.get("threat_label", "")
+                    recs.append(f"VirusTotal confirms malicious — {detections} engines flagged" + (f" ({label})" if label else ""))
+            elif status == "error":
+                reason = result.get("reason", "")
+                if "rate limit" in reason.lower():
+                    recs.append("VirusTotal rate limit hit — wait 60s or use --skip virustotal")
+                elif sha256:
+                    recs.append(f"VirusTotal lookup failed — manually check: {sha256[:16]}…")
 
         elif module == "capa_analysis" and status == "skipped":
             reason = result.get("reason", "")
