@@ -8,10 +8,15 @@ returns a complete report dict ready for any reporter.
 import logging
 import time
 from pathlib import Path
+from typing import Callable
 
 from core.scoring import compute_score
 
 logger = logging.getLogger(__name__)
+
+# Type for optional progress callback: (module_index, total_modules, module_name, event)
+# event is "start" or "done"
+ProgressCallback = Callable[[int, int, str, str], None] | None
 
 # Maps config module names → (import_path, callable_name).
 # file_intake lives in core/, everything else under modules/.
@@ -147,7 +152,11 @@ def _skipped_result(module_name: str, reason: str) -> dict:
     }
 
 
-def run_pipeline(file_path: Path, config: dict) -> dict:
+def run_pipeline(
+    file_path: Path,
+    config: dict,
+    progress_cb: ProgressCallback = None,
+) -> dict:
     """Execute the full analysis pipeline on *file_path*.
 
     Runs every enabled module listed in ``config["enabled_modules"]``,
@@ -155,8 +164,10 @@ def run_pipeline(file_path: Path, config: dict) -> dict:
     aggregate confidence score, and returns a report dict.
 
     Args:
-        file_path: Path to the file under analysis.
-        config:    Validated configuration dict from config_loader.
+        file_path:   Path to the file under analysis.
+        config:      Validated configuration dict from config_loader.
+        progress_cb: Optional callback(index, total, name, event) for
+                     progress updates.  *event* is ``"start"`` or ``"done"``.
 
     Returns:
         Report dict with keys:
@@ -168,16 +179,17 @@ def run_pipeline(file_path: Path, config: dict) -> dict:
     """
     start_time = time.time()
     enabled = config.get("enabled_modules", [])
+    total_modules = len(enabled)
     module_results: list[dict] = []
 
     logger.info(
         "Pipeline starting — %d modules enabled, file: %s",
-        len(enabled),
+        total_modules,
         file_path.name,
     )
 
     # --- Static / enrichment modules ---
-    for name in enabled:
+    for idx, name in enumerate(enabled):
         import_path = _MODULE_REGISTRY.get(name)
         if import_path is None:
             logger.warning("Unknown module %r in enabled_modules — skipping", name)
@@ -192,11 +204,16 @@ def run_pipeline(file_path: Path, config: dict) -> dict:
             continue
 
         logger.debug("Running module: %s", name)
+        if progress_cb is not None:
+            progress_cb(idx, total_modules, name, "start")
         t0 = time.time()
         result = _run_module(mod, name, file_path, config)
         elapsed = time.time() - t0
+        result["elapsed_seconds"] = round(elapsed, 3)
         logger.debug("Module %s finished in %.2fs — status: %s", name, elapsed, result["status"])
         module_results.append(result)
+        if progress_cb is not None:
+            progress_cb(idx, total_modules, name, "done")
 
     # --- Dynamic provider (if configured) ---
     dynamic_result = None
