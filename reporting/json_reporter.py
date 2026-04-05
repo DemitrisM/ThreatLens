@@ -54,12 +54,32 @@ def _prepare(report: dict) -> dict:
     return {
         "meta": {
             "tool": "ThreatLens",
-            "version": "0.1.0",
+            "version": "0.2.0",
             "generated_utc": datetime.now(tz=timezone.utc).isoformat(),
         },
         "file": report.get("file"),
         "scoring": report.get("scoring"),
-        "module_results": report.get("module_results", []),
+        "module_results": _sanitise_results(report.get("module_results", [])),
         "dynamic": report.get("dynamic"),
         "timing": report.get("timing"),
     }
+
+
+def _sanitise_results(results: list[dict]) -> list[dict]:
+    """Strip sensitive data (API keys, credentials) from module results.
+
+    Currently ensures the VirusTotal API key never leaks into reports.
+    """
+    sanitised = []
+    for result in results:
+        # Deep-copy only what's needed — module results are simple dicts.
+        r = dict(result)
+        data = r.get("data")
+        if isinstance(data, dict):
+            r["data"] = {
+                k: v
+                for k, v in data.items()
+                if k not in ("api_key", "virustotal_api_key")
+            }
+        sanitised.append(r)
+    return sanitised
