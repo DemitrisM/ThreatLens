@@ -1,9 +1,6 @@
 CLAUDE.md
-docs/academic.md
-docs/modules.md
-docs/architecture.md
-docs/scoring.md
-docs/testing.md
+docs/claude_context.md
+docs/usage.md
 
 __pycache__/
 *.pyc
