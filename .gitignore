@@ -1,9 +1,6 @@
 NOTES.md
-docs/academic.md
-docs/modules.md
-docs/architecture.md
-docs/scoring.md
-docs/testing.md
+docs/context.md
+docs/usage.md
 
 __pycache__/
 *.pyc
