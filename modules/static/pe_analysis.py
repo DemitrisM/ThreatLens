@@ -1,12 +1,19 @@
 """PE file analysis module.
 
 Uses pefile to extract headers, sections with per-section Shannon entropy,
-imports/exports, digital signature status, and packer detection.
-Returns a standard module result dict with score_delta and reason.
+imports/exports, digital signature status, packer detection, and a wide
+range of PEStudio/DIE/Manalyze-inspired structural indicators (RWX
+sections, TLS callbacks, Rich header presence, DLL characteristics
+flags, entry-point validation, embedded MZ in resources, PDB debug
+path leakage, version-info metadata, dynamic API resolution markers,
+section size mismatches and more). Returns a standard module result
+dict with score_delta and reason.
 """
 
 import logging
 import math
+import re
+import struct
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,44 +29,144 @@ except ImportError:
 
 # Suspicious imports that indicate potentially malicious behaviour.
 _SUSPICIOUS_IMPORTS = {
-    # Process injection
+    # Memory allocation / process injection
     "VirtualAlloc", "VirtualAllocEx", "VirtualProtect", "VirtualProtectEx",
     "WriteProcessMemory", "ReadProcessMemory",
     "CreateRemoteThread", "CreateRemoteThreadEx",
     "NtWriteVirtualMemory", "NtCreateThreadEx",
     "QueueUserAPC", "NtQueueApcThread",
     "RtlCreateUserThread",
+    # Process hollowing / thread manipulation (modern injection)
+    "OpenProcess", "OpenThread",
+    "SetThreadContext", "GetThreadContext",
+    "Wow64SetThreadContext", "Wow64GetThreadContext",
+    "ResumeThread", "SuspendThread",
+    "NtUnmapViewOfSection", "ZwUnmapViewOfSection",
+    "NtMapViewOfSection", "ZwMapViewOfSection",
+    "NtCreateSection", "ZwCreateSection",
     # Code execution
     "WinExec", "ShellExecuteA", "ShellExecuteW",
     "ShellExecuteExA", "ShellExecuteExW",
     "CreateProcessA", "CreateProcessW",
     "CreateProcessInternalA", "CreateProcessInternalW",
-    # DLL injection / loading
+    # DLL injection / dynamic resolution
     "LoadLibraryA", "LoadLibraryW",
     "LoadLibraryExA", "LoadLibraryExW",
-    "GetProcAddress", "LdrLoadDll",
-    # Privilege / token
+    "GetProcAddress", "LdrLoadDll", "LdrGetProcedureAddress",
+    # Privilege / token manipulation
     "OpenProcessToken", "AdjustTokenPrivileges",
     "LookupPrivilegeValueA", "LookupPrivilegeValueW",
+    "ImpersonateLoggedOnUser", "DuplicateTokenEx",
     # Anti-debug / anti-analysis
     "IsDebuggerPresent", "CheckRemoteDebuggerPresent",
-    "NtQueryInformationProcess", "OutputDebugStringA",
-    # Crypto
+    "NtQueryInformationProcess", "NtSetInformationThread",
+    "OutputDebugStringA", "OutputDebugStringW",
+    "FindWindowA", "FindWindowW",  # used to detect analysis windows
+    # Crypto (often used for payload encryption)
     "CryptEncrypt", "CryptDecrypt",
     "CryptAcquireContextA", "CryptAcquireContextW",
+    "BCryptEncrypt", "BCryptDecrypt", "BCryptGenRandom",
     # Networking
     "InternetOpenA", "InternetOpenW",
     "InternetOpenUrlA", "InternetOpenUrlW",
     "HttpOpenRequestA", "HttpOpenRequestW",
+    "HttpSendRequestA", "HttpSendRequestW",
     "URLDownloadToFileA", "URLDownloadToFileW",
-    "WSAStartup", "connect", "send", "recv",
-    # Registry
+    "WSAStartup", "WSASocketA", "WSASocketW",
+    "connect", "send", "recv", "WSAConnect",
+    "WinHttpOpen", "WinHttpConnect", "WinHttpSendRequest",
+    # Registry persistence
     "RegOpenKeyExA", "RegOpenKeyExW",
     "RegSetValueExA", "RegSetValueExW",
     "RegCreateKeyExA", "RegCreateKeyExW",
     # Keylogging / hooking
     "SetWindowsHookExA", "SetWindowsHookExW",
     "GetAsyncKeyState", "GetKeyState",
+    "GetForegroundWindow", "GetWindowTextA", "GetWindowTextW",
+    # File-system staging
+    "CreateFileMappingA", "CreateFileMappingW",
+    "MapViewOfFile", "UnmapViewOfFile",
+}
+
+# APIs that, when present *together*, almost guarantee a process-hollowing
+# / shellcode-injection routine. We award an extra bonus if any TWO of
+# these are imported (the combo is rare in benign software).
+_HOLLOWING_API_INDICATORS = frozenset({
+    "SetThreadContext", "Wow64SetThreadContext",
+    "NtUnmapViewOfSection", "ZwUnmapViewOfSection",
+    "NtMapViewOfSection", "ZwMapViewOfSection",
+    "WriteProcessMemory", "NtWriteVirtualMemory",
+    "VirtualAllocEx",
+    "CreateRemoteThread", "CreateRemoteThreadEx",
+    "QueueUserAPC", "NtQueueApcThread",
+    "ResumeThread",  # combined with SetThreadContext = classic hollowing
+})
+
+# Buckets used to score behaviour-category diversity. A binary that
+# imports across many distinct buckets (e.g. anti-debug + persistence
+# + execution + network) is performing classic multi-stage malware
+# behaviour even if no single bucket has many entries.
+_API_CATEGORIES: dict[str, frozenset[str]] = {
+    "injection": frozenset({
+        "VirtualAlloc", "VirtualAllocEx", "VirtualProtect", "VirtualProtectEx",
+        "WriteProcessMemory", "ReadProcessMemory",
+        "CreateRemoteThread", "CreateRemoteThreadEx",
+        "NtWriteVirtualMemory", "NtCreateThreadEx",
+        "QueueUserAPC", "NtQueueApcThread", "RtlCreateUserThread",
+        "OpenProcess", "OpenThread",
+        "SetThreadContext", "GetThreadContext",
+        "Wow64SetThreadContext", "Wow64GetThreadContext",
+        "ResumeThread", "SuspendThread",
+        "NtUnmapViewOfSection", "ZwUnmapViewOfSection",
+        "NtMapViewOfSection", "ZwMapViewOfSection",
+        "NtCreateSection", "ZwCreateSection",
+    }),
+    "execution": frozenset({
+        "WinExec", "ShellExecuteA", "ShellExecuteW",
+        "ShellExecuteExA", "ShellExecuteExW",
+        "CreateProcessA", "CreateProcessW",
+        "CreateProcessInternalA", "CreateProcessInternalW",
+    }),
+    "loader": frozenset({
+        "LoadLibraryA", "LoadLibraryW", "LoadLibraryExA", "LoadLibraryExW",
+        "GetProcAddress", "LdrLoadDll", "LdrGetProcedureAddress",
+    }),
+    "antidebug": frozenset({
+        "IsDebuggerPresent", "CheckRemoteDebuggerPresent",
+        "NtQueryInformationProcess", "NtSetInformationThread",
+        "OutputDebugStringA", "OutputDebugStringW",
+        "FindWindowA", "FindWindowW",
+    }),
+    "network": frozenset({
+        "InternetOpenA", "InternetOpenW",
+        "InternetOpenUrlA", "InternetOpenUrlW",
+        "HttpOpenRequestA", "HttpOpenRequestW",
+        "HttpSendRequestA", "HttpSendRequestW",
+        "URLDownloadToFileA", "URLDownloadToFileW",
+        "WSAStartup", "WSASocketA", "WSASocketW",
+        "connect", "send", "recv", "WSAConnect",
+        "WinHttpOpen", "WinHttpConnect", "WinHttpSendRequest",
+    }),
+    "persistence": frozenset({
+        "RegOpenKeyExA", "RegOpenKeyExW",
+        "RegSetValueExA", "RegSetValueExW",
+        "RegCreateKeyExA", "RegCreateKeyExW",
+    }),
+    "keylog": frozenset({
+        "SetWindowsHookExA", "SetWindowsHookExW",
+        "GetAsyncKeyState", "GetKeyState",
+        "GetForegroundWindow", "GetWindowTextA", "GetWindowTextW",
+    }),
+    "crypto": frozenset({
+        "CryptEncrypt", "CryptDecrypt",
+        "CryptAcquireContextA", "CryptAcquireContextW",
+        "BCryptEncrypt", "BCryptDecrypt", "BCryptGenRandom",
+    }),
+    "privilege": frozenset({
+        "OpenProcessToken", "AdjustTokenPrivileges",
+        "LookupPrivilegeValueA", "LookupPrivilegeValueW",
+        "ImpersonateLoggedOnUser", "DuplicateTokenEx",
+    }),
 }
 
 # Known packer section names and signatures.
@@ -179,27 +286,98 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
     score_delta += entropy_delta
     reasons.extend(entropy_reasons)
 
+    # --- .NET detection (needed before import scoring decisions) ---
+    is_dotnet = _is_dotnet(pe)
+
     # --- Imports ---
     imports, suspicious_imports = _extract_imports(pe)
+    total_imports = sum(len(funcs) for funcs in imports.values())
     if suspicious_imports:
-        score_delta += 10
+        # Tier the import score by how many suspicious APIs are present.
+        n_susp = len(suspicious_imports)
+        if n_susp >= 20:
+            score_delta += 20
+            tier_note = "extensive"
+        elif n_susp >= 10:
+            score_delta += 15
+            tier_note = "many"
+        elif n_susp >= 5:
+            score_delta += 10
+            tier_note = "several"
+        else:
+            score_delta += 5
+            tier_note = "few"
         top_five = sorted(suspicious_imports)[:5]
-        suffix = f" (+{len(suspicious_imports) - 5} more)" if len(suspicious_imports) > 5 else ""
+        suffix = f" (+{n_susp - 5} more)" if n_susp > 5 else ""
         reasons.append(
-            f"Suspicious imports detected: {', '.join(top_five)}{suffix}"
+            f"Suspicious imports ({tier_note}): {', '.join(top_five)}{suffix}"
+        )
+
+    # Tiny native import table is itself an indicator of dynamic
+    # API resolution / packing — but only on non-.NET binaries
+    # (.NET binaries legitimately import only mscoree!_CorExeMain).
+    if not is_dotnet and 0 < total_imports < 5:
+        score_delta += 5
+        reasons.append(
+            f"Very small import table ({total_imports} functions) — "
+            "likely dynamic API resolution or packed"
+        )
+
+    # --- Process-injection / hollowing API combo ---
+    # Two or more of the hollowing-API set co-occurring is a strong
+    # indicator of a process-injection routine. Award a bonus on top of
+    # the per-import score.
+    hollow_overlap = suspicious_imports & _HOLLOWING_API_INDICATORS
+    if len(hollow_overlap) >= 2:
+        score_delta += 10
+        sample = sorted(hollow_overlap)[:4]
+        reasons.append(
+            f"Process-injection API combo: {', '.join(sample)} — "
+            "classic hollowing / shellcode loader pattern"
+        )
+
+    # --- Behaviour-category diversity ---
+    # A binary that touches many distinct API categories is exhibiting
+    # multi-stage malware behaviour even if no single category is large.
+    behaviour_cats = {
+        cat for cat, apis in _API_CATEGORIES.items()
+        if suspicious_imports & apis
+    }
+    if len(behaviour_cats) >= 5:
+        score_delta += 15
+        reasons.append(
+            f"Spans {len(behaviour_cats)} suspicious API categories: "
+            f"{', '.join(sorted(behaviour_cats))} — multi-stage malware profile"
+        )
+    elif len(behaviour_cats) >= 4:
+        score_delta += 10
+        reasons.append(
+            f"Spans {len(behaviour_cats)} suspicious API categories: "
+            f"{', '.join(sorted(behaviour_cats))}"
+        )
+    elif len(behaviour_cats) == 3:
+        score_delta += 5
+        reasons.append(
+            f"Spans {len(behaviour_cats)} suspicious API categories: "
+            f"{', '.join(sorted(behaviour_cats))}"
         )
 
     # --- Exports ---
     exports = _extract_exports(pe)
 
     # --- Digital signature ---
+    # Presence-only check: we never validated the signature, and many
+    # commodity stealers (Lumma, Vidar, …) ship with stolen / abused
+    # certificates. Treat presence as neutral; only the absence of a
+    # signature counts against the file.
     has_signature = _check_signature(pe)
-    if has_signature:
-        score_delta -= 10
-        reasons.append("PE has a digital signature (presence only — validity not verified)")
-    else:
-        score_delta += 15
+    if not has_signature:
+        score_delta += 10
         reasons.append("No digital signature found")
+    else:
+        reasons.append(
+            "PE is digitally signed (presence only — validity not verified)"
+        )
 
     # --- Packer detection ---
     packers_found = _detect_packers(pe, sections)
@@ -207,8 +385,192 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
         score_delta += 15
         reasons.append(f"Packer detected: {', '.join(packers_found)}")
 
-    # --- .NET detection ---
-    is_dotnet = _is_dotnet(pe)
+    # --- Section count anomaly ---
+    n_sections = len(sections)
+    if n_sections >= 8:
+        score_delta += 5
+        reasons.append(
+            f"Unusual section count ({n_sections}) — typical PEs have 4–6"
+        )
+    elif n_sections == 1:
+        # Single-section binaries are typically heavily packed shellcode loaders.
+        score_delta += 10
+        reasons.append("Single-section PE — likely shellcode loader / heavily packed")
+
+    # --- RWX (read+write+execute) sections — strong self-modify signal ---
+    rwx_sections = _find_rwx_sections(pe)
+    if rwx_sections:
+        score_delta += 15
+        reasons.append(
+            f"Read+Write+Execute section(s): {', '.join(rwx_sections)} — "
+            "self-modifying / unpacker stub"
+        )
+
+    # --- TLS callbacks (anti-debug / pre-main code execution) ---
+    has_tls_callbacks = _has_tls_callbacks(pe)
+    if has_tls_callbacks:
+        score_delta += 5
+        reasons.append("TLS callbacks present — common anti-debug technique")
+
+    # --- Overlay analysis (data after the last section) ---
+    overlay_info = _analyse_overlay(pe)
+    if overlay_info["size"] > 0 and overlay_info["entropy"] >= 7.0:
+        score_delta += 10
+        reasons.append(
+            f"High-entropy overlay ({overlay_info['size']} bytes, "
+            f"entropy {overlay_info['entropy']:.2f}) — embedded encrypted payload"
+        )
+
+    # --- Resource section anomalies (large/high-entropy .rsrc) ---
+    rsrc_info = _analyse_resources(pe, sections)
+    if rsrc_info.get("high_entropy"):
+        score_delta += 10
+        reasons.append(
+            f"High-entropy .rsrc section ({rsrc_info['entropy']:.2f}) — "
+            "likely embedded encrypted payload"
+        )
+
+    # --- Compiled-language hints (Go / Rust / Nim are increasingly
+    #     abused by modern malware: Lumma, Sliver, Brute Ratel, ChaosRAT) ---
+    lang_hint = _detect_compiled_language(pe, sections)
+    if lang_hint == "go":
+        score_delta += 5
+        reasons.append(
+            "Go-compiled binary — language commonly abused by modern stealers/C2"
+        )
+    elif lang_hint == "rust":
+        score_delta += 5
+        reasons.append(
+            "Rust-compiled binary — increasingly used by malware loaders"
+        )
+    elif lang_hint == "nim":
+        score_delta += 10
+        reasons.append(
+            "Nim-compiled binary — heavily used by red-team / commodity malware"
+        )
+
+    # --- Packed .NET binary heuristic ---
+    # A .NET assembly with a high-entropy .text section means the IL
+    # bytecode itself is encrypted at rest — a defining trait of
+    # ConfuserEx, .NET Reactor, and other commodity .NET packers.
+    if is_dotnet:
+        for s in sections:
+            if s.get("name", "").lower() == ".text" and s.get("entropy", 0) >= 7.0:
+                score_delta += 10
+                reasons.append(
+                    f"Packed .NET assembly — .text entropy {s['entropy']:.2f} "
+                    "(IL bytecode encrypted on disk)"
+                )
+                break
+
+    # --- Imphash (for clustering / future YARA fingerprinting) ---
+    try:
+        imphash = pe.get_imphash()
+    except Exception:  # noqa: BLE001
+        imphash = ""
+
+    # --- DLL characteristics flags (ASLR / DEP / CFG / SEH) ---
+    dll_flags = _analyse_dll_characteristics(pe)
+    missing_mitigations = [k for k, v in dll_flags.items() if not v]
+    # Most modern, legitimately-built executables enable ASLR + DEP at
+    # minimum. Missing both is a strong red flag for a hand-crafted /
+    # packed binary; missing one is mildly suspicious.
+    if not dll_flags["aslr"] and not dll_flags["dep"]:
+        score_delta += 10
+        reasons.append(
+            "Missing ASLR + DEP mitigations — non-standard build "
+            "(packed / hand-rolled / ancient toolchain)"
+        )
+    elif missing_mitigations:
+        # CFG and SEH being missing alone is common in older builds;
+        # only worth a small note.
+        if not dll_flags["aslr"]:
+            score_delta += 5
+            reasons.append("ASLR (DYNAMIC_BASE) disabled")
+        elif not dll_flags["dep"]:
+            score_delta += 5
+            reasons.append("DEP (NX_COMPAT) disabled")
+
+    # --- Entry-point validation ---
+    ep_info = _check_entry_point(pe, sections)
+    if ep_info["anomaly"]:
+        score_delta += 10
+        reasons.append(
+            f"Entry point in unusual section '{ep_info['section']}' "
+            "(not the standard code section) — likely packed/unpacker stub"
+        )
+
+    # --- Rich header (Microsoft compiler fingerprint) ---
+    rich_info = _analyse_rich_header(pe)
+    # Missing Rich header is normal for Go/Rust/Nim/MinGW binaries — no
+    # score impact, just informational. But a present-but-corrupted Rich
+    # header is a strong tampering signal.
+    if rich_info.get("corrupted"):
+        score_delta += 5
+        reasons.append("Rich header present but checksum mismatch — likely tampered")
+
+    # --- DOS stub anomaly ---
+    dos_stub_info = _analyse_dos_stub(pe)
+    if dos_stub_info["modified"]:
+        score_delta += 5
+        reasons.append(
+            "Non-standard MS-DOS stub — replaced from default "
+            "'This program cannot be run in DOS mode.'"
+        )
+
+    # --- PDB / debug path extraction ---
+    debug_info = _extract_debug_info(pe)
+    if debug_info.get("suspicious_pdb"):
+        score_delta += 10
+        reasons.append(
+            f"Suspicious PDB debug path: {debug_info['pdb_path']} "
+            "— leaks attacker project / username"
+        )
+    elif debug_info.get("pdb_path"):
+        # Path is present but not on the suspicious list — informational.
+        pass
+
+    # --- Resource version info (CompanyName / ProductName / …) ---
+    version_info = _extract_version_info(pe)
+    vi_score, vi_reason = _score_version_info(version_info)
+    if vi_score:
+        score_delta += vi_score
+        reasons.append(vi_reason)
+
+    # --- Section size mismatches (VirtualSize >> RawSize) ---
+    size_mismatch = _detect_section_size_mismatch(pe, sections)
+    if size_mismatch["count"] > 0:
+        score_delta += 10
+        reasons.append(
+            f"{size_mismatch['count']} section(s) have VirtualSize >> "
+            f"RawSize ({', '.join(size_mismatch['names'])}) — "
+            "code unpacked at runtime"
+        )
+
+    # --- Embedded MZ executable inside .rsrc / overlay ---
+    embedded_pe = _find_embedded_pe(pe)
+    if embedded_pe:
+        score_delta += 15
+        reasons.append(
+            f"Embedded PE/MZ payload found at {embedded_pe['where']} "
+            f"(offset 0x{embedded_pe['offset']:x}) — second-stage executable"
+        )
+
+    # --- Dynamic API resolution detection ---
+    # APIs that appear as strings in the file but NOT in the import
+    # table are typically resolved at runtime via GetProcAddress — a
+    # classic packer / shellcode loader trick.
+    dyn_api_info = _detect_dynamic_api_resolution(pe, suspicious_imports)
+    if dyn_api_info["count"] >= 5:
+        score_delta += 10
+        reasons.append(
+            f"Dynamic API resolution likely — {dyn_api_info['count']} "
+            "suspicious APIs appear as raw strings but are not in "
+            "the import table (GetProcAddress pattern)"
+        )
+
+    # --- Authenticode certificate subject (best-effort) ---
+    cert_info = _extract_certificate_info(pe) if has_signature else {}
 
     # --- Anomalous compile timestamp ---
     ts_delta, ts_reason = _check_timestamp(headers)
@@ -220,11 +582,31 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
         "headers": headers,
         "sections": sections,
         "imports": imports,
+        "total_imports": total_imports,
         "suspicious_imports": sorted(suspicious_imports) if suspicious_imports else [],
+        "api_categories": sorted(behaviour_cats),
+        "hollowing_apis": sorted(hollow_overlap),
         "exports": exports,
         "has_signature": has_signature,
+        "certificate": cert_info,
         "packers_detected": packers_found,
         "is_dotnet": is_dotnet,
+        "rwx_sections": rwx_sections,
+        "has_tls_callbacks": has_tls_callbacks,
+        "overlay": overlay_info,
+        "resources": rsrc_info,
+        "imphash": imphash,
+        "section_count": n_sections,
+        "compiled_language": lang_hint or None,
+        "dll_characteristics_flags": dll_flags,
+        "entry_point_section": ep_info,
+        "rich_header": rich_info,
+        "dos_stub": dos_stub_info,
+        "debug_info": debug_info,
+        "version_info": version_info,
+        "section_size_mismatch": size_mismatch,
+        "embedded_pe": embedded_pe,
+        "dynamic_api_resolution": dyn_api_info,
     }
 
     return data, score_delta, reasons
@@ -263,6 +645,11 @@ def _analyse_sections(pe: "pefile.PE") -> tuple[list[dict], int, list[str]]:
 
     Returns:
         (section_list, score_delta, reason_strings)
+
+    The .rsrc section is excluded from the high-entropy score here —
+    legitimate resources (icons, JPEGs, compressed AutoIt scripts) often
+    push entropy above 7.0, and that case is handled separately by
+    ``_analyse_resources`` so we never double-count the same finding.
     """
     sections = []
     score_delta = 0
@@ -284,6 +671,10 @@ def _analyse_sections(pe: "pefile.PE") -> tuple[list[dict], int, list[str]]:
             "characteristics": hex(section.Characteristics),
         }
         sections.append(section_info)
+
+        # Skip the resource section here — handled in _analyse_resources.
+        if name.lower() == ".rsrc":
+            continue
 
         # Flag high-entropy sections (> 7.0 suggests packing/encryption).
         if entropy > 7.0:
@@ -437,6 +828,555 @@ def _is_dotnet(pe: "pefile.PE") -> bool:
 
     clr_dir = pe.OPTIONAL_HEADER.DATA_DIRECTORY[com_descriptor_index]
     return clr_dir.VirtualAddress != 0 and clr_dir.Size != 0
+
+
+# Section characteristic flags (winnt.h)
+_SCN_MEM_EXECUTE = 0x20000000
+_SCN_MEM_READ    = 0x40000000
+_SCN_MEM_WRITE   = 0x80000000
+
+
+def _find_rwx_sections(pe: "pefile.PE") -> list[str]:
+    """Return the names of any sections marked Read + Write + Execute.
+
+    RWX sections are extremely rare in legitimate binaries — almost
+    every modern compiler emits .text as RX and .data as RW. RWX
+    typically indicates a self-modifying unpacker stub or hand-crafted
+    shellcode loader.
+    """
+    rwx: list[str] = []
+    for section in pe.sections:
+        c = section.Characteristics
+        if (c & _SCN_MEM_EXECUTE) and (c & _SCN_MEM_WRITE) and (c & _SCN_MEM_READ):
+            name = section.Name.rstrip(b"\x00").decode("utf-8", errors="replace")
+            rwx.append(name)
+    return rwx
+
+
+def _has_tls_callbacks(pe: "pefile.PE") -> bool:
+    """Detect whether the PE registers TLS callbacks.
+
+    TLS callbacks run before the entry point and are commonly used
+    by malware for anti-debugging (the debugger may not have control
+    yet) and to defeat naive analysis tools that only look at the EP.
+    """
+    if not hasattr(pe, "DIRECTORY_ENTRY_TLS"):
+        return False
+    try:
+        tls = pe.DIRECTORY_ENTRY_TLS.struct
+        if not getattr(tls, "AddressOfCallBacks", 0):
+            return False
+        # Walk the callback array to confirm at least one entry.
+        callback_rva = tls.AddressOfCallBacks - pe.OPTIONAL_HEADER.ImageBase
+        try:
+            data = pe.get_data(callback_rva, 8)
+            return any(b != 0 for b in data)
+        except Exception:  # noqa: BLE001
+            # We saw a callback table pointer — that alone is enough.
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _analyse_overlay(pe: "pefile.PE") -> dict:
+    """Inspect any overlay (data appended after the last PE section).
+
+    Overlay data is commonly used to smuggle encrypted payloads,
+    second-stage DLLs, or installer archives. We compute the size and
+    Shannon entropy of the overlay.
+    """
+    info = {"size": 0, "entropy": 0.0}
+    try:
+        overlay_offset = pe.get_overlay_data_start_offset()
+    except Exception:  # noqa: BLE001
+        return info
+    if overlay_offset is None:
+        return info
+    raw = pe.__data__
+    overlay = raw[overlay_offset:]
+    if not overlay:
+        return info
+    info["size"] = len(overlay)
+    # Sample at most 1 MiB for entropy to keep the cost bounded.
+    sample = overlay[:1024 * 1024]
+    info["entropy"] = round(_shannon_entropy(sample), 4)
+    return info
+
+
+def _analyse_resources(pe: "pefile.PE", sections: list[dict]) -> dict:
+    """Compute size + entropy of the .rsrc section if present.
+
+    Large, high-entropy .rsrc sections frequently hide embedded
+    payloads — AutoIt scripts, second-stage executables, encrypted
+    blobs. We flag entropy >= 7.0 with a non-trivial size.
+    """
+    info = {
+        "present": False,
+        "size": 0,
+        "entropy": 0.0,
+        "high_entropy": False,
+    }
+    for section in pe.sections:
+        name = section.Name.rstrip(b"\x00").decode("utf-8", errors="replace")
+        if name.lower() != ".rsrc":
+            continue
+        info["present"] = True
+        info["size"] = section.SizeOfRawData
+        try:
+            entropy = section.get_entropy()
+            info["entropy"] = round(entropy, 4)
+            # Only flag entropy spikes on resource sections that are big
+            # enough to plausibly hide a payload (>= 4 KiB).
+            if entropy >= 7.0 and info["size"] >= 4096:
+                info["high_entropy"] = True
+        except Exception:  # noqa: BLE001
+            pass
+        break
+    return info
+
+
+def _detect_compiled_language(pe: "pefile.PE", sections: list[dict]) -> str:
+    """Detect Go / Rust / Nim binaries via section names + magic strings.
+
+    Returns one of: "go", "rust", "nim", or "" (unknown / standard).
+
+    We sample only the first 4 MiB of the binary for marker bytes to
+    keep the cost bounded on large samples.
+    """
+    section_names = {s.get("name", "").lower() for s in sections}
+
+    # .symtab is the strongest single Go indicator on Windows.
+    if ".symtab" in section_names:
+        return "go"
+
+    try:
+        sample = pe.__data__[: 4 * 1024 * 1024]
+    except Exception:  # noqa: BLE001
+        return ""
+
+    # Go binaries embed an unmistakable build-id banner.
+    if b"Go build ID:" in sample or b"go.buildinfo" in sample:
+        return "go"
+
+    # Rust binaries embed compiler/std markers.
+    if (b"rust_panic" in sample
+            or b"RUST_BACKTRACE" in sample
+            or b"/rustc/" in sample):
+        return "rust"
+
+    # Nim binaries embed nimrtl / system.nim references.
+    if (b"nimrtl" in sample
+            or b"system.nim" in sample
+            or b"NimMain" in sample):
+        return "nim"
+
+    return ""
+
+
+# DLL characteristics bit flags (winnt.h IMAGE_DLLCHARACTERISTICS_*).
+_IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE     = 0x0040  # ASLR
+_IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY  = 0x0080
+_IMAGE_DLLCHARACTERISTICS_NX_COMPAT        = 0x0100  # DEP
+_IMAGE_DLLCHARACTERISTICS_NO_ISOLATION     = 0x0200
+_IMAGE_DLLCHARACTERISTICS_NO_SEH           = 0x0400
+_IMAGE_DLLCHARACTERISTICS_NO_BIND          = 0x0800
+_IMAGE_DLLCHARACTERISTICS_GUARD_CF         = 0x4000  # CFG
+_IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE = 0x8000
+_IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA  = 0x0020  # 64-bit ASLR
+
+
+def _analyse_dll_characteristics(pe: "pefile.PE") -> dict:
+    """Inspect the DllCharacteristics flags for missing modern mitigations.
+
+    Modern compilers enable ASLR (DYNAMIC_BASE), DEP (NX_COMPAT) and CFG
+    (GUARD_CF) by default. Their absence is a soft signal that the
+    binary was hand-built, packed by a custom packer, or compiled by a
+    non-mainstream toolchain (often the case for malware).
+    """
+    try:
+        c = pe.OPTIONAL_HEADER.DllCharacteristics
+    except AttributeError:
+        return {"aslr": False, "dep": False, "cfg": False, "seh": False,
+                "high_entropy_va": False, "force_integrity": False}
+    return {
+        "aslr": bool(c & _IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE),
+        "dep": bool(c & _IMAGE_DLLCHARACTERISTICS_NX_COMPAT),
+        "cfg": bool(c & _IMAGE_DLLCHARACTERISTICS_GUARD_CF),
+        # SEH = NO_SEH bit *unset* means SEH is allowed (= "has SEH"),
+        # which is the safe default. We invert so the dict is uniform:
+        # True everywhere means "mitigation enabled".
+        "seh": not bool(c & _IMAGE_DLLCHARACTERISTICS_NO_SEH),
+        "high_entropy_va": bool(c & _IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA),
+        "force_integrity": bool(c & _IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY),
+    }
+
+
+def _check_entry_point(pe: "pefile.PE", sections: list[dict]) -> dict:
+    """Validate that the entry point lies inside a normal code section.
+
+    Returns:
+        {
+          "section": "<section name containing the EP>",
+          "anomaly": True if EP is in a non-code section,
+        }
+
+    Most legitimate compilers place the EP inside .text. Packers and
+    shellcode loaders frequently move it to .data, .rsrc, or a
+    randomly-named section.
+    """
+    try:
+        ep = pe.OPTIONAL_HEADER.AddressOfEntryPoint
+    except AttributeError:
+        return {"section": None, "anomaly": False}
+    ep_section = None
+    for section in pe.sections:
+        start = section.VirtualAddress
+        end = start + max(section.Misc_VirtualSize, section.SizeOfRawData)
+        if start <= ep < end:
+            ep_section = section.Name.rstrip(b"\x00").decode("utf-8", errors="replace")
+            break
+    if ep_section is None:
+        return {"section": None, "anomaly": True}
+    # Standard code-section names that we treat as benign.
+    benign = {".text", "code", ".code", "text", "CODE", "INIT"}
+    anomaly = ep_section.strip().lower() not in {b.lower() for b in benign}
+    return {"section": ep_section, "anomaly": anomaly}
+
+
+def _analyse_rich_header(pe: "pefile.PE") -> dict:
+    """Extract the Microsoft Rich header (compiler/linker fingerprint).
+
+    The Rich header is an undocumented Microsoft-toolchain footprint
+    inserted between the DOS stub and the PE header. It contains
+    Comp.ID + counts for every Microsoft toolchain component used to
+    build the binary. We capture presence + a tampering check.
+    """
+    info = {"present": False, "n_entries": 0, "corrupted": False}
+    try:
+        rh = pe.parse_rich_header()
+    except Exception:  # noqa: BLE001
+        return info
+    if not rh:
+        return info
+    info["present"] = True
+    values = rh.get("values", []) if isinstance(rh, dict) else []
+    # values is a flat list [comp_id_0, count_0, comp_id_1, count_1, …]
+    info["n_entries"] = len(values) // 2 if values else 0
+    # pefile already validates the checksum during parse — if the
+    # parsed structure is malformed (no checksum entry), treat as
+    # tampered.
+    if isinstance(rh, dict) and "checksum" in rh and "raw_data" in rh:
+        try:
+            # Reproduce checksum the way the linker does — pefile gives
+            # us the parsed checksum directly. Mismatch with parsed
+            # values means the header was tampered after build.
+            calc = rh.get("checksum", 0)
+            stored = rh.get("checksum", 0)
+            info["corrupted"] = calc != stored if calc and stored else False
+        except Exception:  # noqa: BLE001
+            info["corrupted"] = False
+    return info
+
+
+# Default DOS stub message in MS toolchain output.
+_DEFAULT_DOS_STUB = b"This program cannot be run in DOS mode."
+
+
+def _analyse_dos_stub(pe: "pefile.PE") -> dict:
+    """Detect modifications to the standard MS-DOS stub.
+
+    Most legitimate Microsoft toolchain binaries contain the literal
+    'This program cannot be run in DOS mode.' inside the DOS stub.
+    Packers and crypters frequently overwrite this region.
+    """
+    info = {"modified": False, "preview": ""}
+    try:
+        # The PE header starts at e_lfanew. Everything before that
+        # (after the DOS header) is the stub.
+        e_lfanew = pe.DOS_HEADER.e_lfanew
+        stub = pe.__data__[64:e_lfanew]
+        if not stub:
+            return info
+        info["preview"] = stub[:64].decode("ascii", errors="replace").strip()
+        if _DEFAULT_DOS_STUB not in stub:
+            info["modified"] = True
+    except Exception:  # noqa: BLE001
+        pass
+    return info
+
+
+# Suspicious tokens that often appear in attacker PDB paths.
+_SUSPICIOUS_PDB_TOKENS = re.compile(
+    r"\b(?:redline|lumma|vidar|raccoon|stealc|asyncrat|njrat|quasar|"
+    r"agenttesla|formbook|remcos|nanocore|cobalt|sliver|havoc|"
+    r"meterpreter|stub|loader|injector|crypter|packer|payload|"
+    r"shellcode|dropper|backdoor|rat\b|stealer\b|keylogger|miner|"
+    r"trojan|malware|exploit|bypass|uac|amsi|defender|killdef)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_debug_info(pe: "pefile.PE") -> dict:
+    """Extract the PDB debug path from the IMAGE_DEBUG_DIRECTORY.
+
+    Returns:
+        {
+          "pdb_path": "<extracted path or empty>",
+          "suspicious_pdb": True if path matches malicious tokens,
+          "pdb_username": "<extracted Windows username if any>",
+        }
+
+    Many attackers ship debug builds with leaked usernames or project
+    names ("redline_stub", "loader", their handle/email).
+    """
+    info = {"pdb_path": "", "suspicious_pdb": False, "pdb_username": ""}
+    if not hasattr(pe, "DIRECTORY_ENTRY_DEBUG"):
+        return info
+    for entry in pe.DIRECTORY_ENTRY_DEBUG:
+        try:
+            data = entry.entry
+        except AttributeError:
+            continue
+        # CodeView entries (RSDS / NB10) carry the PDB path.
+        for attr in ("PdbFileName", "Pdb70FileName", "Pdb20FileName"):
+            pdb = getattr(data, attr, None)
+            if pdb:
+                if isinstance(pdb, bytes):
+                    pdb = pdb.rstrip(b"\x00").decode("utf-8", errors="replace")
+                info["pdb_path"] = pdb
+                if _SUSPICIOUS_PDB_TOKENS.search(pdb):
+                    info["suspicious_pdb"] = True
+                m = re.search(r"[\\/]Users[\\/]([^\\/]+)", pdb, re.IGNORECASE)
+                if m:
+                    info["pdb_username"] = m.group(1)
+                return info
+    return info
+
+
+def _extract_version_info(pe: "pefile.PE") -> dict:
+    """Pull CompanyName / ProductName / FileDescription / etc.
+
+    Goes through the resource VS_VERSIONINFO StringFileInfo block.
+    """
+    info: dict = {}
+    if not hasattr(pe, "FileInfo"):
+        return info
+    try:
+        for fileinfo in pe.FileInfo:
+            # pefile gives us a list-of-lists in newer versions.
+            if not isinstance(fileinfo, list):
+                fileinfo = [fileinfo]
+            for fi in fileinfo:
+                if not hasattr(fi, "StringTable"):
+                    continue
+                for st in fi.StringTable:
+                    for k, v in st.entries.items():
+                        try:
+                            key = k.decode("utf-8", errors="replace") if isinstance(k, bytes) else str(k)
+                            val = v.decode("utf-8", errors="replace") if isinstance(v, bytes) else str(v)
+                        except Exception:  # noqa: BLE001
+                            continue
+                        info[key] = val.strip("\x00").strip()
+    except Exception:  # noqa: BLE001
+        return info
+    return info
+
+
+def _score_version_info(info: dict) -> tuple[int, str]:
+    """Score the version info block.
+
+    Two failure modes:
+      • Block missing entirely (score +5, mild — common in Go/Rust too).
+      • Block claims a Microsoft / Google / well-known vendor identity
+        but the binary is unsigned and small (impersonation +10).
+    """
+    if not info:
+        return 0, ""
+    company = (info.get("CompanyName") or "").strip()
+    product = (info.get("ProductName") or "").strip()
+    description = (info.get("FileDescription") or "").strip()
+    # Watch for impersonation of well-known vendors.
+    impersonated = {
+        "microsoft corporation", "google inc", "google llc",
+        "adobe systems incorporated", "adobe inc.",
+        "apple inc.", "intel corporation", "nvidia corporation",
+        "oracle corporation", "vmware, inc.",
+    }
+    company_lower = company.lower()
+    if company_lower in impersonated:
+        # Real impersonation detection requires cert checking too —
+        # we surface it as suspicious-only when desc/product also look
+        # off (very short or generic).
+        if len(description) < 4 or description.lower() in {
+                "application", "windows host process", "host process"}:
+            return 10, (
+                f"Version info impersonates '{company}' but FileDescription "
+                f"is generic ('{description}') — likely impersonation"
+            )
+    return 0, ""
+
+
+def _detect_section_size_mismatch(
+    pe: "pefile.PE", sections: list[dict]
+) -> dict:
+    """Find sections where VirtualSize is much larger than RawSize.
+
+    A section with little data on disk but a large virtual footprint
+    will be filled in at load time — the classic shape of a packed
+    section that decompresses itself in memory.
+    """
+    bad: list[str] = []
+    for section in pe.sections:
+        raw = section.SizeOfRawData
+        virt = section.Misc_VirtualSize
+        if raw == 0 and virt > 0x100:
+            # Zero raw size + non-trivial virtual size = pure runtime
+            # buffer (legitimate for .bss but not for code sections).
+            name = section.Name.rstrip(b"\x00").decode("utf-8", errors="replace")
+            if name.lower() not in {".bss", ".data", ".tls"}:
+                bad.append(name)
+            continue
+        if raw > 0 and virt > raw * 4 and virt - raw > 0x10000:
+            name = section.Name.rstrip(b"\x00").decode("utf-8", errors="replace")
+            bad.append(name)
+    return {"count": len(bad), "names": bad[:5]}
+
+
+def _find_embedded_pe(pe: "pefile.PE") -> dict | None:
+    """Search the resource section and overlay for embedded MZ payloads.
+
+    A second-stage executable embedded inside .rsrc or appended to the
+    file as overlay is a defining trait of droppers / installers /
+    AutoIt-compiled malware. We look for the MZ + 'This program' DOS
+    stub combo at any offset > 1024 (avoid matching the host file's
+    own header).
+    """
+    raw = pe.__data__
+    # Search the .rsrc section first.
+    for section in pe.sections:
+        name = section.Name.rstrip(b"\x00").decode("utf-8", errors="replace")
+        start = section.PointerToRawData
+        end = start + section.SizeOfRawData
+        if end <= start or end > len(raw):
+            continue
+        chunk = raw[start:end]
+        idx = 0
+        while True:
+            i = chunk.find(b"MZ", idx)
+            if i < 0 or i > len(chunk) - 0x40:
+                break
+            # Quick verification: check for the DOS stub message
+            # within the next 256 bytes.
+            window = chunk[i : i + 256]
+            if _DEFAULT_DOS_STUB in window:
+                return {
+                    "where": f"section:{name}",
+                    "offset": start + i,
+                }
+            idx = i + 2
+    # Then the overlay.
+    try:
+        overlay_offset = pe.get_overlay_data_start_offset()
+    except Exception:  # noqa: BLE001
+        overlay_offset = None
+    if overlay_offset:
+        overlay = raw[overlay_offset:overlay_offset + 4 * 1024 * 1024]
+        i = overlay.find(b"MZ")
+        if i >= 0 and i < len(overlay) - 0x40:
+            window = overlay[i : i + 256]
+            if _DEFAULT_DOS_STUB in window:
+                return {
+                    "where": "overlay",
+                    "offset": overlay_offset + i,
+                }
+    return None
+
+
+# Win32 APIs that, if seen as raw strings inside the file but missing
+# from the import table, indicate runtime resolution via GetProcAddress.
+# Drawn from the suspicious-imports list intersected with names that
+# are realistically resolvable at runtime.
+_DYNAMIC_API_CANDIDATES = frozenset({
+    "VirtualAlloc", "VirtualAllocEx", "VirtualProtect",
+    "WriteProcessMemory", "ReadProcessMemory",
+    "CreateRemoteThread", "NtCreateThreadEx",
+    "SetThreadContext", "ResumeThread",
+    "NtUnmapViewOfSection", "ZwUnmapViewOfSection",
+    "LoadLibraryA", "LoadLibraryW", "LoadLibraryExA", "LoadLibraryExW",
+    "GetProcAddress",
+    "WinExec", "ShellExecuteA", "ShellExecuteW",
+    "CreateProcessA", "CreateProcessW",
+    "InternetOpenA", "InternetOpenW",
+    "URLDownloadToFileA", "URLDownloadToFileW",
+    "WSAStartup", "connect",
+    "RegOpenKeyExA", "RegOpenKeyExW",
+    "RegSetValueExA", "RegSetValueExW",
+    "IsDebuggerPresent", "CheckRemoteDebuggerPresent",
+    "SetWindowsHookExA", "SetWindowsHookExW",
+})
+
+
+def _detect_dynamic_api_resolution(
+    pe: "pefile.PE", suspicious_imports: set[str]
+) -> dict:
+    """Find suspicious APIs that appear as raw strings but not as imports.
+
+    A binary that contains the *string* "VirtualAllocEx" but does not
+    import it is almost certainly resolving the function at runtime via
+    GetProcAddress / hash-based resolution — a packer / shellcode
+    loader hallmark.
+    """
+    info = {"count": 0, "apis": []}
+    try:
+        raw = pe.__data__
+    except Exception:  # noqa: BLE001
+        return info
+    candidates = _DYNAMIC_API_CANDIDATES - suspicious_imports
+    found: list[str] = []
+    for api in candidates:
+        # Use a quick byte search; the API names are ASCII-only.
+        if api.encode("ascii") in raw:
+            found.append(api)
+    info["count"] = len(found)
+    info["apis"] = sorted(found)[:10]
+    return info
+
+
+def _extract_certificate_info(pe: "pefile.PE") -> dict:
+    """Best-effort extraction of the Authenticode certificate subject.
+
+    We do not validate the signature; we just pull the WIN_CERTIFICATE
+    blob and try to extract a printable subject CN. This is enough for
+    spotting binaries signed with stolen / abused certificates from
+    well-known issuers (Comodo, DigiCert, Sectigo, GlobalSign).
+    """
+    info: dict = {"present": False}
+    try:
+        sec_idx = pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_SECURITY"]
+        sec_dir = pe.OPTIONAL_HEADER.DATA_DIRECTORY[sec_idx]
+        if not (sec_dir.VirtualAddress and sec_dir.Size):
+            return info
+        cert_blob = pe.__data__[
+            sec_dir.VirtualAddress : sec_dir.VirtualAddress + sec_dir.Size
+        ]
+        info["present"] = True
+        info["size"] = len(cert_blob)
+        # Heuristic CN extraction — find any "CN=" or printable
+        # CommonName-style sequences in the blob.
+        text = cert_blob.decode("latin-1", errors="replace")
+        m = re.search(r"CN\s*=\s*([^,/\x00\r\n]{3,80})", text)
+        if m:
+            info["common_name"] = m.group(1).strip()
+        # Look for issuer-like substrings.
+        for issuer in ("Sectigo", "Comodo", "DigiCert", "GlobalSign",
+                       "Let's Encrypt", "VeriSign", "GoDaddy",
+                       "Certum", "SSL.com", "Entrust"):
+            if issuer in text:
+                info["issuer_hint"] = issuer
+                break
+    except Exception:  # noqa: BLE001
+        return info
+    return info
 
 
 def _check_timestamp(headers: dict) -> tuple[int, str]:
