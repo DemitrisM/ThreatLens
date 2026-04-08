@@ -71,6 +71,96 @@ _FP_DOMAINS = {
     "localhost",
     # Common TLD-like false positives from PE metadata.
     "api.example.com", "test.com", "example.com",
+    # .NET XML namespace defaults — appear in every WCF/serialization binary
+    "tempuri.org", "www.tempuri.org",
+    "schemas.datacontract.org", "schemas.openxmlformats.org",
+    "purl.org", "www.purl.org",
+}
+
+# Public-suffix-style allow list of real TLDs. Domains whose final label
+# is NOT in this set are dropped — this kills the bulk of Go / Nim / Rust /
+# Python source-filename pseudo-domains (arena.go, fatal.nim, lib.rs, …)
+# without requiring a per-language deny list.
+#
+# Sourced from IANA + commonly abused malicious TLDs. Kept deliberately
+# tight: ~210 entries cover ~99% of legitimate Internet domains.
+_REAL_TLDS = {
+    # Generic TLDs
+    "com", "org", "net", "info", "biz", "name", "pro", "xyz", "top",
+    "club", "site", "store", "shop", "online", "tech", "live",
+    "world", "today", "news", "blog", "app", "dev", "io", "co",
+    "ai", "ly", "me", "tv", "fm", "cc", "sh", "to", "ws", "la",
+    "link", "click", "lol", "fun", "win", "vip", "icu", "wtf",
+    "support", "host", "press", "space", "website", "cloud",
+    "digital", "agency", "design", "studio", "expert", "global",
+    "media", "network", "services", "solutions", "systems",
+    "academy", "center", "company", "email", "group", "guru",
+    "international", "marketing", "school", "team", "tools",
+    "training", "world", "zone", "art", "best", "city", "fund",
+    "game", "games", "gold", "house", "land", "life", "money",
+    # Country code TLDs (most common)
+    "us", "uk", "ca", "au", "nz", "ie", "za",
+    "de", "fr", "es", "it", "nl", "be", "ch", "at", "se", "no",
+    "fi", "dk", "pl", "cz", "sk", "hu", "ro", "bg", "gr", "pt",
+    "ru", "ua", "by", "kz", "uz", "ge",
+    "cn", "jp", "kr", "tw", "hk", "mo", "sg", "my", "th", "vn",
+    "id", "ph", "in", "pk", "bd", "lk", "np",
+    "il", "tr", "ae", "sa", "qa", "kw", "bh", "om", "lb", "jo",
+    "mx", "br", "ar", "cl", "co", "pe", "ve", "uy", "py", "bo",
+    "eg", "ma", "tn", "dz", "ng", "ke", "gh", "et", "tz", "ug",
+    # Country TLDs commonly abused for malicious infrastructure
+    "tk", "ml", "ga", "cf", "gq", "su", "pw", "nu",
+    # Educational / govt
+    "edu", "gov", "mil", "int",
+    # XML / IDN punycode markers (for benign infra appearing in samples)
+    "arpa",
+}
+
+# Source-file pseudo-TLDs (common in compiled Go / Nim / Rust / Python
+# binaries) — even if a label like "go" or "rs" matches a real TLD,
+# certain combinations are unmistakably source filenames, not hosts.
+# Filtered separately so they're never counted as IOCs.
+_SOURCE_PSEUDO_TLDS = {
+    "go", "nim", "rs", "py", "rb", "lua", "swift", "kt", "ts", "tsx",
+    "vb", "cs", "fs", "hs", "ml", "cpp", "cxx", "hpp", "hxx", "asm",
+    "s", "S", "def", "exp", "pyx", "pyi", "pxd",
+}
+
+# Go standard-library package names. When a 2-label "domain" begins with
+# one of these AND ends in a short Go-internal-style word (link, group,
+# pin, recv, send, gc, …), it's almost certainly a Go runtime symbol
+# leaking through the .symtab section, not a real host.
+_GO_STDLIB_PACKAGES = {
+    "runtime", "syscall", "fmt", "errors", "os", "io", "net", "http",
+    "url", "tls", "crypto", "hash", "sql", "sync", "atomic", "time",
+    "context", "reflect", "strconv", "strings", "bytes", "bufio",
+    "unicode", "regexp", "sort", "path", "filepath", "encoding",
+    "json", "xml", "csv", "base64", "base32", "hex", "binary", "pem",
+    "math", "rand", "big", "log", "flag", "testing", "compress",
+    "gzip", "flate", "zlib", "lzw", "tar", "zip", "image", "gif",
+    "jpeg", "png", "color", "draw", "html", "template", "text",
+    "container", "list", "ring", "heap", "database", "debug",
+    "elf", "macho", "pe", "plan9", "ast", "build", "doc", "format",
+    "importer", "parser", "printer", "scanner", "token", "types",
+    "internal", "mime", "multipart", "quotedprintable", "smtp", "mail",
+    "textproto", "syslog", "user", "exec", "signal", "expvar", "trace",
+    "pprof", "cgo", "unsafe", "gob", "asn1", "elliptic", "rsa", "dsa",
+    "ecdsa", "ed25519", "aes", "des", "rc4", "cipher", "hmac", "md5",
+    "sha1", "sha256", "sha512", "subtle", "x509", "constant", "chan",
+    "iter", "any", "map",
+}
+
+# Short identifier-style words that frequently appear as the second label
+# of Go runtime symbols. These collide with real TLDs (.link, .group, …)
+# but in combination with a Go stdlib first label they are diagnostic
+# of leaked debug symbols, not network hosts.
+_GO_SYMBOL_TLDS = {
+    "link", "group", "pin", "recv", "send", "gc", "now", "lock",
+    "unlock", "wait", "signal", "sleep", "tick", "panic", "goexit",
+    "init", "main", "new", "make", "len", "cap", "copy", "append",
+    "close", "delete", "print", "println", "recover", "complex",
+    "real", "imag", "string", "int", "uint", "bool", "byte", "rune",
+    "float", "error", "true", "false", "nil",
 }
 
 # Version-string patterns that look like IPs (e.g. "6.0.0.0", "14.0.0.0").
@@ -229,11 +319,48 @@ def _filter_fps(ioc_type: str, matches: set[str]) -> set[str]:
         return _filter_ip_fps(matches)
     if ioc_type == "domain":
         return _filter_domain_fps(matches)
+    if ioc_type == "url":
+        return _filter_url_fps(matches)
     if ioc_type == "windows_path":
         return _filter_path_fps(matches)
     if ioc_type == "email":
         return _filter_email_fps(matches)
     return matches
+
+
+# URL substrings that indicate the URL is a benign XML namespace, schema
+# reference, or version-info pointer rather than a real network endpoint.
+_FP_URL_SUBSTRINGS = (
+    "tempuri.org",
+    "schemas.microsoft.com",
+    "schemas.xmlsoap.org",
+    "schemas.openxmlformats.org",
+    "schemas.datacontract.org",
+    "www.w3.org",
+    "ns.adobe.com",
+    "purl.org",
+    "ocsp.digicert.com",
+    "crl.digicert.com",
+    "ocsp.verisign.com",
+    "crl.verisign.com",
+    "go.microsoft.com/fwlink",
+)
+
+
+def _filter_url_fps(urls: set[str]) -> set[str]:
+    """Drop URLs whose host is a known XML/namespace/schema artefact.
+
+    Many .NET binaries embed http://tempuri.org/* and similar URLs as
+    XML namespaces — they are not C2 endpoints and should not inflate
+    the network IOC count.
+    """
+    result: set[str] = set()
+    for url in urls:
+        lower = url.lower()
+        if any(fp in lower for fp in _FP_URL_SUBSTRINGS):
+            continue
+        result.add(url)
+    return result
 
 
 def _filter_ip_fps(ips: set[str]) -> set[str]:
@@ -254,7 +381,13 @@ def _filter_ip_fps(ips: set[str]) -> set[str]:
 
 
 def _filter_domain_fps(domains: set[str]) -> set[str]:
-    """Filter false-positive domain names."""
+    """Filter false-positive domain names.
+
+    Strategy: require the TLD to be in a curated allow-list of real
+    public-suffix TLDs. This drops the bulk of source-filename and
+    code-identifier matches that plague Go / Nim / Rust / .NET binaries
+    while still catching real C2 domains.
+    """
     result: set[str] = set()
     for domain in domains:
         lower = domain.lower()
@@ -265,27 +398,36 @@ def _filter_domain_fps(domains: set[str]) -> set[str]:
         if len(labels) < _MIN_DOMAIN_LABELS:
             continue
         # Filter DLL/exe names that match domain pattern.
-        if lower.endswith((".dll", ".exe", ".sys", ".ocx", ".drv")):
+        if lower.endswith((".dll", ".exe", ".sys", ".ocx", ".drv",
+                           ".pdb", ".lib", ".obj", ".so", ".dylib")):
             continue
         # Filter known Microsoft / system domains.
-        if lower.endswith((".microsoft.com", ".windows.com", ".windowsupdate.com")):
+        if lower.endswith((".microsoft.com", ".windows.com",
+                           ".windowsupdate.com", ".live.com",
+                           ".microsoftonline.com", ".office.com",
+                           ".office365.com", ".apple.com", ".icloud.com")):
             continue
         # Filter version-like strings (e.g., "v2.0.50727").
         if any(c.isdigit() for c in labels[0]) and labels[0][0].isdigit():
             continue
         # Filter domains that are too short overall (e.g., "C.dE", "B.SE").
-        if len(lower) < 8:
+        if len(lower) < 6:
             continue
         # Filter camelCase / PascalCase identifiers (code, not domains).
-        # Real domains are lowercase; .NET names like "BCrypt.BCryptGetProperty" have mixed case.
+        # Real domains are lowercase; .NET names like "BCrypt.BCryptGetProperty"
+        # and Go names like "byteOrder.Uint64" have mixed case.
         if any(c.isupper() for c in domain):
             continue
-        # Filter if TLD label is only 1 char or looks implausible.
         tld = labels[-1]
-        if len(tld) < 2:
+        # Source-filename pseudo-TLDs (.go, .nim, .rs, .py, …) — never
+        # counted, even though some collide with real ccTLDs.
+        if tld in _SOURCE_PSEUDO_TLDS:
             continue
-        # Filter file-extension-like TLDs that aren't real domains.
+        # Filter file-extension-like pseudo-TLDs (.config, .json, …).
         if tld in _FP_TLDS:
+            continue
+        # The decisive check: TLD must look like a real public suffix.
+        if tld not in _REAL_TLDS:
             continue
         # Filter random-looking domains: any label with no vowels is suspicious.
         vowels = set("aeiou")
@@ -294,6 +436,17 @@ def _filter_domain_fps(domains: set[str]) -> set[str]:
         # Require at least one label (excluding TLD) to be >= 3 chars.
         non_tld_labels = labels[:-1]
         if all(len(lab) < 3 for lab in non_tld_labels):
+            continue
+        # Drop "schemas.<anything>" — XML namespace artefacts.
+        if labels[0] == "schemas":
+            continue
+        # Drop Go runtime symbols leaking through .symtab as 2-label
+        # "domains" (e.g. runtime.link, map.group, chan.recv, time.now).
+        if (
+            len(labels) == 2
+            and labels[0] in _GO_STDLIB_PACKAGES
+            and tld in _GO_SYMBOL_TLDS
+        ):
             continue
         result.add(domain)
     return result

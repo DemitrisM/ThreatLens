@@ -56,6 +56,7 @@ def print_terminal_report(report: dict, *, detail_level: int = 0) -> None:
         _print_score_breakdown(scoring["breakdown"])
 
     # ── Detail-dependent sections ──
+    _print_pe_indicators(module_results, detail_level)
     _print_attack_table(module_results, detail_level)
     _print_ioc_table(module_results, detail_level)
     _print_suspicious_strings(module_results, detail_level)
