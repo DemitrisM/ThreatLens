@@ -1,2 +1,521 @@
-{# Jinja2 template for the self-contained HTML threat report. #}
-{# Sections: summary, score breakdown, MITRE ATT&CK, IOCs, YARA, raw data. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ThreatLens Report — {{ file_name }}</title>
+<style>
+    :root {
+        --bg:           #0f1115;
+        --bg-panel:     #181b22;
+        --bg-panel-2:   #1f232c;
+        --border:       #2a2f3a;
+        --text:         #e6e8ee;
+        --text-dim:     #9aa3b2;
+        --text-faint:   #6b7280;
+        --accent:       #4cc9f0;
+        --critical:     #ff4d4f;
+        --high:         #ff8c1a;
+        --medium:       #ffd93d;
+        --low:          #5cb85c;
+        --success:      #5cb85c;
+        --skipped:      #d4a017;
+        --error:        #ff4d4f;
+        --code-bg:      #0b0d12;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+    }
+    .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 24px 32px 64px 32px;
+    }
+    /* Header banner */
+    .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 20px 28px;
+        background: linear-gradient(135deg, #1a1f2e 0%, #0f1115 100%);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        margin-bottom: 24px;
+    }
+    .header h1 {
+        margin: 0;
+        font-size: 24px;
+        letter-spacing: 0.5px;
+        color: var(--accent);
+    }
+    .header h1 span { color: var(--text); font-weight: 400; }
+    .header .meta {
+        text-align: right;
+        color: var(--text-dim);
+        font-size: 12px;
+    }
+    .header .meta div { margin-bottom: 2px; }
+
+    /* Section headers */
+    h2 {
+        font-size: 16px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        color: var(--text-dim);
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 8px;
+        margin: 32px 0 16px 0;
+    }
+
+    /* Score banner */
+    .score-banner {
+        display: flex;
+        align-items: center;
+        gap: 24px;
+        padding: 24px 28px;
+        background: var(--bg-panel);
+        border: 1px solid var(--border);
+        border-left: 6px solid var(--score-colour, var(--low));
+        border-radius: 10px;
+    }
+    .score-number {
+        font-size: 56px;
+        font-weight: 700;
+        color: var(--score-colour, var(--low));
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+    }
+    .score-number small {
+        font-size: 22px;
+        color: var(--text-dim);
+        font-weight: 400;
+    }
+    .score-band {
+        font-size: 22px;
+        font-weight: 700;
+        color: var(--score-colour, var(--low));
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+    }
+    .score-verdict {
+        color: var(--text-dim);
+        font-style: italic;
+        font-size: 14px;
+    }
+    .score-critical { --score-colour: var(--critical); }
+    .score-high     { --score-colour: var(--high); }
+    .score-medium   { --score-colour: var(--medium); }
+    .score-low      { --score-colour: var(--low); }
+
+    /* Tables */
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--bg-panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    th, td {
+        padding: 10px 14px;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+    }
+    th {
+        background: var(--bg-panel-2);
+        color: var(--text-dim);
+        font-weight: 600;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(76, 201, 240, 0.04); }
+
+    /* Key/value table for file info & VT */
+    .kv-table th {
+        width: 160px;
+        text-align: right;
+        padding-right: 18px;
+    }
+    .kv-table td {
+        font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 13px;
+        word-break: break-all;
+    }
+
+    /* Status pills */
+    .pill {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .pill-success { background: rgba(92, 184, 92, 0.15); color: var(--success); }
+    .pill-skipped { background: rgba(212, 160, 23, 0.15); color: var(--skipped); }
+    .pill-error   { background: rgba(255, 77, 79, 0.15); color: var(--error); }
+
+    .delta-pos { color: var(--critical); font-weight: 600; }
+    .delta-neg { color: var(--low); font-weight: 600; }
+    .delta-zero { color: var(--text-faint); }
+
+    .mono {
+        font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+    }
+
+    /* IOC type colours */
+    .ioc-type { font-weight: 600; }
+    .ioc-ipv4         { color: #ff6b6b; }
+    .ioc-url          { color: #ffd93d; }
+    .ioc-domain       { color: #4cc9f0; }
+    .ioc-registry_key { color: #c77dff; }
+    .ioc-email        { color: #74c0fc; }
+    .ioc-windows_path { color: #9aa3b2; }
+
+    /* Recommendations panel */
+    .recs {
+        background: var(--bg-panel);
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--accent);
+        border-radius: 8px;
+        padding: 16px 22px;
+    }
+    .recs ul { margin: 0; padding-left: 20px; }
+    .recs li { margin-bottom: 6px; color: var(--text); }
+
+    /* Collapsible raw data */
+    details {
+        background: var(--bg-panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        margin-bottom: 8px;
+        overflow: hidden;
+    }
+    details summary {
+        cursor: pointer;
+        padding: 10px 16px;
+        background: var(--bg-panel-2);
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--text);
+        user-select: none;
+    }
+    details summary:hover { background: #262b36; }
+    details pre {
+        margin: 0;
+        padding: 16px;
+        background: var(--code-bg);
+        color: var(--text-dim);
+        font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+        font-size: 12px;
+        overflow-x: auto;
+        max-height: 480px;
+        overflow-y: auto;
+    }
+
+    .footer {
+        margin-top: 40px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border);
+        text-align: center;
+        color: var(--text-faint);
+        font-size: 12px;
+    }
+
+    .empty-note {
+        color: var(--text-faint);
+        font-style: italic;
+        font-size: 13px;
+        padding: 8px 0;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="container">
+
+    {# ─────────── HEADER ─────────── #}
+    <div class="header">
+        <h1>ThreatLens <span>— Static Malware Analysis Report</span></h1>
+        <div class="meta">
+            <div>{{ generated_utc }}</div>
+            <div>Total elapsed: {{ "%.2f"|format(elapsed_seconds) }}s</div>
+            <div>v{{ tool_version }}</div>
+        </div>
+    </div>
+
+    {# ─────────── FILE INFORMATION ─────────── #}
+    <h2>File Information</h2>
+    <table class="kv-table">
+        <tbody>
+            <tr><th>File</th><td>{{ file_info.file_name }}</td></tr>
+            <tr><th>Path</th><td>{{ file_info.file_path }}</td></tr>
+            <tr><th>Size</th><td>{{ file_info.file_size_human }}</td></tr>
+            <tr><th>Type</th><td>{{ file_info.type_description }}</td></tr>
+            <tr><th>MIME</th><td>{{ file_info.mime_type }}</td></tr>
+            <tr><th>MD5</th><td class="mono">{{ file_info.md5 }}</td></tr>
+            <tr><th>SHA256</th><td class="mono">{{ file_info.sha256 }}</td></tr>
+            {% if file_info.tlsh %}<tr><th>TLSH</th><td class="mono">{{ file_info.tlsh }}</td></tr>{% endif %}
+            {% if file_info.ssdeep %}<tr><th>ssdeep</th><td class="mono">{{ file_info.ssdeep }}</td></tr>{% endif %}
+        </tbody>
+    </table>
+
+    {# ─────────── THREAT SCORE ─────────── #}
+    <h2>Threat Score</h2>
+    <div class="score-banner score-{{ scoring.risk_band|lower }}">
+        <div class="score-number">{{ scoring.total_score }}<small>/100</small></div>
+        <div>
+            <div class="score-band">{{ scoring.risk_band }}</div>
+            {% if verdict %}<div class="score-verdict">{{ verdict }}</div>{% endif %}
+        </div>
+    </div>
+
+    {# ─────────── MODULE RESULTS ─────────── #}
+    <h2>Module Results</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Module</th>
+                <th>Status</th>
+                <th style="text-align:right;">Score Δ</th>
+                <th>Reason</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for result in module_results %}
+            <tr>
+                <td><strong>{{ result.module }}</strong></td>
+                <td><span class="pill pill-{{ result.status }}">{{ result.status }}</span></td>
+                <td style="text-align:right;">
+                    {% set d = result.score_delta or 0 %}
+                    {% if d > 0 %}<span class="delta-pos">+{{ d }}</span>
+                    {% elif d < 0 %}<span class="delta-neg">{{ d }}</span>
+                    {% else %}<span class="delta-zero">—</span>{% endif %}
+                </td>
+                <td>{{ result.reason }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    {# ─────────── SCORE BREAKDOWN ─────────── #}
+    {% if scoring.breakdown %}
+    <h2>Score Breakdown</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Module</th>
+                <th style="text-align:right;">Δ</th>
+                <th>Reason</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for item in scoring.breakdown %}
+            <tr>
+                <td><strong>{{ item.module }}</strong></td>
+                <td style="text-align:right;">
+                    {% if item.score_delta > 0 %}<span class="delta-pos">+{{ item.score_delta }}</span>
+                    {% else %}<span class="delta-neg">{{ item.score_delta }}</span>{% endif %}
+                </td>
+                <td>{{ item.reason }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {# ─────────── MITRE ATT&CK ─────────── #}
+    {% if attack_mappings %}
+    <h2>MITRE ATT&amp;CK Mappings</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Technique</th>
+                <th>Name</th>
+                <th>Tactic</th>
+                <th>Capability</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for m in attack_mappings %}
+            <tr>
+                <td class="mono"><strong>{{ m.technique_id }}</strong></td>
+                <td>{{ m.technique_name }}</td>
+                <td><span style="color: var(--text-dim);">{{ m.tactic }}</span></td>
+                <td>{{ m.capability }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {# ─────────── IOCs ─────────── #}
+    {% if iocs_flat %}
+    <h2>Indicators of Compromise ({{ ioc_total }})</h2>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 140px;">Type</th>
+                <th>Value</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for ioc in iocs_flat %}
+            <tr>
+                <td><span class="ioc-type ioc-{{ ioc.type_key }}">{{ ioc.label }}</span></td>
+                <td class="mono">{{ ioc.value }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {# ─────────── SUSPICIOUS STRINGS ─────────── #}
+    {% if suspicious_strings %}
+    <h2>Suspicious Strings ({{ suspicious_strings|length }})</h2>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 180px;">Category</th>
+                <th>String</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for m in suspicious_strings %}
+            <tr>
+                <td><strong style="color: var(--medium);">{{ m.category }}</strong></td>
+                <td class="mono">{{ m.string }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {# ─────────── CAPA CAPABILITIES ─────────── #}
+    {% if capabilities %}
+    <h2>Detected Capabilities ({{ capabilities|length }})</h2>
+    {% if scored_categories %}
+    <p style="color: var(--text-dim); margin: 4px 0 12px 0;">
+        <strong>Scored categories:</strong>
+        {% for c in scored_categories %}
+            <span style="margin-right: 14px;">{{ c.category }} <span class="delta-pos">(+{{ c.score }})</span></span>
+        {% endfor %}
+    </p>
+    {% endif %}
+    <table>
+        <tbody>
+        {% for cap in capabilities %}
+            <tr><td>{{ cap }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {# ─────────── VIRUSTOTAL ─────────── #}
+    {% if virustotal %}
+    <h2>VirusTotal</h2>
+    <table class="kv-table">
+        <tbody>
+        {% if not virustotal.found %}
+            <tr><th>Status</th><td>Hash not found in VirusTotal database</td></tr>
+            {% if virustotal.sha256 %}<tr><th>SHA256</th><td class="mono">{{ virustotal.sha256 }}</td></tr>{% endif %}
+        {% else %}
+            <tr>
+                <th>Detection</th>
+                <td>
+                    <span class="{{ virustotal.detection_class }}">{{ virustotal.detection_ratio }} engines</span>
+                </td>
+            </tr>
+            {% if virustotal.threat_label %}
+            <tr><th>Threat Label</th><td><strong style="color: var(--critical);">{{ virustotal.threat_label }}</strong></td></tr>
+            {% endif %}
+            <tr><th>Malicious</th><td>{{ virustotal.malicious }}</td></tr>
+            {% if virustotal.suspicious %}<tr><th>Suspicious</th><td>{{ virustotal.suspicious }}</td></tr>{% endif %}
+            <tr><th>Undetected</th><td>{{ virustotal.undetected }}</td></tr>
+            {% if virustotal.first_seen %}<tr><th>First Seen</th><td>{{ virustotal.first_seen }}</td></tr>{% endif %}
+            {% if virustotal.community_score is not none %}
+            <tr><th>Community Score</th><td>{{ virustotal.community_score }}</td></tr>
+            {% endif %}
+        {% endif %}
+        {% if virustotal.permalink %}
+        <tr><th>Link</th><td><a href="{{ virustotal.permalink }}" target="_blank" rel="noopener">{{ virustotal.permalink }}</a></td></tr>
+        {% endif %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {# ─────────── MODULE TIMING ─────────── #}
+    {% if timing_rows %}
+    <h2>Module Timing</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Module</th>
+                <th style="text-align:right;">Elapsed</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in timing_rows %}
+            <tr>
+                <td><strong>{{ r.module }}</strong></td>
+                <td style="text-align:right;" class="mono">
+                    {% if r.elapsed > 60 %}<span style="color: var(--critical);">{{ "%.1f"|format(r.elapsed) }}s</span>
+                    {% elif r.elapsed > 10 %}<span style="color: var(--medium);">{{ "%.1f"|format(r.elapsed) }}s</span>
+                    {% else %}<span style="color: var(--text-dim);">{{ "%.1f"|format(r.elapsed) }}s</span>{% endif %}
+                </td>
+                <td><span class="pill pill-{{ r.status }}">{{ r.status }}</span></td>
+            </tr>
+        {% endfor %}
+            <tr>
+                <td><strong>Total</strong></td>
+                <td style="text-align:right;" class="mono"><strong>{{ "%.1f"|format(elapsed_seconds) }}s</strong></td>
+                <td></td>
+            </tr>
+        </tbody>
+    </table>
+    {% endif %}
+
+    {# ─────────── RECOMMENDATIONS ─────────── #}
+    {% if recommendations %}
+    <h2>Recommended Next Steps</h2>
+    <div class="recs">
+        <ul>
+        {% for rec in recommendations %}
+            <li>{{ rec }}</li>
+        {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {# ─────────── RAW MODULE DATA ─────────── #}
+    <h2>Raw Module Data</h2>
+    {% for raw in raw_modules %}
+    <details>
+        <summary>{{ raw.module }} <span style="color: var(--text-faint); font-weight: 400;">— {{ raw.status }}</span></summary>
+        <pre>{{ raw.json }}</pre>
+    </details>
+    {% endfor %}
+
+    <div class="footer">
+        ThreatLens v{{ tool_version }} · generated {{ generated_utc }}
+    </div>
+</div>
+</body>
+</html>
