@@ -572,6 +572,77 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
     # --- Authenticode certificate subject (best-effort) ---
     cert_info = _extract_certificate_info(pe) if has_signature else {}
 
+    # --- Section permission anomalies (writable .text, exec .data, …) ---
+    perm_anomalies = _detect_section_permission_anomalies(pe)
+    if perm_anomalies:
+        score_delta += 10
+        reasons.append(
+            "Section permission anomalies: "
+            + ", ".join(perm_anomalies[:4])
+        )
+
+    # --- PE checksum (OptionalHeader.CheckSum) integrity ---
+    checksum_info = _check_pe_checksum(pe, has_signature)
+    if checksum_info.get("mismatch_signed"):
+        score_delta += 10
+        reasons.append(
+            f"PE checksum mismatch on signed binary "
+            f"(stored=0x{checksum_info['stored']:08x}, "
+            f"computed=0x{checksum_info['computed']:08x}) — tampered after signing"
+        )
+
+    # --- Imported-DLL footprint (kernel32-only = packer marker) ---
+    dll_footprint = _classify_import_footprint(imports, is_dotnet)
+    if dll_footprint["is_kernel32_only"]:
+        score_delta += 10
+        reasons.append(
+            "Only kernel32.dll imported — classic packer / shellcode-loader footprint"
+        )
+    elif dll_footprint["dll_count"] == 0 and not is_dotnet:
+        # Already partially handled by tiny-import-table check, but a
+        # zero-DLL native PE is its own red flag.
+        pass
+
+    # --- Resource type breakdown + AutoIt detection ---
+    rsrc_types = _analyse_resource_types(pe)
+    if rsrc_types.get("autoit"):
+        score_delta += 15
+        reasons.append(
+            "AutoIt-compiled binary — common commodity-malware wrapper"
+        )
+    elif rsrc_types.get("large_rcdata", 0) >= 256 * 1024:
+        # Big RT_RCDATA blob without AutoIt markers is still a strong
+        # embedded-payload signal.
+        score_delta += 5
+        reasons.append(
+            f"Large RT_RCDATA resource ({rsrc_types['large_rcdata']} bytes) — "
+            "embedded payload likely"
+        )
+
+    # --- Installer / wrapper detection (NSIS / InnoSetup / Wise) ---
+    installer = _detect_installer(pe, sections)
+    if installer:
+        # Installers are dual-use; we flag presence as informational
+        # (+5) since malware frequently wraps droppers in NSIS/Inno.
+        score_delta += 5
+        reasons.append(
+            f"{installer} installer wrapper detected — inspect dropped contents"
+        )
+
+    # --- Forwarded exports (DLL-hijack / proxy DLL hint) ---
+    forwarded = _count_forwarded_exports(pe)
+    if forwarded >= 1:
+        # A handful of forwarded exports are normal in API set DLLs;
+        # only flag when present alongside an export table on a non-DLL.
+        is_dll = bool(headers.get("characteristics")) and (
+            int(headers["characteristics"], 16) & 0x2000
+        )
+        if not is_dll and forwarded >= 1:
+            reasons.append(
+                f"{forwarded} forwarded export(s) on a non-DLL binary — "
+                "unusual"
+            )
+
     # --- Anomalous compile timestamp ---
     ts_delta, ts_reason = _check_timestamp(headers)
     if ts_delta:
@@ -607,6 +678,12 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
         "section_size_mismatch": size_mismatch,
         "embedded_pe": embedded_pe,
         "dynamic_api_resolution": dyn_api_info,
+        "section_permission_anomalies": perm_anomalies,
+        "pe_checksum": checksum_info,
+        "import_footprint": dll_footprint,
+        "resource_types": rsrc_types,
+        "installer": installer,
+        "forwarded_exports": forwarded,
     }
 
     return data, score_delta, reasons
@@ -1049,33 +1126,85 @@ def _analyse_rich_header(pe: "pefile.PE") -> dict:
     The Rich header is an undocumented Microsoft-toolchain footprint
     inserted between the DOS stub and the PE header. It contains
     Comp.ID + counts for every Microsoft toolchain component used to
-    build the binary. We capture presence + a tampering check.
+    build the binary. We capture presence and verify the linker XOR
+    checksum against a recomputed value — a mismatch is a strong
+    tampering signal (some crypters strip or rebuild the header
+    incorrectly).
     """
-    info = {"present": False, "n_entries": 0, "corrupted": False}
+    info = {
+        "present": False,
+        "n_entries": 0,
+        "corrupted": False,
+        "checksum": None,
+        "tools": [],
+    }
     try:
         rh = pe.parse_rich_header()
     except Exception:  # noqa: BLE001
         return info
-    if not rh:
+    if not rh or not isinstance(rh, dict):
         return info
     info["present"] = True
-    values = rh.get("values", []) if isinstance(rh, dict) else []
+
+    values = rh.get("values", []) or []
     # values is a flat list [comp_id_0, count_0, comp_id_1, count_1, …]
     info["n_entries"] = len(values) // 2 if values else 0
-    # pefile already validates the checksum during parse — if the
-    # parsed structure is malformed (no checksum entry), treat as
-    # tampered.
-    if isinstance(rh, dict) and "checksum" in rh and "raw_data" in rh:
+
+    stored_checksum = rh.get("checksum")
+    if stored_checksum is not None:
+        info["checksum"] = stored_checksum
+
+    # Verify the Rich header checksum. The linker computes:
+    #   csum = e_lfanew
+    #   for each byte b in dos_header_and_stub (excluding e_lfanew bytes):
+    #       csum += rol32(b, i)
+    #   for each (comp_id, count) pair:
+    #       csum += rol32(comp_id, count & 0x1f)
+    # pefile exposes ``clear_data`` which is the dos header+stub region
+    # with the Rich header itself zeroed out, ready for the rolling sum.
+    clear_data = rh.get("clear_data")
+    if clear_data and stored_checksum is not None and values:
         try:
-            # Reproduce checksum the way the linker does — pefile gives
-            # us the parsed checksum directly. Mismatch with parsed
-            # values means the header was tampered after build.
-            calc = rh.get("checksum", 0)
-            stored = rh.get("checksum", 0)
-            info["corrupted"] = calc != stored if calc and stored else False
+            # Force a writable copy and zero out the e_lfanew field
+            # (offsets 0x3C..0x3F) — the standard checksum skips them.
+            buf = bytearray(clear_data)
+            for k in range(0x3C, 0x40):
+                if k < len(buf):
+                    buf[k] = 0
+            csum = pe.DOS_HEADER.e_lfanew & 0xFFFFFFFF
+            for i, b in enumerate(buf):
+                csum = (csum + _rol32(b, i & 0x1F)) & 0xFFFFFFFF
+            # Pairs of (comp_id, count).
+            for j in range(0, len(values) - 1, 2):
+                comp_id = values[j] & 0xFFFFFFFF
+                count = values[j + 1] & 0xFFFFFFFF
+                csum = (csum + _rol32(comp_id, count & 0x1F)) & 0xFFFFFFFF
+            info["corrupted"] = (csum != (stored_checksum & 0xFFFFFFFF))
         except Exception:  # noqa: BLE001
             info["corrupted"] = False
+
+    # Best-effort toolchain summary — translate top Comp.IDs to a
+    # human-readable list ("MSVC linker x.y", "MASM", …). We do not
+    # ship the full Microsoft Comp.ID database; just bucket by the
+    # high 16 bits which encode the product family.
+    if values:
+        families: dict[int, int] = {}
+        for j in range(0, len(values) - 1, 2):
+            family = (values[j] >> 16) & 0xFFFF
+            families[family] = families.get(family, 0) + values[j + 1]
+        info["tools"] = sorted(
+            ({"family": f"0x{fam:04x}", "objects": cnt}
+             for fam, cnt in families.items()),
+            key=lambda x: -x["objects"],
+        )[:6]
     return info
+
+
+def _rol32(value: int, bits: int) -> int:
+    """32-bit rotate-left helper used by the Rich header checksum."""
+    value &= 0xFFFFFFFF
+    bits &= 0x1F
+    return ((value << bits) | (value >> (32 - bits))) & 0xFFFFFFFF if bits else value
 
 
 # Default DOS stub message in MS toolchain output.
@@ -1411,3 +1540,222 @@ def _check_timestamp(headers: dict) -> tuple[int, str]:
         )
 
     return 0, ""
+
+
+def _detect_section_permission_anomalies(pe: "pefile.PE") -> list[str]:
+    """Catch sections whose permissions don't match their conventional role.
+
+    Examples:
+      • A writable .text — code section that is also writable, used by
+        self-modifying code / unpackers (already partially handled by
+        the RWX check; this catches the W-without-X case too).
+      • An executable .data / .rdata — code hidden in a data section,
+        common when packers decompress into the data segment.
+      • A writable .rdata — read-only data section that is writable,
+        commonly seen with hand-modified PEs.
+
+    Returns a list of human-readable anomaly strings.
+    """
+    out: list[str] = []
+    for section in pe.sections:
+        try:
+            name = section.Name.rstrip(b"\x00").decode("utf-8", errors="replace").lower()
+        except Exception:  # noqa: BLE001
+            continue
+        c = section.Characteristics
+        is_x = bool(c & _SCN_MEM_EXECUTE)
+        is_w = bool(c & _SCN_MEM_WRITE)
+        if name in (".text", "code", ".code") and is_w and not (is_x and is_w):
+            out.append(f"writable {name}")
+        if name in (".data", ".rdata", ".bss") and is_x:
+            out.append(f"executable {name}")
+        if name == ".rdata" and is_w:
+            out.append("writable .rdata")
+    # de-dup while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in out:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
+def _check_pe_checksum(pe: "pefile.PE", has_signature: bool) -> dict:
+    """Compare the OptionalHeader.CheckSum against a recomputed value.
+
+    A mismatch is only meaningful for signed binaries — Microsoft signs
+    with a valid checksum, so a mismatch indicates the binary was
+    altered after signing. For unsigned binaries it's noise (most
+    compilers leave the field zero).
+    """
+    info: dict = {
+        "stored": 0,
+        "computed": 0,
+        "mismatch_signed": False,
+    }
+    try:
+        stored = pe.OPTIONAL_HEADER.CheckSum
+    except AttributeError:
+        return info
+    info["stored"] = stored
+    try:
+        computed = pe.generate_checksum()
+    except Exception:  # noqa: BLE001
+        return info
+    info["computed"] = computed
+    if has_signature and stored != 0 and computed != 0 and stored != computed:
+        info["mismatch_signed"] = True
+    return info
+
+
+def _classify_import_footprint(imports: dict, is_dotnet: bool) -> dict:
+    """Classify the import-table footprint at a high level.
+
+    The defining mark of a packed/shellcode-loader binary is a tiny
+    import table — usually a single DLL (kernel32) with just a handful
+    of functions (LoadLibrary, GetProcAddress, VirtualAlloc, …) so the
+    real imports can be resolved at runtime.
+    """
+    info = {
+        "dll_count": len(imports),
+        "is_kernel32_only": False,
+        "loader_only": False,
+    }
+    if is_dotnet:
+        return info
+    dll_names = {dll.lower() for dll in imports.keys()}
+    if dll_names == {"kernel32.dll"}:
+        info["is_kernel32_only"] = True
+        funcs = {f.lower() for f in imports.get("kernel32.dll", [])
+                 if isinstance(f, str)}
+        loader_set = {"loadlibrarya", "loadlibraryw", "getprocaddress",
+                      "virtualalloc", "virtualprotect", "exitprocess"}
+        if funcs and funcs.issubset(loader_set | {"getmodulehandlea",
+                                                  "getmodulehandlew"}):
+            info["loader_only"] = True
+    return info
+
+
+def _analyse_resource_types(pe: "pefile.PE") -> dict:
+    """Walk the resource directory and tally per-type sizes.
+
+    Returns:
+        {
+          "types": {"RT_ICON": 1234, "RT_RCDATA": 56789, ...},
+          "largest_rcdata": <bytes>,
+          "large_rcdata": <bytes>,    # alias for the largest blob
+          "autoit": True/False,
+        }
+    """
+    info: dict = {
+        "types": {},
+        "largest_rcdata": 0,
+        "large_rcdata": 0,
+        "autoit": False,
+    }
+    if not hasattr(pe, "DIRECTORY_ENTRY_RESOURCE"):
+        return info
+    rt_names = {
+        1: "RT_CURSOR", 2: "RT_BITMAP", 3: "RT_ICON", 4: "RT_MENU",
+        5: "RT_DIALOG", 6: "RT_STRING", 7: "RT_FONTDIR", 8: "RT_FONT",
+        9: "RT_ACCELERATOR", 10: "RT_RCDATA", 11: "RT_MESSAGETABLE",
+        12: "RT_GROUP_CURSOR", 14: "RT_GROUP_ICON", 16: "RT_VERSION",
+        17: "RT_DLGINCLUDE", 19: "RT_PLUGPLAY", 20: "RT_VXD",
+        21: "RT_ANICURSOR", 22: "RT_ANIICON", 23: "RT_HTML",
+        24: "RT_MANIFEST",
+    }
+    rcdata_blobs: list[tuple[int, bytes]] = []  # (size, sample)
+    try:
+        for entry in pe.DIRECTORY_ENTRY_RESOURCE.entries:
+            try:
+                type_id = entry.id if entry.id is not None else 0
+            except AttributeError:
+                continue
+            type_name = rt_names.get(type_id, f"TYPE_{type_id}")
+            total = 0
+            if not hasattr(entry, "directory"):
+                continue
+            for sub in entry.directory.entries:
+                if not hasattr(sub, "directory"):
+                    continue
+                for leaf in sub.directory.entries:
+                    data_entry = getattr(leaf, "data", None)
+                    if not data_entry or not hasattr(data_entry, "struct"):
+                        continue
+                    size = data_entry.struct.Size
+                    total += size
+                    if type_name == "RT_RCDATA" and size > 1024:
+                        try:
+                            rva = data_entry.struct.OffsetToData
+                            sample = pe.get_data(rva, min(size, 256))
+                        except Exception:  # noqa: BLE001
+                            sample = b""
+                        rcdata_blobs.append((size, sample))
+            if total:
+                info["types"][type_name] = info["types"].get(type_name, 0) + total
+    except Exception:  # noqa: BLE001
+        return info
+
+    if rcdata_blobs:
+        rcdata_blobs.sort(key=lambda x: -x[0])
+        info["largest_rcdata"] = rcdata_blobs[0][0]
+        info["large_rcdata"] = rcdata_blobs[0][0]
+        # AutoIt scripts compiled with Aut2Exe carry the "AU3!" marker.
+        for _size, sample in rcdata_blobs[:5]:
+            if b"AU3!" in sample or b"AutoIt v3" in sample:
+                info["autoit"] = True
+                break
+
+    return info
+
+
+def _detect_installer(pe: "pefile.PE", sections: list[dict]) -> str | None:
+    """Detect common Windows installer wrappers (NSIS, InnoSetup, …).
+
+    Many commodity droppers ship as off-the-shelf installers because
+    they need to extract a payload + a config + an autorun shim. We
+    scan a bounded prefix of the binary for vendor strings and
+    section-name signatures.
+    """
+    # Section-name signatures first (cheapest).
+    section_names = {s.get("name", "").lower() for s in sections}
+    if ".ndata" in section_names:  # NSIS uses .ndata
+        return "NSIS"
+
+    try:
+        sample = pe.__data__[: 2 * 1024 * 1024]
+    except Exception:  # noqa: BLE001
+        return None
+
+    if b"Nullsoft.NSIS" in sample or b"NullsoftInst" in sample:
+        return "NSIS"
+    if b"Inno Setup Setup Data" in sample or b"InnoSetupLdr" in sample:
+        return "InnoSetup"
+    if b"WiseInstallation" in sample or b"WiseMain" in sample:
+        return "Wise"
+    if b"InstallShield" in sample:
+        return "InstallShield"
+    if b"7z\xbc\xaf\x27\x1c" in sample[256 * 1024:]:
+        # 7z magic in the overlay region — common SFX dropper shape.
+        return "7-Zip SFX"
+    return None
+
+
+def _count_forwarded_exports(pe: "pefile.PE") -> int:
+    """Count export entries that forward to another DLL.
+
+    Forwarded exports are how Windows API set DLLs (api-ms-win-*)
+    redirect calls to their real implementation. On a normal EXE
+    they're suspicious because they suggest a proxy / hijack DLL.
+    """
+    if not hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
+        return 0
+    count = 0
+    try:
+        for sym in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+            if getattr(sym, "forwarder", None):
+                count += 1
+    except Exception:  # noqa: BLE001
+        return 0
+    return count

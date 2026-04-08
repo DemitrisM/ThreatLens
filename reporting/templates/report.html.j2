@@ -243,6 +243,11 @@
         padding: 8px 0;
     }
 
+    /* PE structural indicators severity colours */
+    .sev-bad  { color: var(--critical); font-weight: 600; }
+    .sev-warn { color: var(--medium); }
+    .sev-info { color: var(--text-dim); }
+
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
 </style>
@@ -334,6 +339,27 @@
                     {% else %}<span class="delta-neg">{{ item.score_delta }}</span>{% endif %}
                 </td>
                 <td>{{ item.reason }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {# ─────────── PE STRUCTURAL INDICATORS ─────────── #}
+    {% if pe_indicators %}
+    <h2>PE Structural Indicators</h2>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 220px;">Indicator</th>
+                <th>Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for ind in pe_indicators %}
+            <tr>
+                <td><strong>{{ ind.label }}</strong></td>
+                <td class="sev-{{ ind.severity }}">{{ ind.value }}</td>
             </tr>
         {% endfor %}
         </tbody>
