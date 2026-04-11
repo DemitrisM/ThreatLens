@@ -29,6 +29,7 @@ _MODULE_REGISTRY: dict[str, str] = {
     "yara_scanner": "modules.static.yara_scanner",
     "doc_analysis": "modules.static.doc_analysis",
     "pdf_analysis": "modules.static.pdf_analysis",
+    "html_analysis": "modules.static.html_analysis",
     "virustotal": "modules.enrichment.virustotal",
 }
 
