@@ -3,6 +3,14 @@
 Loads YARA rule files from the configured rules directory, compiles and
 matches them against the target sample. Each match contributes to the
 confidence score with the rule name as reason.
+
+Neo23x0 signature-base rules use external variables (`filepath`,
+`filename`, `extension`) for file-context rules. These are passed at
+compile time via `yara.compile(externals={...})`. Bulk compilation is
+attempted first; on failure it falls back to per-file compilation to
+isolate broken rules. Severity scoring is taken from rule metadata
+(`critical=30`, `high=25`, `medium=15`, `low=5`, default=20). Total
+YARA contribution capped at 60. See `docs/scoring.md`.
 """
 
 import logging
