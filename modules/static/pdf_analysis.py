@@ -1,10 +1,34 @@
-"""PDF analysis module.
+"""PDF analysis module — peepdf + raw byte sweep.
 
-Uses peepdf for structural parsing plus a raw-byte keyword sweep to
-catch malicious PDFs that evade the parser (HTML-smuggling PDFs,
-malformed headers, truncated bodies). Detects embedded JavaScript,
-auto-launch actions, embedded files, URIs/URLs, encryption, and
-social-engineering alert boxes. Returns a standard module dict.
+Two-pass analysis: (1) raw byte keyword sweep runs unconditionally,
+so malformed / encrypted / HTML-smuggled PDFs still yield signal;
+(2) peepdf structural parse runs only when the file has a real
+`%PDF` header.
+
+**Header check**: if the file claims a `.pdf` extension but begins
+with `<!DOCTYPE html` or `<html`, we flag +40 for HTML smuggling
+(catches the gamaredon*.pdf family). Any other non-`%PDF` header is
++15.
+
+**Raw keyword sweep**: counts PDF dictionary markers in the raw
+bytes (`/OpenAction`, `/Launch`, `/EmbeddedFile`, `/JavaScript`,
+`/JS`, `/AA`, `/SubmitForm`, `/RichMedia`, `/XFA`, `/GoToR`,
+`/GoToE`, `/ImportData`). Tallies `/URI` and `/Action` for density
+scoring. `/Encrypt` combined with `pwd=` / `password` in the filename
+adds +20 (hand-delivered encrypted malware).
+
+**peepdf parse** (best-effort, forceMode + looseMode): extracts JS,
+URIs, URLs, encryption state, suspicious components, and parse
+errors. Matches JS content against exploit patterns (`eval`,
+`unescape`, shellcode, heap spray, `ActiveXObject`, `WScript.Shell`,
+`ADODB.Stream`, `util.printf`, `Collab.collectEmailInfo`) and
+social-engineering alert strings (including Italian "non compatibile"
+/ "aprilo nel browser" seen in ValleyRat / booking samples).
+
+Safety: hard 100 MiB file cap, all exceptions wrapped. peepdf is
+not invoked on header-mismatched files to avoid parser edge cases.
+Total pdf_analysis contribution capped at 60. See `docs/scoring.md`
+for per-indicator weights.
 """
 
 import logging
