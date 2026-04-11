@@ -1,10 +1,37 @@
 """Office document analysis module.
 
-Uses oletools (olevba, mraptor, oleid, rtfobj) plus manual OpenXML
-inspection to detect VBA macros, auto-execution triggers, altChunk /
-template injection, embedded RTF objects, external template references,
-and CVE-2017-11882-style Equation Editor abuse across .doc, .docx,
-.xls, .xlsx, .ppt, .pptx and .rtf files.
+Uses oletools (olevba, mraptor, oleid, rtfobj) plus manual OpenXML/RTF
+structural inspection to cover .doc, .docx, .xls, .xlsx, .xlsm, .ppt,
+.pptx and .rtf. Routes by magic-byte-detected format (RTF / OLE /
+OpenXML), not just extension — this is required because files like
+`AgentTesla.doc` are actually RTF and would crash olevba on the
+OLE path.
+
+**VBA path** (OLE + OpenXML): olevba for macro extraction and keyword
+analysis (AutoExec / Suspicious / IOC categories), mraptor for risk
+classification (auto-exec, file-write, command-execute), oleid for
+high-level indicators.
+
+**OpenXML path** (docx/xlsx/xlsm/pptx): unpacks the container via
+`zipfile` and scans every `*.rels` file for altChunk/aFChunk
+relationships (template injection), `TargetMode="External"`
+relationships (`attachedTemplate`, `subDocument`), and embedded
+`oleObject` references. Enumerates non-skeleton files inside the
+container and flags dangerous extensions (.rtf, .exe, .dll, .hta,
+.lnk, .vbs, .ps1, .jar). Guarded by a decompression-bomb check:
+per-entry compression ratio capped at 200×, cumulative uncompressed
+cap of 300 MiB, hard file size cap of 100 MiB.
+
+**RTF path**: rtfobj extracts embedded objects. Matches OLE class
+names against a high-risk list (Equation.3/2 → CVE-2017-11882,
+Package/Packager Shell → file drop, HTMLFile → mshtml abuse).
+Fallback raw-byte scan for `\\objupdate`+`\\objdata` (forces the
+embedded object to load on open without user interaction).
+
+Total doc_analysis contribution capped at 60. Skips gracefully for
+non-Office files; `_detect_format()` returns 'unknown' for non-matching
+headers. All exceptions wrapped — module never kills the pipeline.
+See `docs/scoring.md` for per-indicator weights.
 """
 
 import logging
