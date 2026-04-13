@@ -1,6 +1,7 @@
 CLAUDE.md
 docs/claude_context.md
 docs/usage.md
+.claude/skills
 
 __pycache__/
 *.pyc
