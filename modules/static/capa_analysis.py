@@ -144,14 +144,15 @@ def run(file_path: Path, config: dict) -> dict:
             "reason": "capa binary not found",
         }
 
-    capa_json = _run_capa(file_path, capa_path, timeout)
+    capa_json, timed_out = _run_capa(file_path, capa_path, timeout)
     if capa_json is None:
+        reason = "capa timed out" if timed_out else "capa analysis failed"
         return {
             "module": "capa_analysis",
             "status": "skipped",
             "data": {},
             "score_delta": 0,
-            "reason": "capa analysis failed or timed out",
+            "reason": reason,
         }
 
     capabilities, attack_mappings = _parse_capa_output(capa_json)
@@ -188,13 +189,17 @@ def run(file_path: Path, config: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _run_capa(file_path: Path, capa_path: Path, timeout: int) -> dict | None:
+def _run_capa(
+    file_path: Path, capa_path: Path, timeout: int
+) -> tuple[dict | None, bool]:
     """Invoke capa with --json and return the parsed JSON output.
 
     capa exits with code 0 when rules match, 1 when no rules match (but
     analysis succeeded).  Both are valid; any other exit code is an error.
 
-    Returns parsed JSON dict, or None on failure.
+    Returns:
+        (parsed_json_dict_or_None, timed_out) — timed_out is True only when
+        subprocess.TimeoutExpired was raised; False for all other failures.
     """
     cmd = [str(capa_path), "--json", str(file_path)]
 
@@ -211,10 +216,10 @@ def _run_capa(file_path: Path, capa_path: Path, timeout: int) -> dict | None:
             timeout,
             file_path.name,
         )
-        return None
+        return None, True
     except OSError as exc:
         logger.warning("capa invocation failed: %s — skipping", exc)
-        return None
+        return None, False
 
     # capa exit codes:
     #   0  — success, rules matched
@@ -233,13 +238,13 @@ def _run_capa(file_path: Path, capa_path: Path, timeout: int) -> dict | None:
 
     if not proc.stdout:
         logger.info("capa produced no output — no capabilities detected")
-        return None
+        return None, False
 
     try:
-        return json.loads(proc.stdout)
+        return json.loads(proc.stdout), False
     except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("Failed to parse capa JSON output: %s", exc)
-        return None
+        return None, False
 
 
 def _parse_capa_output(capa_json: dict) -> tuple[list[str], list[dict]]:
