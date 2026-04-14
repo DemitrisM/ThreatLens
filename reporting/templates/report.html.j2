@@ -366,6 +366,27 @@
     </table>
     {% endif %}
 
+    {# ─────────── OFFICE DOCUMENT INDICATORS ─────────── #}
+    {% if doc_indicators %}
+    <h2>Office Document Indicators</h2>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 220px;">Indicator</th>
+                <th>Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for ind in doc_indicators %}
+            <tr>
+                <td><strong>{{ ind.label }}</strong></td>
+                <td class="sev-{{ ind.severity }}">{{ ind.value }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
     {# ─────────── MITRE ATT&CK ─────────── #}
     {% if attack_mappings %}
     <h2>MITRE ATT&amp;CK Mappings</h2>
