@@ -1,0 +1,1 @@
+ReferenceError: app is not defined (  @ 1 : 0 )  -> app.alert("Lettore non compatibile! Per favore, aprilo nel browser.");
