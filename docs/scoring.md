@@ -192,3 +192,53 @@ constants in `core/scoring.py` and the per-module files.
 | JS social-engineering alert (e.g. "not compatible", "open in browser") | +10 |
 | peepdf suspicious components | +5 |
 | peepdf structural anomalies | +5 |
+
+---
+
+## archive_analysis (capped at 60 total) — PENDING IMPLEMENTATION
+
+Weighted combo engine (same pattern as doc_analysis — frozensets of
+flag strings, weights, one row per rule). Flag strings are produced by
+`indicators.py`, `zip_handler`, `sfx_detect`, `embedded_exec`. The
+weights below are initial calibration values; finalised at end of
+project.
+
+| Required flags (frozenset) | Weight | Reason |
+|---|---|---|
+| `zip_header_mismatch` | +10 | LFH/CD disagree — AV evasion trick |
+| `sfx_dropper` | +10 | PE with archive payload in overlay |
+| `path_traversal` | +9 | ZipSlip / CVE-2025-8088 class |
+| `symlink_attack` | +9 | Symlink to /etc/, /root/, C:\Windows, etc. |
+| `rtlo_filename` | +8 | Right-to-left override / bidi filename |
+| `header_encrypted` | +6 | Full archive listing needs password (RAR5 / 7z) |
+| `null_byte_filename` | +6 | Null byte in member name |
+| `autorun_inf` | +6 | Root-level autorun.inf |
+| `embedded_pe` + `dangerous_member` | +5 | Inner executable + risky extension |
+| `persistence_path` + `dangerous_member` | +5 | Startup-folder drop |
+| `double_extension` | +5 | `photo.jpg.exe` class |
+| `mime_mismatch` | +5 | Declared-type / libmagic-type disagreement |
+| `is_encrypted` + `dangerous_member` | +4 | Password-protected with risky name |
+| `bomb_guard` | +4 | Ratio / size / count threshold tripped |
+| `ace_detected` | +4 | ACE archive (CVE-2018-20250 class) |
+| `comment_ioc` | +3 | IP / URL in archive comment |
+| `high_entropy_filename` + `dangerous_member` | +3 | High-entropy name + risky ext |
+| `dangerous_member` (alone) | +3 | `.exe` / `.lnk` / `.hta` etc. inside archive |
+| `is_encrypted` (alone) | +2 | Password-protected archive |
+| `timestamp_anomaly` | +1 | All-identical / DOS-zero / out-of-range timestamps |
+| `desktop_ini` | +1 | desktop.ini at root |
+| `nested_archive` | +1 | Extra layer per recursion depth |
+
+**Classification bands** (same cutoffs as doc_analysis):
+- `≥7` → MALICIOUS
+- `4–6` → SUSPICIOUS
+- `1–3` → INFORMATIONAL
+- `0`   → CLEAN
+
+**Nested-archive damping**: child `score_delta` is added with damping
+factors `0.5 → 0.25 → 0.125` at depths 1 → 2 → 3 to prevent infinite
+compounding. Total is clamped to `SCORE_CAP = 60`.
+
+**VirusTotal embedded-hash contribution** (applied inside
+`virustotal.py`, not `archive_analysis`): +2 per embedded SHA256
+with `detection_ratio > 0`, capped at +10 total so one infested
+archive can't saturate the 100-point scale.
