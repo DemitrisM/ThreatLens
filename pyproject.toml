@@ -28,6 +28,9 @@ analysis = [
     "pcodedmp>=1.2.6",
     "XLMMacroDeobfuscator>=0.2.7",
     "peepdf-3>=4.0.0",
+    "rarfile>=4.1",
+    "py7zr>=0.20.8",
+    "pycdlib>=1.14.0",
 ]
 dev = [
     "pytest>=8.0.0",
