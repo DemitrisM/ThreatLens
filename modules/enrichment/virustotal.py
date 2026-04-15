@@ -72,7 +72,7 @@ def run(file_path: Path, config: dict) -> dict:
     # ── Handle response status codes ──
     if resp.status_code == 404:
         # Hash not in VT database — not necessarily clean.
-        return {
+        primary_404 = {
             "module": "virustotal",
             "status": "success",
             "data": {
@@ -90,6 +90,15 @@ def run(file_path: Path, config: dict) -> dict:
             "score_delta": -5,
             "reason": "Hash not seen on VirusTotal — not necessarily clean",
         }
+        inner_lookups, inner_delta, inner_reason = _lookup_embedded_hashes(
+            config, api_key, timeout, max_retries,
+        )
+        if inner_lookups:
+            primary_404["data"]["embedded_hash_lookups"] = inner_lookups
+            primary_404["score_delta"] += inner_delta
+            if inner_reason:
+                primary_404["reason"] = f"{primary_404['reason']}; {inner_reason}"
+        return primary_404
 
     if resp.status_code == 401:
         return _error("VirusTotal API key is invalid (HTTP 401)")
@@ -113,7 +122,106 @@ def run(file_path: Path, config: dict) -> dict:
     except ValueError:
         return _error("VirusTotal returned invalid JSON")
 
-    return _parse_response(body, sha256)
+    primary = _parse_response(body, sha256)
+
+    # ── Embedded-hash forward-lookup (from archive_analysis) ──
+    inner_lookups, inner_delta, inner_reason = _lookup_embedded_hashes(
+        config, api_key, timeout, max_retries,
+    )
+    if inner_lookups:
+        primary.setdefault("data", {})["embedded_hash_lookups"] = inner_lookups
+        primary["score_delta"] = primary.get("score_delta", 0) + inner_delta
+        if inner_reason:
+            sep = "; " if primary.get("reason") else ""
+            primary["reason"] = f"{primary.get('reason', '')}{sep}{inner_reason}"
+
+    return primary
+
+
+def _collect_prior_hashes(config: dict) -> list[dict]:
+    """Walk prior module results for embedded PE/ELF hashes to VT-forward."""
+    prior = config.get("_module_results_so_far") or []
+    seen: set[str] = set()
+    out: list[dict] = []
+    for result in prior:
+        data = result.get("data") or {}
+        for entry in data.get("embedded_executables", []) or []:
+            sha = (entry.get("sha256") or "").lower()
+            if not sha or sha in seen:
+                continue
+            seen.add(sha)
+            out.append({
+                "name": entry.get("name"),
+                "sha256": sha,
+                "size": entry.get("size"),
+                "type": entry.get("type"),
+            })
+    return out
+
+
+def _lookup_embedded_hashes(
+    config: dict,
+    api_key: str,
+    timeout: int,
+    max_retries: int,
+) -> tuple[list[dict], int, str]:
+    """Look up each unique embedded SHA256 on VT. Cap score contribution."""
+    hashes = _collect_prior_hashes(config)
+    if not hashes:
+        return [], 0, ""
+
+    results: list[dict] = []
+    hits = 0
+    for h in hashes:
+        sha = h["sha256"]
+        resp = _request_with_retry(sha, api_key, timeout, max_retries)
+        if isinstance(resp, dict):  # error result dict
+            results.append({
+                "name": h["name"], "sha256": sha,
+                "detection_ratio": None, "threat_label": None,
+                "error": resp.get("reason"),
+            })
+            continue
+        if resp.status_code == 404:
+            results.append({
+                "name": h["name"], "sha256": sha,
+                "found": False, "detection_ratio": "0/0", "threat_label": None,
+            })
+            continue
+        if resp.status_code != 200:
+            results.append({
+                "name": h["name"], "sha256": sha,
+                "detection_ratio": None, "threat_label": None,
+                "error": f"HTTP {resp.status_code}",
+            })
+            continue
+        try:
+            body = resp.json()
+        except ValueError:
+            continue
+        attrs = body.get("data", {}).get("attributes", {})
+        stats = attrs.get("last_analysis_stats", {})
+        detections = stats.get("malicious", 0) + stats.get("suspicious", 0)
+        total = sum(stats.get(k, 0) for k in
+                    ("malicious", "suspicious", "undetected",
+                     "harmless", "type-unsupported", "failure"))
+        label = (attrs.get("popular_threat_classification", {})
+                      .get("suggested_threat_label"))
+        results.append({
+            "name": h["name"],
+            "sha256": sha,
+            "found": True,
+            "detection_ratio": f"{detections}/{total}",
+            "threat_label": label,
+        })
+        if detections > 0:
+            hits += 1
+
+    delta = min(hits * 2, 10)
+    reason = ""
+    if hits:
+        reason = f"VirusTotal: {hits} embedded executable hash(es) flagged"
+    return results, delta, reason
 
 
 def _request_with_retry(

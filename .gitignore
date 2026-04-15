@@ -1,6 +1,8 @@
 CLAUDE.md
 docs/claude_context.md
 docs/usage.md
+docs/scoring.md
+
 .claude/skills
 
 __pycache__/

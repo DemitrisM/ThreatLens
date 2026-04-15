@@ -195,13 +195,13 @@ constants in `core/scoring.py` and the per-module files.
 
 ---
 
-## archive_analysis (capped at 60 total) — PENDING IMPLEMENTATION
+## archive_analysis (capped at 60 total)
 
 Weighted combo engine (same pattern as doc_analysis — frozensets of
 flag strings, weights, one row per rule). Flag strings are produced by
-`indicators.py`, `zip_handler`, `sfx_detect`, `embedded_exec`. The
-weights below are initial calibration values; finalised at end of
-project.
+`indicators.py`, `zip_handler`, `sfx_detect`, `embedded_exec`, and
+`rar_raw_headers`. The weights below are initial calibration values;
+finalised at end of project.
 
 | Required flags (frozenset) | Weight | Reason |
 |---|---|---|
@@ -242,3 +242,12 @@ compounding. Total is clamped to `SCORE_CAP = 60`.
 `virustotal.py`, not `archive_analysis`): +2 per embedded SHA256
 with `detection_ratio > 0`, capped at +10 total so one infested
 archive can't saturate the 100-point scale.
+
+**CVE-2025-8088 note**: the `path_traversal` rule fires on both
+classical ZipSlip-style `../` member names and on NTFS Alternate
+Data Stream suffixes that WinRAR 7.x uses to hide the real drop
+path (e.g., `fiyat teklifi.pdf:..\\..\\AppData\\...\\Startup\\Updater.exe`).
+The `rarfile` library strips those suffixes from the entry name, so
+`archive_analysis/rar_raw_headers.py` parses the RAR4/RAR5 headers
+directly to recover the unsanitised form and expose it to the
+indicator as `ArchiveEntry.raw_name`.
