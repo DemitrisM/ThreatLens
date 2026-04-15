@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from .entries import ArchiveEntry, ContainerMeta
+from .rar_raw_headers import parse_rar_filenames
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,37 @@ def enumerate_rar(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
 
     for info in infos:
         entries.append(_to_entry(info))
+
+    # CVE-2025-8088 recovery: ``rarfile`` strips NTFS ADS suffixes from
+    # member names. Walk the raw headers and re-attach the unsanitised
+    # form so downstream indicators see the traversal payload.
+    _attach_raw_names(file_path, entries)
+
     return entries, meta
+
+
+def _attach_raw_names(file_path: Path, entries: list[ArchiveEntry]) -> None:
+    raw = parse_rar_filenames(file_path)
+    if not raw or len(raw) != len(entries):
+        # Index-mismatch means the raw parser saw a different record
+        # count than ``rarfile`` — safer to skip enrichment entirely
+        # than to attach the wrong suffix.
+        if raw and len(raw) != len(entries):
+            logger.debug(
+                "rar raw/rarfile count mismatch for %s (raw=%d, rarfile=%d) — skipping ADS attach",
+                file_path, len(raw), len(entries),
+            )
+        return
+    for entry, rec in zip(entries, raw):
+        suffix = rec.get("ads_suffix")
+        raw_name = rec.get("name")
+        if suffix:
+            # Compose so the path-traversal check sees the full string
+            # (the leading colon plus traversal sequence is what fires
+            # the indicator). Keep the benign base name in ``.name``.
+            entry.raw_name = f"{raw_name}{suffix if suffix.startswith(':') else ':' + suffix}"
+        elif raw_name and raw_name != entry.name:
+            entry.raw_name = raw_name
 
 
 def _to_entry(info) -> ArchiveEntry:  # RarInfo

@@ -30,6 +30,7 @@ _MODULE_REGISTRY: dict[str, str] = {
     "doc_analysis": "modules.static.doc_analysis",
     "pdf_analysis": "modules.static.pdf_analysis",
     "html_analysis": "modules.static.html_analysis",
+    "archive_analysis": "modules.static.archive_analysis",
     "virustotal": "modules.enrichment.virustotal",
 }
 
@@ -207,6 +208,9 @@ def run_pipeline(
         logger.debug("Running module: %s", name)
         if progress_cb is not None:
             progress_cb(idx, total_modules, name, "start")
+        # Expose prior results so downstream modules (e.g. virustotal) can
+        # read embedded hashes surfaced by archive_analysis.
+        config["_module_results_so_far"] = list(module_results)
         t0 = time.time()
         result = _run_module(mod, name, file_path, config)
         elapsed = time.time() - t0

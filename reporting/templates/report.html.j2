@@ -387,6 +387,93 @@
     </table>
     {% endif %}
 
+    {# ─────────── ARCHIVE INDICATORS ─────────── #}
+    {% if archive_indicators %}
+    <h2>Archive Indicators</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Indicator</th>
+                <th>Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for row in archive_indicators.summary_rows %}
+            <tr>
+                <td><strong>{{ row.label }}</strong></td>
+                <td class="sev-{{ row.severity }}">{{ row.value }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    {% if archive_indicators.fired_rules %}
+    <h3>Fired Rules</h3>
+    <ul>
+        {% for rule in archive_indicators.fired_rules %}
+        <li>{{ rule }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if archive_indicators.dangerous_members %}
+    <h3>Dangerous Members</h3>
+    <table>
+        <thead>
+            <tr><th>Name</th><th>Extension</th><th>Size</th></tr>
+        </thead>
+        <tbody>
+        {% for m in archive_indicators.dangerous_members %}
+            <tr>
+                <td>{{ m.name }}</td>
+                <td class="mono">{{ m.extension }}</td>
+                <td>{{ m.size }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if archive_indicators.embedded_executables %}
+    <h3>Embedded Executables</h3>
+    <table>
+        <thead>
+            <tr><th>Name</th><th>Type</th><th>Size</th><th>MD5</th><th>SHA256</th></tr>
+        </thead>
+        <tbody>
+        {% for e in archive_indicators.embedded_executables %}
+            <tr>
+                <td>{{ e.name }}</td>
+                <td>{{ e.type }}</td>
+                <td>{{ e.size }}</td>
+                <td class="mono">{{ e.md5 }}</td>
+                <td class="mono">{{ e.sha256 }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if archive_indicators.nested %}
+    <h3>Nested Archives</h3>
+    <table>
+        <thead>
+            <tr><th>Member</th><th>Format</th><th>Classification</th><th>Score</th></tr>
+        </thead>
+        <tbody>
+        {% for n in archive_indicators.nested %}
+            <tr>
+                <td>{{ n.name }}</td>
+                <td>{{ n.format }}</td>
+                <td>{{ n.classification }}</td>
+                <td>{{ n.score_delta if n.score_delta is not none else '-' }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+
     {# ─────────── MITRE ATT&CK ─────────── #}
     {% if attack_mappings %}
     <h2>MITRE ATT&amp;CK Mappings</h2>
