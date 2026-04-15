@@ -30,6 +30,8 @@ _STANDARD_MODULES = [
     "yara_scanner",
     "doc_analysis",
     "pdf_analysis",
+    "html_analysis",
+    "archive_analysis",
     "virustotal",
 ]
 
@@ -200,6 +202,12 @@ def cli() -> None:
 @click.option("--save", is_flag=True, help="Also save JSON report alongside terminal output.")
 @click.option("--open", "open_report", is_flag=True, help="Open HTML report in default browser.")
 @click.option("--hash-only", is_flag=True, help="Print file hashes only (no full analysis).")
+# ── Archive-analysis controls ──
+@click.option("--recurse-archives", is_flag=True,
+              help="Feed nested archive members back through the full pipeline (default: archive-only recursion).")
+@click.option("--max-archive-depth", type=int, default=None,
+              help="Override max archive recursion depth (default: 3).")
+@click.option("--no-archive", is_flag=True, help="Disable archive_analysis (shorthand for --skip archive_analysis).")
 def analyse(
     file: Path,
     config_path: Path | None,
@@ -216,6 +224,9 @@ def analyse(
     save: bool,
     open_report: bool,
     hash_only: bool,
+    recurse_archives: bool,
+    max_archive_depth: int | None,
+    no_archive: bool,
 ) -> None:
     """Analyse FILE and produce a threat report with confidence scoring.
 
@@ -233,7 +244,20 @@ def analyse(
         sys.exit(1)
 
     config = _apply_scan_profile(config, profile)
-    config = _apply_module_overrides(config, modules, skip)
+
+    # --no-archive is sugar for --skip archive_analysis
+    effective_skip = skip
+    if no_archive:
+        effective_skip = (
+            f"{skip},archive_analysis" if skip else "archive_analysis"
+        )
+
+    config = _apply_module_overrides(config, modules, effective_skip)
+
+    if recurse_archives:
+        config["archive_full_recursion"] = True
+    if max_archive_depth is not None:
+        config["max_archive_recursion_depth"] = int(max_archive_depth)
 
     if output_dir is not None:
         config["output_dir"] = str(output_dir)
@@ -456,12 +480,20 @@ def _run_batch(
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=None)
 @click.option("--verbose", "-v", is_flag=True)
 @click.option("--debug", is_flag=True)
+@click.option("--recurse-archives", is_flag=True,
+              help="Feed nested archive members back through the full pipeline.")
+@click.option("--max-archive-depth", type=int, default=None,
+              help="Override max archive recursion depth (default: 3).")
+@click.option("--no-archive", is_flag=True, help="Disable archive_analysis.")
 def compare(
     file1: Path,
     file2: Path,
     config_path: Path | None,
     verbose: bool,
     debug: bool,
+    recurse_archives: bool,
+    max_archive_depth: int | None,
+    no_archive: bool,
 ) -> None:
     """Compare analysis results of two files side-by-side."""
     from rich.console import Console  # noqa: PLC0415
@@ -472,6 +504,15 @@ def compare(
 
     config = get_config(config_path)
     _setup_logging(config["log_level"], verbose, debug)
+
+    if no_archive:
+        config["enabled_modules"] = [
+            m for m in config.get("enabled_modules", []) if m != "archive_analysis"
+        ]
+    if recurse_archives:
+        config["archive_full_recursion"] = True
+    if max_archive_depth is not None:
+        config["max_archive_recursion_depth"] = int(max_archive_depth)
 
     console = Console()
 

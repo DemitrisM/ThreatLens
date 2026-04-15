@@ -17,6 +17,7 @@ from pathlib import Path
 
 from reporting.shared import build_verdict
 
+from .archive import archive_indicators
 from .debug import raw_modules
 from .doc import doc_indicators
 from .file_info import file_info, module_results_for_template
@@ -97,6 +98,7 @@ def _build_context(report: dict) -> dict:
         "module_results": module_results_for_template(module_results),
         "pe_indicators": pe_indicators(module_results),
         "doc_indicators": doc_indicators(module_results),
+        "archive_indicators": archive_indicators(module_results),
 
         "attack_mappings": attack_mappings(module_results),
         "iocs_flat": iocs_flat(module_results),

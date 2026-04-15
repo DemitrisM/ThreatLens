@@ -87,18 +87,25 @@ _DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def detect_path_traversal(entries: list[ArchiveEntry]) -> list[str]:
-    """Return names of entries that attempt directory traversal / absolute drop."""
+    """Return names of entries that attempt directory traversal / absolute drop.
+
+    Inspects both the sanitised ``name`` and the handler-recovered
+    ``raw_name``. The latter carries the CVE-2025-8088 NTFS ADS
+    suffix that ``rarfile`` strips — without it the traversal hides
+    behind a benign decoy filename.
+    """
     offenders: list[str] = []
     for e in entries:
-        name = e.name
-        if not name:
-            continue
-        if (
-            name.startswith(("/", "\\"))
-            or "../" in name.replace("\\", "/")
-            or _DRIVE_LETTER_RE.match(name)
-        ):
-            offenders.append(name)
+        for candidate in (e.name, e.raw_name):
+            if not candidate:
+                continue
+            if (
+                candidate.startswith(("/", "\\"))
+                or "../" in candidate.replace("\\", "/")
+                or _DRIVE_LETTER_RE.match(candidate)
+            ):
+                offenders.append(candidate)
+                break
     return offenders
 
 
@@ -160,9 +167,13 @@ def detect_null_byte_filenames(entries: list[ArchiveEntry]) -> list[str]:
 def detect_persistence_paths(entries: list[ArchiveEntry]) -> list[str]:
     out: list[str] = []
     for e in entries:
-        normalised = e.name.lower().replace("\\\\", "\\")
-        if any(marker in normalised for marker in _PERSISTENCE_PATH_MARKERS):
-            out.append(e.name)
+        for candidate in (e.name, e.raw_name):
+            if not candidate:
+                continue
+            normalised = candidate.lower().replace("\\\\", "\\")
+            if any(marker in normalised for marker in _PERSISTENCE_PATH_MARKERS):
+                out.append(candidate)
+                break
     return out
 
 

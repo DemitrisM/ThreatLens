@@ -30,6 +30,11 @@ class ArchiveEntry:
     # checks. ``None`` = not materialised.
     extracted_path: str | None = None
     crc: int | None = None
+    # Unsanitised filename recovered from a raw header walk — currently
+    # populated only by the RAR handler to expose NTFS Alternate Data
+    # Stream suffixes that ``rarfile`` strips (CVE-2025-8088). ``None``
+    # when the sanitised ``name`` is already the full story.
+    raw_name: str | None = None
 
 
 @dataclass
@@ -47,7 +52,7 @@ class ContainerMeta:
 
 def entry_to_dict(entry: ArchiveEntry) -> dict:
     """Serialise an entry to the plain dict that lands in module data."""
-    return {
+    out = {
         "name": entry.name,
         "size_compressed": entry.size_compressed,
         "size_uncompressed": entry.size_uncompressed,
@@ -57,3 +62,6 @@ def entry_to_dict(entry: ArchiveEntry) -> dict:
         "timestamp": entry.timestamp,
         "method": entry.method,
     }
+    if entry.raw_name:
+        out["raw_name"] = entry.raw_name
+    return out
