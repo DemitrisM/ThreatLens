@@ -208,6 +208,9 @@ def cli() -> None:
 @click.option("--max-archive-depth", type=int, default=None,
               help="Override max archive recursion depth (default: 3).")
 @click.option("--no-archive", is_flag=True, help="Disable archive_analysis (shorthand for --skip archive_analysis).")
+# ── OneNote-analysis controls ──
+@click.option("--recurse-onenote", is_flag=True,
+              help="Feed embedded OneNote payloads back through the full pipeline (default: hash-only for VT forward-lookup).")
 def analyse(
     file: Path,
     config_path: Path | None,
@@ -227,6 +230,7 @@ def analyse(
     recurse_archives: bool,
     max_archive_depth: int | None,
     no_archive: bool,
+    recurse_onenote: bool,
 ) -> None:
     """Analyse FILE and produce a threat report with confidence scoring.
 
@@ -258,6 +262,8 @@ def analyse(
         config["archive_full_recursion"] = True
     if max_archive_depth is not None:
         config["max_archive_recursion_depth"] = int(max_archive_depth)
+    if recurse_onenote:
+        config["onenote_full_recursion"] = True
 
     if output_dir is not None:
         config["output_dir"] = str(output_dir)
@@ -485,6 +491,8 @@ def _run_batch(
 @click.option("--max-archive-depth", type=int, default=None,
               help="Override max archive recursion depth (default: 3).")
 @click.option("--no-archive", is_flag=True, help="Disable archive_analysis.")
+@click.option("--recurse-onenote", is_flag=True,
+              help="Feed embedded OneNote payloads back through the full pipeline.")
 def compare(
     file1: Path,
     file2: Path,
@@ -494,6 +502,7 @@ def compare(
     recurse_archives: bool,
     max_archive_depth: int | None,
     no_archive: bool,
+    recurse_onenote: bool,
 ) -> None:
     """Compare analysis results of two files side-by-side."""
     from rich.console import Console  # noqa: PLC0415
@@ -513,6 +522,8 @@ def compare(
         config["archive_full_recursion"] = True
     if max_archive_depth is not None:
         config["max_archive_recursion_depth"] = int(max_archive_depth)
+    if recurse_onenote:
+        config["onenote_full_recursion"] = True
 
     console = Console()
 

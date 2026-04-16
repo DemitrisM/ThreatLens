@@ -31,6 +31,7 @@ _MODULE_REGISTRY: dict[str, str] = {
     "pdf_analysis": "modules.static.pdf_analysis",
     "html_analysis": "modules.static.html_analysis",
     "archive_analysis": "modules.static.archive_analysis",
+    "onenote_analysis": "modules.static.onenote_analysis",
     "virustotal": "modules.enrichment.virustotal",
 }
 
