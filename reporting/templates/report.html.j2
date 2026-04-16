@@ -474,6 +474,96 @@
     {% endif %}
     {% endif %}
 
+    {# ─────────── ONENOTE INDICATORS ─────────── #}
+    {% if onenote_indicators %}
+    <h2>OneNote Indicators</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Indicator</th>
+                <th>Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for row in onenote_indicators.summary_rows %}
+            <tr>
+                <td><strong>{{ row.label }}</strong></td>
+                <td class="sev-{{ row.severity }}">{{ row.value }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    {% if onenote_indicators.fired_rules %}
+    <h3>Fired Rules</h3>
+    <ul>
+        {% for rule in onenote_indicators.fired_rules %}
+        <li>{{ rule }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if onenote_indicators.blobs %}
+    <h3>Embedded Blobs</h3>
+    <table>
+        <thead>
+            <tr><th>Offset</th><th>Kind</th><th>Size</th><th>Label</th><th>SHA256</th></tr>
+        </thead>
+        <tbody>
+        {% for b in onenote_indicators.blobs %}
+            <tr>
+                <td class="mono">{{ b.offset }}</td>
+                <td class="sev-{{ b.severity }}">{{ b.kind }}</td>
+                <td>{{ b.size }}</td>
+                <td>{{ b.label }}</td>
+                <td class="mono">{{ b.sha256 }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if onenote_indicators.embedded_executables %}
+    <h3>Embedded Executables (VT forward-lookup)</h3>
+    <table>
+        <thead>
+            <tr><th>Name</th><th>Type</th><th>Size</th><th>MD5</th><th>SHA256</th></tr>
+        </thead>
+        <tbody>
+        {% for e in onenote_indicators.embedded_executables %}
+            <tr>
+                <td>{{ e.name }}</td>
+                <td>{{ e.type }}</td>
+                <td>{{ e.size }}</td>
+                <td class="mono">{{ e.md5 }}</td>
+                <td class="mono">{{ e.sha256 }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if onenote_indicators.nested %}
+    <h3>Nested Pipeline Results</h3>
+    <table>
+        <thead>
+            <tr><th>Source offset</th><th>Kind</th><th>Score</th><th>Band</th><th>SHA256</th></tr>
+        </thead>
+        <tbody>
+        {% for n in onenote_indicators.nested %}
+            <tr>
+                <td class="mono">{{ n.source_offset }}</td>
+                <td>{{ n.kind }}</td>
+                <td>{{ n.final_score if n.final_score is not none else '-' }}</td>
+                <td>{{ n.risk_band }}</td>
+                <td class="mono">{{ n.sha256 }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+
     {# ─────────── MITRE ATT&CK ─────────── #}
     {% if attack_mappings %}
     <h2>MITRE ATT&amp;CK Mappings</h2>
