@@ -22,6 +22,7 @@ from .debug import raw_modules
 from .doc import doc_indicators
 from .file_info import file_info, module_results_for_template
 from .findings import capabilities, scored_categories, suspicious_strings, virustotal
+from .onenote import onenote_indicators
 from .pe import pe_indicators
 from .recommendations import recommendations
 from .tables import attack_mappings, ioc_total, iocs_flat, timing_rows
@@ -99,6 +100,7 @@ def _build_context(report: dict) -> dict:
         "pe_indicators": pe_indicators(module_results),
         "doc_indicators": doc_indicators(module_results),
         "archive_indicators": archive_indicators(module_results),
+        "onenote_indicators": onenote_indicators(module_results),
 
         "attack_mappings": attack_mappings(module_results),
         "iocs_flat": iocs_flat(module_results),

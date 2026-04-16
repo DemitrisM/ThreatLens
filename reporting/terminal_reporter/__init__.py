@@ -13,6 +13,7 @@ from .archive import print_archive_indicators
 from .doc import print_doc_indicators
 from .findings import print_capabilities, print_suspicious_strings, print_virustotal
 from .header import print_file_info, print_footer, print_header
+from .onenote import print_onenote_indicators
 from .pe import print_pe_indicators
 from .recommendations import print_recommendations
 from .score import print_module_table, print_score_banner, print_score_breakdown
@@ -44,6 +45,7 @@ def print_terminal_report(report: dict, *, detail_level: int = 0) -> None:
     print_pe_indicators(module_results, detail_level)
     print_doc_indicators(module_results, detail_level)
     print_archive_indicators(module_results, detail_level)
+    print_onenote_indicators(module_results, detail_level)
     print_attack_table(module_results, detail_level)
     print_ioc_table(module_results, detail_level)
     print_suspicious_strings(module_results, detail_level)
