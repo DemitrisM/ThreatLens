@@ -14,6 +14,9 @@ constants in `core/scoring.py` and the per-module files.
 
 ## Score bands
 
+Module `score_delta` values are summed and then clamped to 0–100. Individual modules
+can push the raw total above 100 — clamping happens once at the end in `core/scoring.py`.
+
 | Score   | Band       |
 |---------|------------|
 | 0–30    | LOW RISK   |
@@ -60,12 +63,24 @@ constants in `core/scoring.py` and the per-module files.
 
 ### YARA
 
+Rules are scored **additively** (each match adds its weight independently) before the cap.
+Two-stage compilation: bulk first, then per-file fallback so one bad rule doesn't invalidate the set.
+
 | Indicator | Score |
 |---|---|
-| YARA rule match | +5 to +30 (by severity metadata) |
+| YARA critical rule | +30 |
+| YARA high rule | +25 |
+| YARA medium rule | +15 |
+| YARA low rule | +5 |
+| YARA rule (no severity metadata) | +20 |
 | YARA total cap | **60 max** |
 
 ### capa (capability detection)
+
+Scoring model: each detected capability is tested against **all** category regex patterns
+simultaneously — one capability can fire multiple categories. Per-category score = **max
+value seen** across all capabilities matching that category (not sum). Final total =
+sum of per-category maxima, capped at 60.
 
 | Capability category | Score |
 |---|---|
@@ -86,6 +101,7 @@ constants in `core/scoring.py` and the per-module files.
 | Network IOCs (URLs / IPs) | +10 |
 | Suspicious domains | +5 |
 | Registry key references | +5 |
+| Email addresses | +5 |
 
 ---
 
@@ -125,11 +141,15 @@ constants in `core/scoring.py` and the per-module files.
 
 ## string_analysis (severity-weighted, capped at 40 total)
 
-| Tier | Examples | Score |
+Score is per unique category fired at each tier. Total cap 40. FLOSS obfuscation bonus
++10 when decoded or stack strings are present.
+
+| Tier | Examples | Score per unique category |
 |---|---|---|
-| Critical | RAT/stealer family name, C2 framework class, .NET stealer rule class, … | +10 |
-| High | Process-hollowing API string, browser cred path, Telegram/Discord exfil, … | +5 |
-| Medium | LOLBin reference, PowerShell offensive pattern, anti-VM string, … | +3 |
+| Critical | RAT/stealer family name, C2 framework ref (Cobalt Strike/Sliver/Havoc), Telegram/Discord exfil pattern, browser credential path, .NET stealer class/method/field, crypto wallet artefact, process-hollowing API | +10 (cap 30) |
+| High | PowerShell evasion flags, LOLBin reference, VM/sandbox check string, anti-debug API name, .NET obfuscator marker, code-injection API string, SMTP exfil host, analysis tool name | +5 (cap 15) |
+| Medium | Registry persistence key, schtasks reference, startup path, browser data dir, generic credential keyword, base64 reference, crypto algorithm name | +3 (cap 10) |
+| Low | Generic crypto algorithm references | +0 |
 
 ---
 
