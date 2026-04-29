@@ -41,11 +41,12 @@ dynamic = [
 ]
 
 [project.scripts]
-malware-triage = "main:cli"
+malware-triage = "cli:cli"
 
 [tool.setuptools]
 py-modules = ["main"]
 packages = [
+    "cli",
     "core",
     "modules",
     "modules.static",
