@@ -32,6 +32,16 @@ DEFAULTS = {
         "virustotal",
     ],
     "dynamic_provider": "none",
+    "rule_sources": [
+        {
+            "name": "signature-base",
+            "type": "git",
+            "url": "https://github.com/Neo23x0/signature-base.git",
+            "directory": "signature-base",
+            "branch": "master",
+            "enabled": True,
+        },
+    ],
 }
 
 VALID_DYNAMIC_PROVIDERS = {"none", "speakeasy", "vm_worker", "cape"}
@@ -99,3 +109,17 @@ def _validate(config: dict) -> None:
             "Invalid module_timeout_seconds %r — falling back to 60", timeout
         )
         config["module_timeout_seconds"] = 60
+
+    sources = config.get("rule_sources")
+    if sources is not None:
+        if not isinstance(sources, list):
+            logger.warning("rule_sources must be a list — falling back to defaults")
+            config["rule_sources"] = DEFAULTS["rule_sources"]
+        else:
+            for src in sources:
+                if not isinstance(src, dict):
+                    continue
+                src.setdefault("type", "git")
+                src.setdefault("branch", "master")
+                src.setdefault("enabled", True)
+                src.setdefault("directory", src.get("name", "unknown"))

@@ -20,6 +20,9 @@ config.yaml
 bin/capa
 bin/floss
 
-# Downloaded YARA rule sets (cloned by install.sh)
+# Downloaded YARA rule sets (managed by update-rules command)
 rules/yara/signature-base/
 rules/yara/eset-malware-ioc/
+rules/yara/.rule_sources.json
+
+UI_Report
