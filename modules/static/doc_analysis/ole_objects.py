@@ -17,10 +17,13 @@ obfuscation that defeats rtfobj's stream parser.
 import logging
 from pathlib import Path
 
+from ._quiet import quiet_stdout
+
 logger = logging.getLogger(__name__)
 
 try:
-    from oletools.rtfobj import RtfObjParser
+    with quiet_stdout(logger, "oletools.rtfobj"):
+        from oletools.rtfobj import RtfObjParser
     _HAS_RTFOBJ = True
 except ImportError:
     _HAS_RTFOBJ = False

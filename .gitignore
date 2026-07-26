@@ -2,7 +2,7 @@ CLAUDE.md
 docs/claude_context.md
 docs/usage.md
 docs/scoring.md
-
+docs/cli_redesign_plan.md
 .claude/skills
 
 __pycache__/

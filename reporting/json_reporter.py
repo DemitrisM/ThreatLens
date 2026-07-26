@@ -1,8 +1,15 @@
 """JSON report generator.
 
 Serialises the full analysis results (file metadata, module outputs,
-score breakdown) to a structured JSON file for machine consumption
+score breakdown) to a structured JSON document for machine consumption
 and pipeline integration.
+
+Two entry points:
+
+- :func:`build_json_report` returns the report as a dict, for callers that
+  want to write it themselves — ``-f json`` streams it to stdout, ``-f jsonl``
+  writes it as a single compact line.
+- :func:`write_json_report` writes a timestamped file into a directory.
 """
 
 import json
@@ -12,49 +19,27 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: Keys stripped from module data before a report leaves the process.
+_SENSITIVE_KEYS = frozenset({"api_key", "virustotal_api_key"})
 
-def write_json_report(report: dict, output_dir: Path) -> Path:
-    """Write the pipeline report to a JSON file.
 
-    The filename is derived from the analysed file's name and a
-    timestamp so that multiple runs never overwrite each other.
+def build_json_report(report: dict) -> dict:
+    """Return *report* re-keyed, sanitised, and stamped with tool metadata.
 
     Args:
-        report:     Complete report dict returned by ``run_pipeline()``.
-        output_dir: Directory to write the JSON file into (created if
-                    it does not exist).
+        report: Complete report dict returned by ``run_pipeline()``.
 
     Returns:
-        Path to the written JSON file.
+        A JSON-serialisable dict. Values that ``json`` cannot encode
+        natively (``Path``, ``bytes``, ``set``) still rely on the caller
+        passing ``default=str``.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
+    from cli import __version__  # noqa: PLC0415  (avoids a circular import at module scope)
 
-    # Build a safe, descriptive filename.
-    source_name = Path(report.get("file", "unknown")).stem
-    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"{source_name}_{timestamp}.json"
-    out_path = output_dir / filename
-
-    serialisable = _prepare(report)
-
-    with out_path.open("w", encoding="utf-8") as fh:
-        json.dump(serialisable, fh, indent=2, default=str)
-
-    logger.info("JSON report written to %s", out_path)
-    return out_path
-
-
-def _prepare(report: dict) -> dict:
-    """Return a copy of *report* with a metadata header added.
-
-    Non-serialisable values (Path objects, bytes, etc.) are converted
-    to strings by the ``default=str`` fallback in ``json.dump``, so
-    this function only needs to add top-level metadata.
-    """
     return {
         "meta": {
             "tool": "ThreatLens",
-            "version": "0.2.0",
+            "version": __version__,
             "generated_utc": datetime.now(tz=timezone.utc).isoformat(),
         },
         "file": report.get("file"),
@@ -65,21 +50,61 @@ def _prepare(report: dict) -> dict:
     }
 
 
-def _sanitise_results(results: list[dict]) -> list[dict]:
-    """Strip sensitive data (API keys, credentials) from module results.
+def dumps_json_report(report: dict, *, compact: bool = False) -> str:
+    """Serialise *report* to a JSON string.
 
-    Currently ensures the VirusTotal API key never leaks into reports.
+    Args:
+        report:  Complete report dict returned by ``run_pipeline()``.
+        compact: When True, emit a single line with no indentation — the
+                 ``jsonl`` format, one report per line.
+    """
+    payload = build_json_report(report)
+    if compact:
+        return json.dumps(payload, separators=(",", ":"), default=str)
+    return json.dumps(payload, indent=2, default=str)
+
+
+def write_json_report(report: dict, output_dir: Path) -> Path:
+    """Write the pipeline report to a timestamped JSON file.
+
+    The filename is derived from the analysed file's name and a timestamp
+    so that multiple runs never overwrite each other.
+
+    Args:
+        report:     Complete report dict returned by ``run_pipeline()``.
+        output_dir: Directory to write the JSON file into (created if it
+                    does not exist).
+
+    Returns:
+        Path to the written JSON file.
+
+    Raises:
+        OSError: If the directory cannot be created or the file written.
+                 Callers in ``cli/`` translate this into exit code 3.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    source_name = Path(report.get("file", "unknown")).stem
+    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    out_path = output_dir / f"{source_name}_{timestamp}.json"
+
+    out_path.write_text(dumps_json_report(report), encoding="utf-8")
+
+    logger.info("JSON report written to %s", out_path)
+    return out_path
+
+
+def _sanitise_results(results: list[dict]) -> list[dict]:
+    """Strip credentials from module results before serialisation.
+
+    Only the top level of each module's ``data`` dict is filtered — Pass 5
+    of the CLI redesign makes this recursive.
     """
     sanitised = []
     for result in results:
-        # Deep-copy only what's needed — module results are simple dicts.
         r = dict(result)
         data = r.get("data")
         if isinstance(data, dict):
-            r["data"] = {
-                k: v
-                for k, v in data.items()
-                if k not in ("api_key", "virustotal_api_key")
-            }
+            r["data"] = {k: v for k, v in data.items() if k not in _SENSITIVE_KEYS}
         sanitised.append(r)
     return sanitised

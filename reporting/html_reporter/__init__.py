@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 _TEMPLATE_NAME = "report.html.j2"
-_TOOL_VERSION = "0.2.0"
 
 
 def write_html_report(report: dict, output_dir: Path) -> Path:
@@ -82,13 +81,15 @@ def write_html_report(report: dict, output_dir: Path) -> Path:
 
 def _build_context(report: dict) -> dict:
     """Translate the raw pipeline report into the template context dict."""
+    from cli import __version__  # noqa: PLC0415  (avoids a circular import at module scope)
+
     module_results = report.get("module_results", [])
     scoring = report.get("scoring", {}) or {}
     timing = report.get("timing", {}) or {}
     file_path = report.get("file", "unknown")
 
     return {
-        "tool_version": _TOOL_VERSION,
+        "tool_version": __version__,
         "generated_utc": datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "elapsed_seconds": timing.get("elapsed_seconds", 0.0),
         "file_name": Path(file_path).name,

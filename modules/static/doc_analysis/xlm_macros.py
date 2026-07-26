@@ -14,10 +14,14 @@ import logging
 import re
 from pathlib import Path
 
+from ._quiet import quiet_stdout
+
 logger = logging.getLogger(__name__)
 
+# This module prints a pywin32 notice to stdout at import time.
 try:
-    from XLMMacroDeobfuscator.deobfuscator import process_file as _xlm_process_file
+    with quiet_stdout(logger, "XLMMacroDeobfuscator.deobfuscator"):
+        from XLMMacroDeobfuscator.deobfuscator import process_file as _xlm_process_file
     _HAS_XLM = True
 except Exception:  # noqa: BLE001
     _HAS_XLM = False

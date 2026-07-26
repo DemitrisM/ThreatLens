@@ -3,8 +3,8 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "malware-triage"
-version = "0.1.0"
+name = "threatlens"
+dynamic = ["version"]
 description = "Portable CLI malware triage and analysis tool with transparent confidence scoring"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -41,19 +41,20 @@ dynamic = [
 ]
 
 [project.scripts]
-malware-triage = "cli:cli"
+threatlens = "cli:cli"
 
 [tool.setuptools]
 py-modules = ["main"]
-packages = [
-    "cli",
-    "core",
-    "modules",
-    "modules.static",
-    "modules.enrichment",
-    "modules.dynamic",
-    "reporting",
-]
+
+[tool.setuptools.dynamic]
+version = {attr = "cli.__version__"}
+
+# Discovered rather than listed — the hand-maintained list went stale twice
+# (reporting.terminal_reporter, reporting.html_reporter and five
+# modules.static.* subpackages were all missing).
+[tool.setuptools.packages.find]
+include = ["cli*", "core*", "modules*", "reporting*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-q"
