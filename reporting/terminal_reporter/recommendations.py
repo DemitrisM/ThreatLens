@@ -51,7 +51,7 @@ def print_recommendations(
         elif module == "capa_analysis" and status == "skipped":
             reason = result.get("reason", "")
             if reason == "capa timed out":
-                recs.append("capa timed out — try --deep for extended timeout (180s)")
+                recs.append("capa timed out — retry with -p deep (180s timeout)")
 
         elif module == "pe_analysis" and status == "success":
             if data.get("packers_detected"):
@@ -59,7 +59,10 @@ def print_recommendations(
 
     band = scoring.get("risk_band", "LOW")
     if band in ("HIGH", "CRITICAL"):
-        recs.append("Consider dynamic analysis (--dynamic speakeasy) for runtime behaviour")
+        # `--dynamic` was removed in Pass 1; the provider is config-only now.
+        recs.append(
+            "Consider dynamic analysis — set dynamic_provider in config.yaml"
+        )
 
     if not recs:
         return

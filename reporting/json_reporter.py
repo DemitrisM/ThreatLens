@@ -20,7 +20,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 #: Keys stripped from module data before a report leaves the process.
-_SENSITIVE_KEYS = frozenset({"api_key", "virustotal_api_key"})
+from reporting.shared import sanitise_secrets
 
 
 def build_json_report(report: dict) -> dict:
@@ -97,14 +97,7 @@ def write_json_report(report: dict, output_dir: Path) -> Path:
 def _sanitise_results(results: list[dict]) -> list[dict]:
     """Strip credentials from module results before serialisation.
 
-    Only the top level of each module's ``data`` dict is filtered — Pass 5
-    of the CLI redesign makes this recursive.
+    Recursive: a nested ``{"request": {"api_key": ...}}`` used to survive
+    because only the top level of ``data`` was filtered.
     """
-    sanitised = []
-    for result in results:
-        r = dict(result)
-        data = r.get("data")
-        if isinstance(data, dict):
-            r["data"] = {k: v for k, v in data.items() if k not in _SENSITIVE_KEYS}
-        sanitised.append(r)
-    return sanitised
+    return [sanitise_secrets(result) for result in results]

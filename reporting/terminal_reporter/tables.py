@@ -3,17 +3,10 @@
 from rich import box
 from rich.table import Table
 
-from ._common import STATUS_COLOURS, console
+from reporting.theme import ioc_style
 
-
-_IOC_TYPE_STYLES = {
-    "ipv4":         ("IP Address",   "red"),
-    "url":          ("URL",          "yellow"),
-    "domain":       ("Domain",       "cyan"),
-    "registry_key": ("Registry Key", "magenta"),
-    "email":        ("Email",        "blue"),
-    "windows_path": ("File Path",    "dim"),
-}
+from ._common import LIMITS, STATUS_COLOURS, console
+from ._render import more_hint
 
 
 def print_attack_table(module_results: list[dict], detail_level: int) -> None:
@@ -32,7 +25,9 @@ def print_attack_table(module_results: list[dict], detail_level: int) -> None:
         mappings, key=lambda m: (m.get("tactic", ""), m.get("technique_id", ""))
     )
 
-    limit = len(mappings_sorted) if detail_level >= 1 else 10
+    limit = (
+        len(mappings_sorted) if detail_level >= 1 else LIMITS["attack_mappings"]
+    )
     shown = mappings_sorted[:limit]
     remaining = len(mappings_sorted) - limit
 
@@ -87,20 +82,20 @@ def print_ioc_table(module_results: list[dict], detail_level: int) -> None:
     table.add_column("Type", style="bold", no_wrap=True)
     table.add_column("Value", overflow="fold")
 
-    limit = None if detail_level >= 1 else 5
+    limit = None if detail_level >= 1 else LIMITS["iocs_per_type"]
 
     for ioc_type, values in iocs.items():
         if not values:
             continue
 
-        label, colour = _IOC_TYPE_STYLES.get(ioc_type, (ioc_type, "white"))
+        label, colour = ioc_style(ioc_type)
         shown = values if limit is None else values[:limit]
         remaining = len(values) - len(shown)
 
         for val in shown:
             table.add_row(f"[{colour}]{label}[/{colour}]", val)
         if remaining > 0:
-            table.add_row("", f"[dim](+{remaining} more — use -v to show all)[/dim]")
+            table.add_row("", f"[dim]{more_hint(remaining)}[/dim]")
 
     console.print()
     console.print(table)

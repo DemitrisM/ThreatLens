@@ -3,6 +3,8 @@
 import json
 import logging
 
+from reporting.shared import sanitise_secrets
+
 
 logger = logging.getLogger(__name__)
 
@@ -13,14 +15,7 @@ def raw_modules(module_results: list[dict]) -> list[dict]:
     """
     out = []
     for r in module_results:
-        sanitised = dict(r)
-        data = sanitised.get("data")
-        if isinstance(data, dict):
-            sanitised["data"] = {
-                k: v
-                for k, v in data.items()
-                if k not in ("api_key", "virustotal_api_key")
-            }
+        sanitised = sanitise_secrets(r)
         try:
             text = json.dumps(sanitised, indent=2, default=str)
         except (TypeError, ValueError) as exc:

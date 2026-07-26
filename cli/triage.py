@@ -13,7 +13,7 @@ from pathlib import Path
 
 import click
 
-from core.config_loader import get_config
+from core.config_loader import ConfigNotFound, get_config
 from core.pipeline import run_pipeline
 
 from ._console import err, out
@@ -110,7 +110,12 @@ def triage(
 
     # Logging first, so config-loading warnings reach the configured handler.
     _setup_logging(verbosity=verbosity)
-    config = get_config(config_path)
+    try:
+        config = get_config(config_path)
+    except ConfigNotFound as exc:
+        raise click.UsageError(
+            f"Config file not found: {exc}"
+        ) from exc
     _setup_logging(config["log_level"], verbosity)
 
     config = _apply_scan_profile(config, profile)
@@ -208,7 +213,10 @@ def _analyse_all(
 
         reports.append(report)
 
-        if not machine:
+        # Triage is a different output *shape*, not a quieter scan: at
+        # default verbosity only the score table prints, and `scan -v`
+        # investigates whatever it points at. -v restores per-file reports.
+        if not machine and detail_level >= 1:
             from reporting.terminal_reporter import print_terminal_report  # noqa: PLC0415
 
             print_terminal_report(report, detail_level=detail_level)
@@ -238,32 +246,10 @@ def _emit_machine(reports: list[dict], fmt: str) -> None:
 
 
 def _print_summary(reports: list[dict], failures: list[tuple[str, str]]) -> None:
-    """Print the per-file summary table to stdout."""
-    from rich import box  # noqa: PLC0415
-    from rich.table import Table  # noqa: PLC0415
+    """Print the sweep score table to stdout, highest score first."""
+    from reporting.triage_reporter import print_triage_table  # noqa: PLC0415
 
-    from reporting.terminal_reporter._common import BAND_COLOURS  # noqa: PLC0415
-
-    table = Table(title="[bold]Triage Summary[/bold]", box=box.ROUNDED, padding=(0, 1))
-    table.add_column("File", style="bold", no_wrap=True)
-    table.add_column("Score", justify="right", no_wrap=True)
-    table.add_column("Risk Band", no_wrap=True)
-    table.add_column("Elapsed", justify="right", no_wrap=True)
-
-    for report in reports:
-        scoring = report["scoring"]
-        band = scoring["risk_band"]
-        colour = BAND_COLOURS.get(band, "white")
-        table.add_row(
-            Path(report["file"]).name,
-            f"[{colour}]{scoring['total_score']}[/{colour}]",
-            f"[{colour}]{band}[/{colour}]",
-            f"{report['timing']['elapsed_seconds']:.1f}s",
-        )
-
-    for name, _error in failures:
-        table.add_row(name, "[red]ERR[/red]", "[red]ERROR[/red]", "—")
-
-    out.print()
-    out.print(table)
-    out.print()
+    elapsed = sum(
+        (r.get("timing") or {}).get("elapsed_seconds") or 0.0 for r in reports
+    )
+    print_triage_table(reports, failures, elapsed=elapsed, console=out)

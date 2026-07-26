@@ -1,0 +1,205 @@
+{
+  "dynamic": null,
+  "file": "/samples/ClickFix.html",
+  "meta": {
+    "tool": "ThreatLens",
+    "version": "0.2.0"
+  },
+  "module_results": [
+    {
+      "data": {
+        "file_name": "ClickFix.html",
+        "file_path": "/home/pmafma/Documents/Malware/html smuggling test malware/ClickFix.html",
+        "file_size": 134580,
+        "file_type": {
+          "description": "HTML document, Unicode text, UTF-8 text, with very long lines (8832)",
+          "mime_type": "text/html"
+        },
+        "hashes": {
+          "md5": "59fa7ba38e915dc58a06f44ac309c3b7",
+          "sha256": "6cd4c1be3f6ced0f4d542395b8f0fdaf29954b25931b66e1e7021d0a076360ed",
+          "ssdeep": "3072:7jWU8lbCi3dDrOsESwYhDD68yQbRY3XzN9EQGPItMW+DsovtTCC5:IDNS0yY",
+          "tlsh": "T180D3C8056EA6A9B692E3719BDC70C310607EB1BA5E649D84F7FD801C5BD0FED463222C"
+        }
+      },
+      "module": "file_intake",
+      "reason": "File intake provides metadata only \u2014 no score contribution.",
+      "score_delta": 0,
+      "status": "success"
+    },
+    {
+      "data": {
+        "base64_blobs": [],
+        "clipboard_contains_lolbin": false,
+        "clipboard_lolbins_found": [],
+        "clipboard_payload_preview": "",
+        "dangerous_extensions": [],
+        "double_extension": false,
+        "download_filenames": [],
+        "embedded_payload_types": [],
+        "encoding": "utf-8",
+        "file_size_bytes": 134580,
+        "form_actions": [
+          "https://nexxusmanagement.com/"
+        ],
+        "has_atob": false,
+        "has_auto_download": false,
+        "has_blob_creation": true,
+        "has_blob_url": true,
+        "has_clipboard_write": false,
+        "has_data_uri_link": false,
+        "has_eval": false,
+        "has_eval_atob": false,
+        "has_exec_copy": false,
+        "has_fetch_beacon": false,
+        "has_fromcharcode": false,
+        "has_function_constructor": false,
+        "has_hex_escapes": false,
+        "has_junk_comments": true,
+        "has_mssave": false,
+        "has_obfuscated_varnames": true,
+        "has_onload_trigger": false,
+        "has_settimeout_exec": false,
+        "has_split_string": false,
+        "has_unescape": false,
+        "has_unicode_escapes": true,
+        "has_websocket": false,
+        "has_window_loc_blob": false,
+        "has_xhr_beacon": false,
+        "meta_refresh_target": null,
+        "num_download_anchors": 0,
+        "num_external_scripts": 10,
+        "num_iframes": 0,
+        "num_script_blocks": 13,
+        "num_suspicious_external_scripts": 8,
+        "obfuscation_indicators": [
+          "unicode escape sequences (\\uNNNN)",
+          "Junk-comment camouflage (AI-generated obfuscation noise)",
+          "Obfuscated / programmatically-generated variable names"
+        ],
+        "random_path_scripts": [
+          "https://simplecopseholding.com/jWcTAonomVveWlRkcUjN6PF-aopGXJy",
+          "https://neutralmarlservices.com/hkc4cx1RXWAnuMWLqUuwqS30X97Pv3mA0Nsy-lTcqMK95j"
+        ],
+        "social_eng_patterns": [],
+        "suspicious_external_domains": [
+          "simplecopseholding.com",
+          "neutralmarlservices.com",
+          "nexxusmanagement.com"
+        ],
+        "suspicious_external_script_urls": [
+          "https://simplecopseholding.com/jWcTAonomVveWlRkcUjN6PF-aopGXJy",
+          "https://neutralmarlservices.com/hkc4cx1RXWAnuMWLqUuwqS30X97Pv3mA0Nsy-lTcqMK95j",
+          "https://nexxusmanagement.com/wp-includes/js/jquery/jquery.min.js?ver=3.7.1",
+          "https://nexxusmanagement.com/wp-includes/js/jquery/jquery-migrate.min.js?ver=3.4.1",
+          "https://nexxusmanagement.com/wp-content/themes/Divi/core/admin/js/recaptcha.js?ver=6.9.1",
+          "https://nexxusmanagement.com/wp-content/themes/Divi/js/custom.unified.js?ver=4.4.0",
+          "https://nexxusmanagement.com/wp-content/themes/Divi-Child/js/scripts.js?ver=0.1.1",
+          "https://nexxusmanagement.com/wp-content/themes/Divi/core/admin/js/common.js?ver=4.4.0"
+        ],
+        "suspicious_iframe_urls": []
+      },
+      "module": "html_analysis",
+      "reason": "Blob delivery chain (new Blob + URL.createObjectURL); Junk-comment camouflage (AI-generated obfuscation noise); Obfuscated variable names alongside junk-comment cover; 2 injected script(s) with C2-style random-path URL",
+      "score_delta": 50,
+      "status": "success"
+    },
+    {
+      "data": {
+        "iocs": {
+          "domain": [
+            "api.w.org",
+            "fonts.googleapis.com",
+            "neutralmarlservices.com",
+            "nexxusmanagement.com",
+            "schema.org",
+            "simplecopseholding.com",
+            "yoast.com"
+          ],
+          "email": [
+            "sales@nexxusmanagement.com"
+          ],
+          "ipv4": [
+            "181.215.195.35"
+          ],
+          "url": [
+            "http://nexxusmanagement.com/",
+            "http://nexxusmanagement.com/#website",
+            "http://nexxusmanagement.com/?s=",
+            "http://nexxusmanagement.com/wp-content/uploads/2020/03/business-01.jpg);",
+            "http://nexxusmanagement.com/wp-content/uploads/2020/03/firstglobalins-logo.png",
+            "http://nexxusmanagement.com/wp-content/uploads/2020/03/leanstay-logo.jpg",
+            "http://nexxusmanagement.com/wp-content/uploads/2020/03/nexus-logo-1.png",
+            "http://nexxusmanagement.com/wp-content/uploads/2020/03/nexus-logo.png",
+            "http://nexxusmanagement.com/wp-content/uploads/2020/03/ssm-logo.png",
+            "https://api.w.org/",
+            "https://fonts.googleapis.com/css?family=Montserrat",
+            "https://fonts.googleapis.com/css?family=Montserrat:100,200,300,regular,500,600,700,800,900,100italic,200italic,300italic,italic,500italic,600italic,700italic,800italic,900italic",
+            "https://fonts.googleapis.com/css?family=Open+Sans:300italic,400italic,600italic,700italic,800italic,400,300,600,700,800&#038;subset=latin,latin-ext'",
+            "https://neutralmarlservices.com/hkc4cx1RXWAnuMWLqUuwqS30X97Pv3mA0Nsy-lTcqMK95j",
+            "https://nexxusmanagement.com';var",
+            "https://nexxusmanagement.com/",
+            "https://nexxusmanagement.com/#breadcrumb",
+            "https://nexxusmanagement.com/'",
+            "https://nexxusmanagement.com/?qxiqin=56x5",
+            "https://nexxusmanagement.com/about-us/",
+            "https://nexxusmanagement.com/case-studies/",
+            "https://nexxusmanagement.com/comments/feed/",
+            "https://nexxusmanagement.com/contact-us/",
+            "https://nexxusmanagement.com/feed/",
+            "https://nexxusmanagement.com/news2/",
+            "https://nexxusmanagement.com/project/first-global-insurance-agency/",
+            "https://nexxusmanagement.com/project/leanstay/",
+            "https://nexxusmanagement.com/project/starstar-mobile/",
+            "https://nexxusmanagement.com/wp-admin/admin-ajax.php",
+            "https://nexxusmanagement.com/wp-content/et-cache/19/et-core-unified-19-17724660895294.min.css",
+            "https://nexxusmanagement.com/wp-content/et-cache/19/et-core-unified-tb-3918-19-17724660895294.min.css",
+            "https://nexxusmanagement.com/wp-content/themes/Divi-Child/js/scripts.js?ver=0.1.1",
+            "https://nexxusmanagement.com/wp-content/themes/Divi-Child/style.css?ver=4.4.0'",
+            "https://nexxusmanagement.com/wp-content/themes/Divi/core/admin/js/common.js?ver=4.4.0",
+            "https://nexxusmanagement.com/wp-content/themes/Divi/core/admin/js/recaptcha.js?ver=6.9.1",
+            "https://nexxusmanagement.com/wp-content/themes/Divi/images",
+            "https://nexxusmanagement.com/wp-content/themes/Divi/includes/builder/images",
+            "https://nexxusmanagement.com/wp-content/themes/Divi/js/custom.unified.js?ver=4.4.0",
+            "https://nexxusmanagement.com/wp-content/themes/Divi/style.css?ver=6.9.1'",
+            "https://nexxusmanagement.com/wp-content/uploads/2020/03/cropped-nexus-logo-1-180x180.png",
+            "https://nexxusmanagement.com/wp-content/uploads/2020/03/cropped-nexus-logo-1-192x192.png",
+            "https://nexxusmanagement.com/wp-content/uploads/2020/03/cropped-nexus-logo-1-270x270.png",
+            "https://nexxusmanagement.com/wp-content/uploads/2020/03/cropped-nexus-logo-1-32x32.png",
+            "https://nexxusmanagement.com/wp-includes/css/dashicons.min.css?ver=6.9.1'",
+            "https://nexxusmanagement.com/wp-includes/js/jquery/jquery-migrate.min.js?ver=3.4.1",
+            "https://nexxusmanagement.com/wp-includes/js/jquery/jquery.min.js?ver=3.7.1",
+            "https://nexxusmanagement.com/wp-includes/js/wp-emoji-loader.min.js",
+            "https://nexxusmanagement.com/wp-includes/js/wp-emoji-release.min.js?ver=6.9.1",
+            "https://nexxusmanagement.com/wp-json/",
+            "https://nexxusmanagement.com/wp-json/oembed/1.0/embed?url=https"
+          ]
+        },
+        "total_iocs": 59
+      },
+      "module": "ioc_extractor",
+      "reason": "Network IOCs found: 51 URLs/IPs; Domains: api.w.org, fonts.googleapis.com, neutralmarlservices.com (+4 more); 1 email address(es) found",
+      "score_delta": 20,
+      "status": "success"
+    }
+  ],
+  "scoring": {
+    "breakdown": [
+      {
+        "module": "html_analysis",
+        "reason": "Blob delivery chain (new Blob + URL.createObjectURL); Junk-comment camouflage (AI-generated obfuscation noise); Obfuscated variable names alongside junk-comment cover; 2 injected script(s) with C2-style random-path URL",
+        "score_delta": 50
+      },
+      {
+        "module": "ioc_extractor",
+        "reason": "Network IOCs found: 51 URLs/IPs; Domains: api.w.org, fonts.googleapis.com, neutralmarlservices.com (+4 more); 1 email address(es) found",
+        "score_delta": 20
+      }
+    ],
+    "risk_band": "HIGH",
+    "total_score": 70
+  },
+  "timing": {
+    "total_seconds": 1.0
+  }
+}

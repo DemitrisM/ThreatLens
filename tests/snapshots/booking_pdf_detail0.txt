@@ -1,0 +1,60 @@
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ThreatLens  Static Malware Analysis                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+                                          File Information                                          
+╭────────┬─────────────────────────────────────────────────────────────────────────────────────────╮
+│ File   │ booking.pdf                                                                             │
+│ Path   │ /home/pmafma/Documents/Malware/pdf test malware/booking.pdf                             │
+│ Size   │ 37.1 KiB                                                                                │
+│ Type   │ PDF document, version 1.5, 1 page(s) (zip deflate encoded)                              │
+│ MIME   │ application/pdf                                                                         │
+│ MD5    │ 4e7f0868d1d60a702c07c0c5e252183a                                                        │
+│ SHA256 │ ef85bfb534a2d679261902aab71e24dde3c5c9b7950e300dd0df298dfddddc02                        │
+│ TLSH   │ T149033C538C884E47E874C3AABF471F6D6B497E4EA5C276FF10260E837B312615C4E12A                │
+│ ssdeep │ 384:b0sVJqEdqa1osPjFLjhdlCxJPxncS45sJflFbfhfhfhfhfTZZZZZZZZz/ll7cnif:9lpdCxJZnjWsh3bfhf │
+│        │ hfhfhfvlSo                                                                              │
+╰────────┴─────────────────────────────────────────────────────────────────────────────────────────╯
+
+  ██████████████░░░░░░░░  65/100  HIGH
+
+  Likely malicious with PDF auto-action, network IOC indicators, embedded JavaScript
+
+  FINDINGS
+                                                                                                    
+ Module            Δ   Reason                                                                       
+ ────────────────────────────────────────────────────────────────────────────────────────────────── 
+ pdf_analysis    +50   Raw PDF markers: /OpenAction(1), /JavaScript(1), /JS(1); peepdf extracted 1  
+                       JavaScript block(s); Social-engineering J...                                 
+ ioc_extractor   +15   Network IOCs found: 1 URLs/IPs; Domains: bociking.netlify.app                
+                                                                                                    
+
+  PDF Indicators
+                                                                                                    
+ Auto-execute   /OpenAction ×1                                                                      
+ JavaScript     1 block(s) — app.alert("Lettore non compatibile! Per favore, aprilo nel browser."); 
+ Keywords       /JS ×1, /JavaScript ×1                                                              
+ URIs           https://bociking.netlify.app/                                                       
+ Version        1.5                                                                                 
+                                                                                                    
+
+      Indicators of Compromise (IOCs)      
+╭────────┬────────────────────────────────╮
+│ Type   │ Value                          │
+├────────┼────────────────────────────────┤
+│ Domain │ bociking.netlify.app           │
+│ URL    │ https://bociking.netlify.app/) │
+╰────────┴────────────────────────────────╯
+
+  modules  ✓✓✓   3 ran
+
+╭───────────────────────────────────── Recommended Next Steps ─────────────────────────────────────╮
+│                                                                                                  │
+│    • Check network logs for connections to: bociking.netlify.app                                 │
+│    • Consider dynamic analysis — set dynamic_provider in config.yaml                             │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Analysis complete  2026-01-01 00:00:00 UTC
+

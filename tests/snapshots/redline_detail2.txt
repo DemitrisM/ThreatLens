@@ -1,0 +1,940 @@
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ThreatLens  Static Malware Analysis                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+                                          File Information                                          
+╭────────┬─────────────────────────────────────────────────────────────────────────────────────────╮
+│ File   │ RedLineStealer.exe                                                                      │
+│ Path   │ /home/pmafma/Documents/Malware/exe test malware/RedLineStealer.exe                      │
+│ Size   │ 95.5 KiB                                                                                │
+│ Type   │ PE32 executable (console) Intel 80386 Mono/.Net assembly, for MS Windows, 3 sections    │
+│ MIME   │ application/vnd.microsoft.portable-executable                                           │
+│ MD5    │ ba69008a5c5e0096d3765ec7471ea066                                                        │
+│ SHA256 │ 3e8d997c6e26dcd0aad2ba74c99b5b46fbee0db1d0d46088ae5c8155fb827c33                        │
+│ TLSH   │ T1C2A35D2067AC9F19EAFD1B74B4B2012043F1E08A9091FB4B4DC164E61FA7B865957FF2                │
+│ ssdeep │ 1536:1qsklqWWlbG6jejoigI/43Ywzi0Zb78ivombfexv0ujXyyed2HteulgS6pg:zEReY/+zi0ZbYe1g0ujyzd │
+│        │ Lg                                                                                      │
+╰────────┴─────────────────────────────────────────────────────────────────────────────────────────╯
+
+  ███████████████░░░░░░░  68/100  HIGH
+
+  Likely malicious with .NET stealer rule class strings (+2), network IOC indicators, encoded data, 
+unsigned binary
+
+  FINDINGS
+                                                                                                    
+ Module              Δ   Reason                                                                     
+ ────────────────────────────────────────────────────────────────────────────────────────────────── 
+ pe_analysis       +15   No digital signature found; Compile timestamp is in the future             
+                         (2097-08-14) — likely forged                                               
+ string_analysis   +38   Suspicious strings: .NET stealer rule class, .NET stealer scan-routine,    
+                         Crypto wallet artefact, PowerShell download/exec, Base64 reference         
+ ioc_extractor     +15   Network IOCs found: 4 URLs/IPs; Domains: ipinfo.io                         
+                                                                                                    
+
+  PE Structural Indicators
+                                                        
+ Sections              3 total                          
+ DLL characteristics   missing: CFG                     
+ Resources (.rsrc)     1536 bytes, entropy 3.72         
+ Rich header           absent (non-MS toolchain)        
+ Resource types        RT_VERSION=596, RT_MANIFEST=490  
+ Imphash               f34d5f2d4577ed6d9ceec516c1f5a744 
+                                                        
+
+                  Indicators of Compromise (IOCs)                  
+╭────────────┬────────────────────────────────────────────────────╮
+│ Type       │ Value                                              │
+├────────────┼────────────────────────────────────────────────────┤
+│ Domain     │ ipinfo.io                                          │
+│ IP Address │ 45.88.91.67                                        │
+│ URL        │ https://api.ip.sb/geoip                            │
+│ URL        │ https://api.ipify.orgcookies//settinString.Removeg │
+│ URL        │ https://ipinfo.io/ip                               │
+╰────────────┴────────────────────────────────────────────────────╯
+
+                                         Suspicious Strings                                         
+╭───────────────────────────┬──────────────────────────────────────────────────────────────────────╮
+│ Category                  │ String                                                               │
+├───────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+│ .NET stealer scan-routine │ <ScanDiscord>k__BackingField                                         │
+│ .NET stealer scan-routine │ <ScanSteam>k__BackingField                                           │
+│ .NET stealer scan-routine │ <ScanTelegram>k__BackingField                                        │
+│ PowerShell download/exec  │ DownloadFile                                                         │
+│ .NET stealer rule class   │ DiscordRule                                                          │
+│ .NET stealer rule class   │ AllWalletsRule                                                       │
+│ PowerShell download/exec  │ FromBase64String                                                     │
+│ Base64 reference          │ FromBase64String                                                     │
+│ Crypto wallet artefact    │ user.config{0}\FileZilla\sitemanager.xmlcookies.sqlite\Program Files │
+│                           │ (x86)\configRoninWalletdisplayNamehost_key\Elect...                  │
+│ Crypto wallet artefact    │ Metamask                                                             │
+│ Crypto wallet artefact    │ GuardaWallet                                                         │
+╰───────────────────────────┴──────────────────────────────────────────────────────────────────────╯
+
+                                           Module Results                                           
+╭──────────────────┬─────────┬─────────┬───────────────────────────────────────────────────────────╮
+│ Module           │ Status  │ Score Δ │ Reason                                                    │
+├──────────────────┼─────────┼─────────┼───────────────────────────────────────────────────────────┤
+│ file_intake      │ success │       — │ File intake provides metadata only — no score             │
+│                  │         │         │ contribution.                                             │
+│ pe_analysis      │ success │     +15 │ No digital signature found; Compile timestamp is in the   │
+│                  │         │         │ future (2097-08-14) — likely forged                       │
+│ string_analysis  │ success │     +38 │ Suspicious strings: .NET stealer rule class, .NET stealer │
+│                  │         │         │ scan-routine, Crypto wallet artefact, PowerShell          │
+│                  │         │         │ download/exec, Base64 reference                           │
+│ ioc_extractor    │ success │     +15 │ Network IOCs found: 4 URLs/IPs; Domains: ipinfo.io        │
+│ yara_scanner     │ success │       — │ No YARA rules matched (751 rules loaded)                  │
+│ doc_analysis     │ skipped │       — │ Not applicable — not an Office document                   │
+│ pdf_analysis     │ skipped │       — │ Not applicable — not a PDF file                           │
+│ html_analysis    │ skipped │       — │ Not applicable — not an HTML file                         │
+│ archive_analysis │ skipped │       — │ PE has no archive overlay                                 │
+│ onenote_analysis │ skipped │       — │ Not applicable — not a OneNote file                       │
+╰──────────────────┴─────────┴─────────┴───────────────────────────────────────────────────────────╯
+
+╭───────────────────────────────────── Recommended Next Steps ─────────────────────────────────────╮
+│                                                                                                  │
+│    • Investigate IP(s): 45.88.91.67                                                              │
+│    • Check network logs for connections to: ipinfo.io                                            │
+│    • Consider dynamic analysis — set dynamic_provider in config.yaml                             │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+  RAW MODULE DATA
+
+  file_intake (success)
+{
+  "data": {
+    "file_name": "RedLineStealer.exe",
+    "file_path": "/home/pmafma/Documents/Malware/exe test malware/RedLineStealer.exe",
+    "file_size": 97792,
+    "file_type": {
+      "description": "PE32 executable (console) Intel 80386 Mono/.Net assembly, for MS Windows, 3 
+sections",
+      "mime_type": "application/vnd.microsoft.portable-executable"
+    },
+    "hashes": {
+      "md5": "ba69008a5c5e0096d3765ec7471ea066",
+      "sha256": "3e8d997c6e26dcd0aad2ba74c99b5b46fbee0db1d0d46088ae5c8155fb827c33",
+      "ssdeep": 
+"1536:1qsklqWWlbG6jejoigI/43Ywzi0Zb78ivombfexv0ujXyyed2HteulgS6pg:zEReY/+zi0ZbYe1g0ujyzdLg",
+      "tlsh": "T1C2A35D2067AC9F19EAFD1B74B4B2012043F1E08A9091FB4B4DC164E61FA7B865957FF2"
+    }
+  },
+  "module": "file_intake",
+  "reason": "File intake provides metadata only \u2014 no score contribution.",
+  "score_delta": 0,
+  "status": "success"
+}
+
+  pe_analysis (success)
+{
+  "data": {
+    "api_categories": [],
+    "certificate": {},
+    "compiled_language": null,
+    "debug_info": {
+      "pdb_path": "",
+      "pdb_username": "",
+      "suspicious_pdb": false
+    },
+    "dll_characteristics_flags": {
+      "aslr": true,
+      "cfg": false,
+      "dep": true,
+      "force_integrity": false,
+      "high_entropy_va": false,
+      "seh": false
+    },
+    "dos_stub": {
+      "modified": false,
+      "preview": "\u000e\u001f\ufffd\u000e\u0000\ufffd\t\ufffd!\ufffd\u0001L\ufffd!This program 
+cannot be run in DOS mode.\r\r\n$\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+    },
+    "dynamic_api_resolution": {
+      "apis": [],
+      "count": 0
+    },
+    "embedded_pe": null,
+    "entry_point_section": {
+      "anomaly": false,
+      "section": ".text"
+    },
+    "exports": [],
+    "forwarded_exports": 0,
+    "has_signature": false,
+    "has_tls_callbacks": false,
+    "headers": {
+      "characteristics": "0x102",
+      "compile_timestamp": "2097-08-14T23:34:58+00:00",
+      "compile_timestamp_raw": 4027361698,
+      "dll_characteristics": "0x8540",
+      "entry_point": "0x1932e",
+      "image_base": "0x400000",
+      "machine": "x86 (32-bit)",
+      "number_of_sections": 3,
+      "subsystem": 3
+    },
+    "hollowing_apis": [],
+    "imphash": "f34d5f2d4577ed6d9ceec516c1f5a744",
+    "import_footprint": {
+      "dll_count": 1,
+      "is_kernel32_only": false,
+      "loader_only": false
+    },
+    "imports": {
+      "mscoree.dll": [
+        "_CorExeMain"
+      ]
+    },
+    "installer": null,
+    "is_dotnet": true,
+    "overlay": {
+      "entropy": 0.0,
+      "size": 0
+    },
+    "packers_detected": [],
+    "pe_checksum": {
+      "computed": 105911,
+      "mismatch_signed": false,
+      "stored": 0
+    },
+    "resource_types": {
+      "autoit": false,
+      "large_rcdata": 0,
+      "largest_rcdata": 0,
+      "types": {
+        "RT_MANIFEST": 490,
+        "RT_VERSION": 596
+      }
+    },
+    "resources": {
+      "entropy": 3.7239,
+      "high_entropy": false,
+      "present": true,
+      "size": 1536
+    },
+    "rich_header": {
+      "checksum": null,
+      "corrupted": false,
+      "n_entries": 0,
+      "present": false,
+      "tools": []
+    },
+    "rwx_sections": [],
+    "section_count": 3,
+    "section_permission_anomalies": [],
+    "section_size_mismatch": {
+      "count": 0,
+      "names": []
+    },
+    "sections": [
+      {
+        "characteristics": "0x60000020",
+        "entropy": 6.0152,
+        "name": ".text",
+        "raw_size": 95232,
+        "virtual_address": "0x2000",
+        "virtual_size": 95028
+      },
+      {
+        "characteristics": "0x40000040",
+        "entropy": 3.7239,
+        "name": ".rsrc",
+        "raw_size": 1536,
+        "virtual_address": "0x1a000",
+        "virtual_size": 1246
+      },
+      {
+        "characteristics": "0x42000040",
+        "entropy": 0.1019,
+        "name": ".reloc",
+        "raw_size": 512,
+        "virtual_address": "0x1c000",
+        "virtual_size": 12
+      }
+    ],
+    "suspicious_imports": [],
+    "total_imports": 1,
+    "version_info": {
+      "Assembly Version": "0.0.0.0",
+      "FileDescription": "",
+      "FileVersion": "0.0.0.0",
+      "InternalName": "Implosions.exe",
+      "LegalCopyright": "",
+      "OriginalFilename": "Implosions.exe",
+      "ProductVersion": "0.0.0.0"
+    }
+  },
+  "module": "pe_analysis",
+  "reason": "No digital signature found; Compile timestamp is in the future (2097-08-14) \u2014 
+likely forged",
+  "score_delta": 15,
+  "status": "success"
+}
+
+  string_analysis (success)
+{
+  "data": {
+    "source": "raw",
+    "strings_sample": [
+      "!This program cannot be run in DOS mode.",
+      ".text",
+      "`.rsrc",
+      "@.reloc",
+      "-$ro",
+      "3$ro",
+      "-es,",
+      "-e(V",
+      "iY(c",
+      " KDBM(k",
+      "*2(V",
+      "*.sH",
+      " @B/",
+      "jXi(",
+      "j[+.",
+      "+[(x",
+      "+O~*",
+      "+$~+",
+      "+*.s",
+      ">@(G",
+      "BSJB",
+      "v4.0.30319",
+      "#Strings",
+      "#GUID",
+      "#Blob",
+      "/M@C",
+      "f9GF",
+      "O<9&",
+      "0=M@.",
+      "/M@.",
+      "F=QI",
+      ")M3&",
+      "k;M3",
+      "hKM3",
+      ";!:\"",
+      "O0M@",
+      " WO]",
+      " cOb",
+      " d*z",
+      "Q?E\"",
+      "3EEECA8C90CAA62AB5F9CCDD8715DA5023F4BA00",
+      "__StaticArrayInitTypeSize=10",
+      "__StaticArrayInitTypeSize=20",
+      "359A00EF6C789FD4C18644F56C5D3F97453FFF20",
+      "__StaticArrayInitTypeSize=30",
+      "__StaticArrayInitTypeSize=40",
+      "7C9294BE6200FF78DBFFD78FF8899846A7C82760",
+      "77A9683FAF2EC9EC3DABC09D33C3BD04E8897D60",
+      "A8F9B62160DF085B926D5ED70E2B0F6C95A25280",
+      "__StaticArrayInitTypeSize=90",
+      "F413CEA9BAA458730567FE47F57CC3C94DDF63C0",
+      "<>9__0_0",
+      "<Scan>b__0_0",
+      "<.ctor>b__0_0",
+      "<DistinctBy>b__0_0",
+      "<>c__DisplayClass0_0",
+      "<GetWindowsVersion>g__HKLM_GetString|11_0",
+      "<>c__DisplayClass1_0",
+      "<>9__3_0",
+      "<ContainsDomains>b__3_0",
+      "<>9__5_0",
+      "<GetScanArgs>b__5_0",
+      "<>9__8_0",
+      "<ListOfPrograms>b__8_0",
+      "<>9__9_0",
+      "<AvailableLanguages>b__9_0",
+      "<Execute>b__0",
+      "<.cctor>b__0",
+      "<>p__0",
+      "2FBDC611D3D91C142C969071EA8A7D3D10FF6301",
+      "855FED6E03442FBB3AF914FFBFA9DA82813817A1",
+      "989657DD93570810E43C5B1F68E529460CA796F1",
+      "<>9__3_1",
+      "<ContainsDomains>b__3_1",
+      "<Scan>b__1",
+      "<>p__1",
+      "Func`1",
+      "IEnumerable`1",
+      "IOrderedEnumerable`1",
+      "CallSite`1",
+      "ICollection`1",
+      "IEnumerator`1",
+      "IList`1",
+      "ChannelFactory`1",
+      "arg1",
+      "1674D4347598B476FA761898A499DB4C02053102",
+      "__StaticArrayInitTypeSize=102",
+      "CA800E6788E431A0A8BC7A47AE9929225FEE5702",
+      "__StaticArrayInitTypeSize=12",
+      "__StaticArrayInitTypeSize=22",
+      "__StaticArrayInitTypeSize=32",
+      "Microsoft.Win32",
+      "ToUInt32",
+      "ToInt32",
+      "A937C899247696B6565665BE3BD09607F49A2042",
+      "__StaticArrayInitTypeSize=42",
+      "__StaticArrayInitTypeSize=152",
+      "__StaticArrayInitTypeSize=52",
+      "C870F92F620E60CAA51A5D7E3D77C55576D20862",
+      "__StaticArrayInitTypeSize=62",
+      "__StaticArrayInitTypeSize=72",
+      "3F6BA22DF7E6EB52DA3166FB3020D155A2776ED2",
+      "D67333042BFFC20116BF01BC556566EC76C6F7E2",
+      "EB7EF1973CDC295B7B08FE6D82B9ECDAD1106AF2",
+      "<>9__0_2",
+      "<Scan>b__0_2",
+      "<GetTokens>d__2",
+      "<>p__2",
+      "<>c__0`2",
+      "Func`2",
+      "IGrouping`2",
+      "KeyValuePair`2",
+      "Dictionary`2",
+      "04EC68A0FC7D9B6A255684F330C28A4DCAB91F13",
+      "asd44123",
+      "AKSFD8H23",
+      "EB14352FBADB40E2FA237D444A6575B918573C43",
+      "5AC5D01D531EDFB3707A50A2476ABF6A4D050763",
+      "2ADC9207E27E1E7B3C16C7A8A6F212757DCFE863",
+      "4E3D7F188A5F5102BEC5B820632BBAEC26839E63",
+      "387D8DBBFB12BA323F1E0F1F539B4DA9550070C3",
+      "8D47DE3FB22B40C72F6EC333F40C80E5B29C87D3",
+      "C39241F447680C35D3966F9446AAE6D462E04AD3",
+      "840CAD2B45646D90644E85D8BE6A733AA684A0E3",
+      "79E9B68FB6E1987DED749BCD71143BD8EB323CE3",
+      "<Scan>b__3",
+      "<>p__3",
+      "Func`3",
+      "4EF472E2E74116C7FD95C74AB422CCF80DB1C404",
+      "__StaticArrayInitTypeSize=14",
+      "__StaticArrayInitTypeSize=124",
+      "__StaticArrayInitTypeSize=24",
+      "sl9HSDF234",
+      "sdfo8n234",
+      "46884713B2F882E5304A1FF1B16370575A53E434",
+      "__StaticArrayInitTypeSize=34",
+      "__StaticArrayInitTypeSize=144",
+      "__StaticArrayInitTypeSize=154",
+      "__StaticArrayInitTypeSize=64",
+      "FromBase64",
+      "ToInt64",
+      "67CD3B1DF0AD5BAEAA1ABDDA3FCAFB2EEBDD2684",
+      "24745D8330E61F986032C2034A579B0B80181594",
+      "5DCB9EAE4CEECF21F13DB2FBBE60A2FFC47453B4",
+      "1076B53156E190E9BCBE281016712F2D3F02D3B4",
+      "<>9__0_4",
+      "<Scan>b__0_4",
+      "<>o__4",
+      "get_IPv4",
+      "set_IPv4",
+      "EB2DB456E0D779E528D1474FA55AC99055A5E815",
+      "38F431A549411AEB32810068A4C83250B2D31E15",
+      "B14822E504AE1EF678AE0E823684D7B32F95A725",
+      "askd435",
+      "9345",
+      "703C0129D2425B4E51361C24EBE8A0042E483AC5",
+      "2A92E2F98903398CD12F10BDF583F44C2C6EEBF5",
+      "<Scan>b__5",
+      "Func`5",
+      "Action`5",
+      "89597D644F71E5F46E2E63751A3C5F94FCFCD516",
+      "__StaticArrayInitTypeSize=16",
+      "E0CEB3E46E857A70CFB575A05B01A64806A8D426",
+      "5E52C12E6FD3BB7F2A02D01E80229C758C55CC26",
+      "__StaticArrayInitTypeSize=46",
+      "__StaticArrayInitTypeSize=76",
+      "7390CD62F6A65F4FB819D675F451B41EE1790C96",
+      "__StaticArrayInitTypeSize=6",
+      "80E5A0A2B81DB2473AFBB3FDD6F479670B7B41C6",
+      "0E5921723BD3C6CB75662A156FB56AF05A7152C6",
+      "<>9__0_6",
+      "<Scan>b__0_6",
+      "508209E11F4027EB3115950926B6AA24E91A3607",
+      "3F97CA5BE7FE9C129528F72AF4DFC001E9A3D047",
+      "D3E21E15607F5CF9027C28EA14C124E278E3D957",
+      "FB77AA8CDAF4D2192696350B7AB546B533467477",
+      "18B532EF2959EF2ED8C549D712E3446FF49E4287",
+      "4062BDAE12A3F6A735FAD41F5A4EA518A1C50B87",
+      "C961283A536D49979AAD11F7BC192F2ACA8D3B97",
+      "007A56C60CB686C542C5A63F4806094A4F9494B7",
+      "89C95FB6F8086AFCCD50B1B257669F2B17C047B7",
+      "B322AF50AA029F1E4D2A68F4003EFBC9BE2A0FB7",
+      "D82572C56BDDD62E320B8BDAF0397A0DF9DD5BF7",
+      "<Scan>b__7",
+      "<>o__7",
+      "__StaticArrayInitTypeSize=18",
+      "__StaticArrayInitTypeSize=28",
+      "__StaticArrayInitTypeSize=38",
+      "__StaticArrayInitTypeSize=48",
+      "__StaticArrayInitTypeSize=58",
+      "A9B6DE7C485B3014653A30C8B4BEFA8F70610178",
+      "__StaticArrayInitTypeSize=78",
+      "00D675BCFF1D9FECDD0CA29C78CB6A24748C8788",
+      "DF08DD4DFFDB6C9048202CAE65882EF91ECE6BA8",
+      "9B88C78E81ADB9E7247AB37D1F5F3861810916D8",
+      "46F273EF641E07D271D91E0DC24A4392582671F8",
+      "get_UTF8",
+      "<>9__0_8",
+      "<Scan>b__0_8",
+      "asdkadu8",
+      "20CB5B8963ECE3D796594F043D66C0E0BAD86669",
+      "2B9522D4F7398AB5DB789596FE5DB90589B031E9",
+      "<Module>",
+      "<PrivateImplementationDetails>",
+      "8743F6DD6877BBC815E9F16BEC59057DD1A89B0A",
+      "96D6CB223DCF17F7C9F93C825239BDAA3634674A",
+      "FE79FF373808574898C82AC1320C55C1182FB75A",
+      "A3EFD00EA085079EE7F97407F8EFF07E3990696A",
+      "4C1117B01D5C4E103EE817F889EC547C63B47B7A",
+      "A9139732ED4CF84F8CE948DCB134114E4F24598A",
+      "57F4CB785574C3A09AF99937BF91EA2C31E37C8A",
+      "BEDDFAEB0360B1694AB8CD2A69986414790A1D9A",
+      "E63C93C721909983D6276C980CFF923987A4D2AA",
+      "D3DCBB25544C46B48A1F93C97090361F54FE88BA",
+      "4CDA4454A3C36A7EBDCF8FE8B804B379A31D33CA",
+      "085EF559935ACAE54FCEBE778C7DE9948289EEDA",
+      "A8A5F2DC86E781EC7360D1DDBE09F80EEECE48EA",
+      "EBD075615CBE4A710F9410FFECEAF6110A01922B",
+      "DF2BDC3975DC25BFAFFA4976E9CD1E38AADF463B",
+      "9D9AF3AE11A58D55EB8A6AEC8F03F7AD01E8994B",
+      "5BB3788A197C26B8310159EC9A81635814ABB05B",
+      "0410277C15CAD5E63A25F491DAEEF493B897678B",
+      "81E046FA1D93B661CC948A4DD1E01F20D6192E9B",
+      "3D8123EB7B42B02A966BA40985475548B40BE5AB",
+      "4369729D8B79D0C651E00137A3B22A1A24DEBB4C",
+      "C58D707276695E733863DD82C6DF4DF66A3AD49C",
+      "get_CC",
+      "set_CC",
+      "ScanCC",
+      "5F2F91D44A21E42A979E24B620CF42F2CB8687EC",
+      "System.Drawing.Drawing2D",
+      "FD4C77C0C4405C6A46E5C3CE53E0AE6BAEE7746D",
+      "cbAAD",
+      "B5B4FA236B87DBCD8055443F05776B10DDEFA5CD",
+      "get_ReleaseID",
+      "set_ReleaseID",
+      "get_TaskID",
+      "set_TaskID",
+      "6F66485AF823BAE1F185740DA7F4F595701CD22E",
+      "571B1023DF3ABFB94C92465B365B1814FEBFAB3E",
+      "019AF2BA5625A007B9445741626B50B552493C8E",
+      "4956BACC797B0C6C013C7E4846581396C9EF0D8E",
+      "459812D18B50C8E5F96831EFD700F962F692D29E",
+      "71E427369E07185AE0407E3FAB1A16ED62BD159E",
+      "EE4BBE44D57B0465CF2328FB6D7FD1CF1478A9AE",
+      "95098CDF929872F9B67E58070D088F8238F7CABE",
+      "RunPE",
+      "CE18B047107AA23D1AA9B2ED32D316148E02655F",
+      "17C588718030CA902BC760013FE165199AD1C85F",
+      "4B05CEBD7D70F1607D474CAE176FEAEB7439795F",
+      "E705C6345C26AF82E64D22DBE44B2A3514F2F06F",
+      "8C49F78A06E711CF0E21134D0B091985336CC37F",
+      "501BADE98ACDE8BF4A0424FD9A4354615FF08C7F",
+      "D7DC31ED4320E74979DEC780486CF9586470608F",
+      "B14D74C51EAE4F88FBF39B8BD07DA392799FCAAF",
+      "FE2C2369398F2E9CCEE2214F4E86D8EFDE954FAF",
+      "3DB6DAD76E13B54DC03AF1C6092C40388E57FBBF",
+      "get_ASCII",
+      "get_URL",
+      "set_URL",
+      "TotalOfRAM",
+      "BCRYPT_INIT_AUTH_MODE_INFO_VERSION",
+      "get_JSON",
+      "FromJSON",
+      "ToJSON",
+      "get_ScanVPN",
+      "set_ScanVPN",
+      "BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO",
+      "BCRYPT_OAEP_PADDING_INFO",
+      "BCRYPT_PSS_PADDING_INFO",
+      "System.IO",
+      "get_IP",
+      "set_IP",
+      "get_BlockedIP",
+      "set_BlockedIP",
+      "get_ScanFTP",
+      "set_ScanFTP",
+      "DESKTOPVERTRES",
+      "BCRYPT_KEY_LENGTHS_STRUCT",
+      "cbIV",
+      "pbIV",
+      "value__",
+      "FileZilla",
+      "sdi845sa",
+      "cbData",
+      "DownloadData",
+      "ProtectedData",
+      "bEncryptedData",
+      "cbAuthData",
+      "pbAuthData",
+      "IpSb",
+      "mscorlib",
+      "DecryptBlob",
+      "ReleaseHdc",
+      "GetHdc",
+      "Graphic",
+      "System.Collections.Generic",
+      "func",
+      "get_ManagedThreadId",
+      "<>l__initialThreadId",
+      "updateId",
+      "pszAlgId",
+      "taskId",
+      "get_SessionId",
+      "set_MaxBytesPerRead",
+      "get_CurrentThread",
+      "Load",
+      "Download",
+      "IsOdd",
+      "managed",
+      "BytesToStringConverted",
+      "<IPv4>k__BackingField",
+      "<CC>k__BackingField",
+      "<ReleaseID>k__BackingField",
+      "<TaskID>k__BackingField",
+      "<URL>k__BackingField",
+      "<ScanVPN>k__BackingField",
+      "<IP>k__BackingField",
+      "<BlockedIP>k__BackingField",
+      "<ScanFTP>k__BackingField",
+      "<ScanDiscord>k__BackingField",
+      "<Password>k__BackingField",
+      "<PostalCode>k__BackingField",
+      "<ZipCode>k__BackingField",
+      "<geoplugin_countryCode>k__BackingField",
+      "<postal_code>k__BackingField",
+      "<country_code>k__BackingField",
+      "<geoplugin_longitude>k__BackingField",
+      "<geoplugin_latitude>k__BackingField",
+      "<Language>k__BackingField",
+      "<NameOfFile>k__BackingField",
+      "<PathOfFile>k__BackingField",
+      "<DirOfFile>k__BackingField",
+      "<BrowserProfile>k__BackingField",
+      "<Name>k__BackingField",
+      "<MachineName>k__BackingField",
+      "<HolderName>k__BackingField",
+      "<BrowserName>k__BackingField",
+      "<Username>k__BackingField",
+      "<TimeZone>k__BackingField",
+      "<HardType>k__BackingField",
+      "<Hardware>k__BackingField",
+      "<SeenBefore>k__BackingField",
+      "<Secure>k__BackingField",
+      "<Value>k__BackingField",
+      "<Recoursive>k__BackingField",
+      "<Tag>k__BackingField",
+      "<TaskArg>k__BackingField",
+      "<Path>k__BackingField",
+      "<Month>k__BackingField",
+      "<ScanSteam>k__BackingField",
+      "<ScanTelegram>k__BackingField",
+      "<ScanScreen>k__BackingField",
+      "<Open>k__BackingField",
+      "<geoplugin_region>k__BackingField",
+      "<Version>k__BackingField",
+      "<OSVersion>k__BackingField",
+      "<NameOfApplication>k__BackingField",
+      "<Location>k__BackingField",
+      "<FileLocation>k__BackingField",
+      "<Action>k__BackingField",
+      "<Resolution>k__BackingField",
+      "<Proton>k__BackingField",
+      "<Pattern>k__BackingField",
+      "<ip>k__BackingField",
+      "<Http>k__BackingField",
+      "<Year>k__BackingField",
+      "<Number>k__BackingField",
+      "<NameOfBrowser>k__BackingField",
+      "<DomainFilter>k__BackingField",
+      "<Counter>k__BackingField",
+      "<Monitor>k__BackingField",
+      "<AvailableLanguages>k__BackingField",
+      "<Cookies>k__BackingField",
+      "<ScannedFiles>k__BackingField",
+      "<ScanFiles>k__BackingField",
+      "<GameLauncherFiles>k__BackingField",
+      "<GameChatFiles>k__BackingField",
+      "<MessageClientFiles>k__BackingField",
+      "<SystemHardwares>k__BackingField",
+      "<Softwares>k__BackingField",
+      "<Expires>k__BackingField",
+      "<Processes>k__BackingField",
+      "<PassedPaths>k__BackingField",
+      "<ScanFilesPaths>k__BackingField",
+      "<ScanChromeBrowsersPaths>k__BackingField",
+      "<ScanGeckoBrowsersPaths>k__BackingField",
+      "<ScanDetails>k__BackingField",
+      "<SecurityUtils>k__BackingField",
+      "<Autofills>k__BackingField",
+      "<Logins>k__BackingField",
+      "<Actions>k__BackingField",
+      "<FtpConnections>k__BackingField",
+      "<Browsers>k__BackingField",
+      "<InstalledBrowsers>k__BackingField",
+      "<ScanBrowsers>k__BackingField",
+      "<TaskProcessors>k__BackingField",
+      "<ScannedWallets>k__BackingField",
+      "<ScanWallets>k__BackingField",
+      "<NordAccounts>k__BackingField",
+      "<Result>k__BackingField",
+      "<os_crypt>k__BackingField",
+      "<geoplugin_request>k__BackingField",
+      "<Host>k__BackingField",
+      "<Body>k__BackingField",
+      "<encrypted_key>k__BackingField",
+      "<Directory>k__BackingField",
+      "<Country>k__BackingField",
+      "<BlockedCountry>k__BackingField",
+      "<City>k__BackingField",
+      "<geoplugin_city>k__BackingField",
+      "RecordHeaderField",
+      "field",
+      "hWnd",
+      "Append",
+      "CreateBind",
+      "Find",
+      "Round",
+      "set_IsBackground",
+      "FromHwnd",
+      "method",
+      "get_ScanDiscord",
+      "set_ScanDiscord",
+      "get_Password",
+      "set_Password",
+      "sdf934asd",
+      "asdk9345asd",
+      "asdk8jasd",
+      "a03md9ajsd",
+      "C_h_r_o_m_e",
+      "Replace",
+      "IsNullOrWhiteSpace",
+      "serviceInterfacce",
+      "cbNonce",
+      "pbNonce",
+      "source",
+      "Hide",
+      "get_PostalCode",
+      "set_PostalCode",
+      "get_ZipCode",
+      "set_ZipCode",
+      "get_geoplugin_countryCode",
+      "set_geoplugin_countryCode",
+      "set_Mode",
+      "set_SmoothingMode",
+      "chainingMode",
+      "set_InterpolationMode",
+      "set_TransferMode",
+      "set_PixelOffsetMode",
+      "BasicHttpSecurityMode",
+      "SelectSingleNode",
+      "XmlNode",
+      "xmlNode",
+      "get_postal_code",
+      "set_postal_code",
+      "get_country_code",
+      "set_country_code",
+      "get_Unicode",
+      "get_BigEndianUnicode",
+      "get_geoplugin_longitude",
+      "set_geoplugin_longitude",
+      "get_geoplugin_latitude",
+      "set_geoplugin_latitude",
+      "FromImage",
+      "Message",
+      "percentage",
+      "get_Language",
+      "set_Language",
+      "get_CurrentInputLanguage",
+      "AddRange",
+      "ScannedCookie",
+      "Take",
+      "EndInvoke",
+      "BeginInvoke",
+      "ReadTable",
+      "ReadMasterTable",
+      "IEnumerable",
+      "IDisposable",
+      "ToDouble",
+      "RuntimeFieldHandle",
+      "RuntimeTypeHandle",
+      "GetTypeFromHandle",
+      "Rectangle",
+      "DownloadFile",
+      "ScannedFile",
+      "get_NameOfFile",
+      "set_NameOfFile",
+      "get_PathOfFile",
+      "set_PathOfFile",
+      "get_DirOfFile",
+      "set_DirOfFile",
+      "CopyFile",
+      "get_BrowserProfile",
+      "set_BrowserProfile",
+      "profile",
+      "SetConsole",
+      "OpenVPNRule",
+      "ProtonVPNRule",
+      "GuardaRule",
+      "AtomicRule"
+    ],
+    "suspicious_categories": [
+      ".NET stealer rule class",
+      ".NET stealer scan-routine",
+      "Base64 reference",
+      "Crypto wallet artefact",
+      "PowerShell download/exec"
+    ],
+    "suspicious_matches": [
+      {
+        "category": ".NET stealer scan-routine",
+        "severity": "critical",
+        "string": "<ScanDiscord>k__BackingField"
+      },
+      {
+        "category": ".NET stealer scan-routine",
+        "severity": "critical",
+        "string": "<ScanSteam>k__BackingField"
+      },
+      {
+        "category": ".NET stealer scan-routine",
+        "severity": "critical",
+        "string": "<ScanTelegram>k__BackingField"
+      },
+      {
+        "category": "PowerShell download/exec",
+        "severity": "high",
+        "string": "DownloadFile"
+      },
+      {
+        "category": ".NET stealer rule class",
+        "severity": "critical",
+        "string": "DiscordRule"
+      },
+      {
+        "category": ".NET stealer rule class",
+        "severity": "critical",
+        "string": "AllWalletsRule"
+      },
+      {
+        "category": "PowerShell download/exec",
+        "severity": "high",
+        "string": "FromBase64String"
+      },
+      {
+        "category": "Base64 reference",
+        "severity": "medium",
+        "string": "FromBase64String"
+      },
+      {
+        "category": "Crypto wallet artefact",
+        "severity": "critical",
+        "string": "user.config{0}\\FileZilla\\sitemanager.xmlcookies.sqlite\\Program Files 
+(x86)\\configRoninWalletdisplayNamehost_key\\Elect..."
+      },
+      {
+        "category": "Crypto wallet artefact",
+        "severity": "critical",
+        "string": "Metamask"
+      },
+      {
+        "category": "Crypto wallet artefact",
+        "severity": "critical",
+        "string": "GuardaWallet"
+      }
+    ],
+    "total_strings": 1443
+  },
+  "module": "string_analysis",
+  "reason": "Suspicious strings: .NET stealer rule class, .NET stealer scan-routine, Crypto wallet 
+artefact, PowerShell download/exec, Base64 reference",
+  "score_delta": 38,
+  "status": "success"
+}
+
+  ioc_extractor (success)
+{
+  "data": {
+    "iocs": {
+      "domain": [
+        "ipinfo.io"
+      ],
+      "ipv4": [
+        "45.88.91.67"
+      ],
+      "url": [
+        "https://api.ip.sb/geoip",
+        "https://api.ipify.orgcookies//settinString.Removeg",
+        "https://ipinfo.io/ip"
+      ]
+    },
+    "total_iocs": 5
+  },
+  "module": "ioc_extractor",
+  "reason": "Network IOCs found: 4 URLs/IPs; Domains: ipinfo.io",
+  "score_delta": 15,
+  "status": "success"
+}
+
+  yara_scanner (success)
+{
+  "data": {
+    "compile_errors": [],
+    "matches": [],
+    "total_matches": 0,
+    "total_rules_loaded": 751
+  },
+  "module": "yara_scanner",
+  "reason": "No YARA rules matched (751 rules loaded)",
+  "score_delta": 0,
+  "status": "success"
+}
+
+  doc_analysis (skipped)
+{
+  "data": {},
+  "module": "doc_analysis",
+  "reason": "Not applicable \u2014 not an Office document",
+  "score_delta": 0,
+  "status": "skipped"
+}
+
+  pdf_analysis (skipped)
+{
+  "data": {},
+  "module": "pdf_analysis",
+  "reason": "Not applicable \u2014 not a PDF file",
+  "score_delta": 0,
+  "status": "skipped"
+}
+
+  html_analysis (skipped)
+{
+  "data": {},
+  "module": "html_analysis",
+  "reason": "Not applicable \u2014 not an HTML file",
+  "score_delta": 0,
+  "status": "skipped"
+}
+
+  archive_analysis (skipped)
+{
+  "data": {},
+  "module": "archive_analysis",
+  "reason": "PE has no archive overlay",
+  "score_delta": 0,
+  "status": "skipped"
+}
+
+  onenote_analysis (skipped)
+{
+  "data": {},
+  "module": "onenote_analysis",
+  "reason": "Not applicable \u2014 not a OneNote file",
+  "score_delta": 0,
+  "status": "skipped"
+}
+
+Analysis complete  2026-01-01 00:00:00 UTC
+

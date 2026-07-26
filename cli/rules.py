@@ -10,7 +10,7 @@ from pathlib import Path
 
 import click
 
-from core.config_loader import get_config
+from core.config_loader import ConfigNotFound, get_config
 
 from ._console import err, out
 from ._exit import RuntimeFailure
@@ -68,7 +68,12 @@ def update(
         )
 
     _setup_logging(verbosity=verbosity)
-    config = get_config(config_path)
+    try:
+        config = get_config(config_path)
+    except ConfigNotFound as exc:
+        raise click.UsageError(
+            f"Config file not found: {exc}"
+        ) from exc
     _setup_logging(config["log_level"], verbosity)
 
     out.print("\n[bold cyan]ThreatLens[/bold cyan]  [dim]Rule Update[/dim]\n")
