@@ -1,0 +1,79 @@
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ThreatLens  Static Malware Analysis                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+                                  File Information                                   
+╭────────┬──────────────────────────────────────────────────────────────────────────╮
+│ File   │ ClickFix.html                                                            │
+│ Path   │ /home/pmafma/Documents/Malware/html smuggling test malware/ClickFix.html │
+│ Size   │ 131.4 KiB                                                                │
+│ Type   │ HTML document, Unicode text, UTF-8 text, with very long lines (8832)     │
+│ MIME   │ text/html                                                                │
+│ MD5    │ 59fa7ba38e915dc58a06f44ac309c3b7                                         │
+│ SHA256 │ 6cd4c1be3f6ced0f4d542395b8f0fdaf29954b25931b66e1e7021d0a076360ed         │
+│ TLSH   │ T180D3C8056EA6A9B692E3719BDC70C310607EB1BA5E649D84F7FD801C5BD0FED463222C │
+│ ssdeep │ 3072:7jWU8lbCi3dDrOsESwYhDD68yQbRY3XzN9EQGPItMW+DsovtTCC5:IDNS0yY        │
+╰────────┴──────────────────────────────────────────────────────────────────────────╯
+
+  ███████████████░░░░░░░  70/100  HIGH
+
+  Likely malicious with external C2 scripts, network IOC indicators, obfuscated script
+
+  FINDINGS
+                                                                                                    
+ Module            Δ   Reason                                                                       
+ ────────────────────────────────────────────────────────────────────────────────────────────────── 
+ html_analysis   +50   Blob delivery chain (new Blob + URL.createObjectURL); Junk-comment           
+                       camouflage (AI-generated obfuscation noise); Obfus...                        
+ ioc_extractor   +20   Network IOCs found: 51 URLs/IPs; Domains: api.w.org, fonts.googleapis.com,   
+                       neutralmarlservices.com (+4 more); 1 email...                                
+                                                                                                    
+
+  HTML Smuggling Indicators
+                                                                                                    
+ Delivery chain       Blob → Blob URL                                                               
+ Obfuscation          unicode escape sequences (\uNNNN); Junk-comment camouflage (AI-generated      
+                      obfuscation noise); Obfuscated / programmatically-generated variable names    
+ External scripts     10 external, 8 suspicious                                                     
+ Random-path C2       https://simplecopseholding.com/jWcTAonomVveWlRkcUjN6PF-aopGXJy,               
+                      https://neutralmarlservices.com/hkc4cx1RXWAnuMWLqUuwqS30X97Pv3mA0Nsy-lTcqMK95 
+                      j                                                                             
+ Suspicious domains   simplecopseholding.com, neutralmarlservices.com, nexxusmanagement.com         
+ Form posts to        https://nexxusmanagement.com/                                                 
+ Script blocks        13                                                                            
+                                                                                                    
+
+                                Indicators of Compromise (IOCs)                                
+╭────────────┬────────────────────────────────────────────────────────────────────────────────╮
+│ Type       │ Value                                                                          │
+├────────────┼────────────────────────────────────────────────────────────────────────────────┤
+│ Domain     │ api.w.org                                                                      │
+│ Domain     │ fonts.googleapis.com                                                           │
+│ Domain     │ neutralmarlservices.com                                                        │
+│ Domain     │ nexxusmanagement.com                                                           │
+│ Domain     │ schema.org                                                                     │
+│            │ (+2 more — use -v to show all)                                                 │
+│ Email      │ sales@nexxusmanagement.com                                                     │
+│ IP Address │ 181.215.195.35                                                                 │
+│ URL        │ http://nexxusmanagement.com/                                                   │
+│ URL        │ http://nexxusmanagement.com/#website                                           │
+│ URL        │ http://nexxusmanagement.com/?s=                                                │
+│ URL        │ http://nexxusmanagement.com/wp-content/uploads/2020/03/business-01.jpg);       │
+│ URL        │ http://nexxusmanagement.com/wp-content/uploads/2020/03/firstglobalins-logo.png │
+│            │ (+45 more — use -v to show all)                                                │
+╰────────────┴────────────────────────────────────────────────────────────────────────────────╯
+
+  modules  ✓✓✓   3 ran
+
+╭───────────────────────────────────── Recommended Next Steps ─────────────────────────────────────╮
+│                                                                                                  │
+│    • Investigate IP(s): 181.215.195.35                                                           │
+│    • Check network logs for connections to: api.w.org, fonts.googleapis.com,                     │
+│  neutralmarlservices.com                                                                         │
+│    • Consider dynamic analysis — set dynamic_provider in config.yaml                             │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Analysis complete  2026-01-01 00:00:00 UTC
+

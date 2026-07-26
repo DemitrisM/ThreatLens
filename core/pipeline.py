@@ -35,6 +35,51 @@ _MODULE_REGISTRY: dict[str, str] = {
     "virustotal": "modules.enrichment.virustotal",
 }
 
+# Short names accepted by --modules / --skip, mapped to registry keys.
+# Lives here rather than in cli/ so the CLI and any config validation
+# resolve names through one table.
+MODULE_ALIASES: dict[str, str] = {
+    "intake": "file_intake",
+    "file": "file_intake",
+    "pe": "pe_analysis",
+    "exe": "pe_analysis",
+    "strings": "string_analysis",
+    "string": "string_analysis",
+    "ioc": "ioc_extractor",
+    "iocs": "ioc_extractor",
+    "capa": "capa_analysis",
+    "yara": "yara_scanner",
+    "doc": "doc_analysis",
+    "office": "doc_analysis",
+    "pdf": "pdf_analysis",
+    "html": "html_analysis",
+    "archive": "archive_analysis",
+    "zip": "archive_analysis",
+    "onenote": "onenote_analysis",
+    "vt": "virustotal",
+}
+
+
+def resolve_module_name(name: str) -> str | None:
+    """Canonical module name for a user-supplied token, or None if unknown.
+
+    Accepts a registry key verbatim or any alias above, case-insensitively.
+    Returning None rather than raising keeps the policy decision with the
+    caller: the CLI treats an unknown name as a usage error, while
+    ``enabled_modules`` in config.yaml only warns and skips, so a stale
+    config file cannot make the tool unrunnable.
+    """
+    token = name.strip().lower()
+    if token in _MODULE_REGISTRY:
+        return token
+    return MODULE_ALIASES.get(token)
+
+
+def module_names() -> list[str]:
+    """Every canonical module name, sorted — for error messages and help."""
+    return sorted(_MODULE_REGISTRY)
+
+
 # Dynamic provider registry — separate from static modules.
 _DYNAMIC_REGISTRY: dict[str, str] = {
     "speakeasy": "modules.dynamic.speakeasy_provider",

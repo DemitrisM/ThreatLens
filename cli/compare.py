@@ -11,7 +11,7 @@ from pathlib import Path
 
 import click
 
-from core.config_loader import get_config
+from core.config_loader import ConfigNotFound, get_config
 from core.pipeline import run_pipeline
 
 from ._console import err, out
@@ -70,7 +70,12 @@ def compare(
     from reporting.terminal_reporter._common import BAND_COLOURS  # noqa: PLC0415
 
     _setup_logging(verbosity=verbosity)
-    config = get_config(config_path)
+    try:
+        config = get_config(config_path)
+    except ConfigNotFound as exc:
+        raise click.UsageError(
+            f"Config file not found: {exc}"
+        ) from exc
     _setup_logging(config["log_level"], verbosity)
 
     config = _apply_scan_profile(config, profile.lower())

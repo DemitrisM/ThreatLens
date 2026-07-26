@@ -1,0 +1,98 @@
+{
+  "dynamic": null,
+  "file": "/samples/booking.pdf",
+  "meta": {
+    "tool": "ThreatLens",
+    "version": "0.2.0"
+  },
+  "module_results": [
+    {
+      "data": {
+        "file_name": "booking.pdf",
+        "file_path": "/home/pmafma/Documents/Malware/pdf test malware/booking.pdf",
+        "file_size": 38021,
+        "file_type": {
+          "description": "PDF document, version 1.5, 1 page(s) (zip deflate encoded)",
+          "mime_type": "application/pdf"
+        },
+        "hashes": {
+          "md5": "4e7f0868d1d60a702c07c0c5e252183a",
+          "sha256": "ef85bfb534a2d679261902aab71e24dde3c5c9b7950e300dd0df298dfddddc02",
+          "ssdeep": "384:b0sVJqEdqa1osPjFLjhdlCxJPxncS45sJflFbfhfhfhfhfTZZZZZZZZz/ll7cnif:9lpdCxJZnjWsh3bfhfhfhfhfvlSo",
+          "tlsh": "T149033C538C884E47E874C3AABF471F6D6B497E4EA5C276FF10260E837B312615C4E12A"
+        }
+      },
+      "module": "file_intake",
+      "reason": "File intake provides metadata only \u2014 no score contribution.",
+      "score_delta": 0,
+      "status": "success"
+    },
+    {
+      "data": {
+        "encrypted": false,
+        "has_javascript": true,
+        "header_mismatch": false,
+        "javascript_code": [
+          "app.alert(\"Lettore non compatibile! Per favore, aprilo nel browser.\");"
+        ],
+        "javascript_count": 1,
+        "num_objects": 11,
+        "num_streams": 4,
+        "num_uris": 1,
+        "parsed": true,
+        "peepdf_errors": [],
+        "raw_keyword_hits": {
+          "/JS": 1,
+          "/JavaScript": 1,
+          "/OpenAction": 1
+        },
+        "suspicious_elements": [],
+        "uris": [
+          "https://bociking.netlify.app/"
+        ],
+        "urls": [],
+        "version": "1.5"
+      },
+      "module": "pdf_analysis",
+      "reason": "Raw PDF markers: /OpenAction(1), /JavaScript(1), /JS(1); peepdf extracted 1 JavaScript block(s); Social-engineering JS alert: non compatibile, aprilo nel browser",
+      "score_delta": 50,
+      "status": "success"
+    },
+    {
+      "data": {
+        "iocs": {
+          "domain": [
+            "bociking.netlify.app"
+          ],
+          "url": [
+            "https://bociking.netlify.app/)"
+          ]
+        },
+        "total_iocs": 2
+      },
+      "module": "ioc_extractor",
+      "reason": "Network IOCs found: 1 URLs/IPs; Domains: bociking.netlify.app",
+      "score_delta": 15,
+      "status": "success"
+    }
+  ],
+  "scoring": {
+    "breakdown": [
+      {
+        "module": "pdf_analysis",
+        "reason": "Raw PDF markers: /OpenAction(1), /JavaScript(1), /JS(1); peepdf extracted 1 JavaScript block(s); Social-engineering JS alert: non compatibile, aprilo nel browser",
+        "score_delta": 50
+      },
+      {
+        "module": "ioc_extractor",
+        "reason": "Network IOCs found: 1 URLs/IPs; Domains: bociking.netlify.app",
+        "score_delta": 15
+      }
+    ],
+    "risk_band": "HIGH",
+    "total_score": 65
+  },
+  "timing": {
+    "total_seconds": 1.0
+  }
+}

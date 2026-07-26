@@ -1,0 +1,375 @@
+{
+  "dynamic": null,
+  "file": "/samples/ NetSupport + booking + ini.rar",
+  "meta": {
+    "tool": "ThreatLens",
+    "version": "0.2.0"
+  },
+  "module_results": [
+    {
+      "data": {
+        "file_name": " NetSupport + booking + ini.rar",
+        "file_path": "/home/pmafma/Documents/Malware/rar test malware/ NetSupport + booking + ini.rar",
+        "file_size": 1850802,
+        "file_type": {
+          "description": "RAR archive data, v5",
+          "mime_type": "application/x-rar"
+        },
+        "hashes": {
+          "md5": "09b56edc178e8352a844697155173f88",
+          "sha256": "ed0b26555214dc2af3fa7052e62a55d84b8afa548374ea80f8b43f0f3e746ed5",
+          "ssdeep": "49152:HE20pEa6hlv1tMVpy7ksLRxMgo39tyLUkbzNuY:kYDUVpNMofOXT",
+          "tlsh": "T1F3853340C288ED11A9197489B31572598DC8739B09FE43903EBE89B16E57FE3EB4DD82"
+        }
+      },
+      "module": "file_intake",
+      "reason": "File intake provides metadata only \u2014 no score contribution.",
+      "score_delta": 0,
+      "status": "success"
+    },
+    {
+      "data": {
+        "ace_detected": false,
+        "archive_comment_iocs": [],
+        "autorun_inf": null,
+        "bomb_guard": {
+          "reasons": [],
+          "stats": {
+            "container_size": 1850802,
+            "entry_count": 15,
+            "ratio": 2.86,
+            "total_compressed": 1849345,
+            "total_uncompressed": 5290432
+          },
+          "triggered": false
+        },
+        "classification": "MALICIOUS",
+        "dangerous_members": [
+          {
+            "extension": ".dll",
+            "name": "kqgWNAYv/AudioCapture.dll",
+            "size": 89416
+          },
+          {
+            "extension": ".dll",
+            "name": "kqgWNAYv/HTCTL32.DLL",
+            "size": 323912
+          },
+          {
+            "extension": ".dll",
+            "name": "kqgWNAYv/msvcr100.dll",
+            "size": 773968
+          },
+          {
+            "extension": ".inf",
+            "name": "kqgWNAYv/nskbfltr.inf",
+            "size": 328
+          },
+          {
+            "extension": ".dll",
+            "name": "kqgWNAYv/pcicapi.dll",
+            "size": 108944
+          },
+          {
+            "extension": ".dll",
+            "name": "kqgWNAYv/PCICHEK.DLL",
+            "size": 14664
+          },
+          {
+            "extension": ".dll",
+            "name": "kqgWNAYv/PCICL32.DLL",
+            "size": 3490632
+          },
+          {
+            "extension": ".exe",
+            "name": "kqgWNAYv/remcmdstub.exe",
+            "size": 59728
+          },
+          {
+            "extension": ".exe",
+            "name": "kqgWNAYv/service.exe",
+            "size": 34288
+          },
+          {
+            "extension": ".dll",
+            "name": "kqgWNAYv/TCCTL32.DLL",
+            "size": 387400
+          }
+        ],
+        "desktop_ini": false,
+        "detected_format": "rar",
+        "double_extension": [],
+        "embedded_executables": [
+          {
+            "md5": "7629af8099b76f85d37b3802041503ee",
+            "name": "kqgWNAYv/AudioCapture.dll",
+            "sha256": "2cc8ebea55c06981625397b04575ed0eaad9bb9f9dc896355c011a62febe49b5",
+            "size": 89416,
+            "type": "PE32"
+          },
+          {
+            "md5": "051cdb6ac8e168d178e35489b6da4c74",
+            "name": "kqgWNAYv/HTCTL32.DLL",
+            "sha256": "6562585009f15155eea9a489e474cebc4dd2a01a26d846fdd1b93fdc24b0c269",
+            "size": 323912,
+            "type": "PE32"
+          },
+          {
+            "md5": "0e37fbfa79d349d672456923ec5fbbe3",
+            "name": "kqgWNAYv/msvcr100.dll",
+            "sha256": "8793353461826fbd48f25ea8b835be204b758ce7510db2af631b28850355bd18",
+            "size": 773968,
+            "type": "PE32"
+          },
+          {
+            "md5": "67c53a770390e8c038060a1921c20da9",
+            "name": "kqgWNAYv/pcicapi.dll",
+            "sha256": "2dfdc169dfc27462adc98dde39306de8d0526dcf4577a1a486c2eef447300689",
+            "size": 108944,
+            "type": "PE32"
+          },
+          {
+            "md5": "3aabcd7c81425b3b9327a2bf643251c6",
+            "name": "kqgWNAYv/PCICHEK.DLL",
+            "sha256": "0cff893b1e7716d09fb74b7a0313b78a09f3f48c586d31fc5f830bd72ce8331f",
+            "size": 14664,
+            "type": "PE32"
+          },
+          {
+            "md5": "e7b92529ea10176fe35ba73fa4edef74",
+            "name": "kqgWNAYv/PCICL32.DLL",
+            "sha256": "b6d4ad0231941e0637485ac5833e0fdc75db35289b54e70f3858b70d36d04c80",
+            "size": 3490632,
+            "type": "PE32"
+          },
+          {
+            "md5": "5be6fb8f28544d4f83c25a2b76ff7890",
+            "name": "kqgWNAYv/remcmdstub.exe",
+            "sha256": "b11380f81b0a704e8c7e84e8a37885f5879d12fbece311813a41992b3e9787f2",
+            "size": 59728,
+            "type": "PE32"
+          },
+          {
+            "md5": "5a24676210bd317520fe30d048c9a106",
+            "name": "kqgWNAYv/service.exe",
+            "sha256": "275e5b085534f64313b50cbdcb08ecd59c57d21c96bb937f140ee92a3d27f792",
+            "size": 34288,
+            "type": "PE32"
+          },
+          {
+            "md5": "1e6e804ca71eaf5bef0abef95c578cf0",
+            "name": "kqgWNAYv/TCCTL32.DLL",
+            "sha256": "6ffe12cdfe0a36dec4b4a40ecdafb4097b1af7c340b0fcecf9f5c67b7fa8b299",
+            "size": 387400,
+            "type": "PE32"
+          }
+        ],
+        "encryption": {
+          "header_encrypted": false,
+          "is_encrypted": false
+        },
+        "entries": [
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/AudioCapture.dll",
+            "size_compressed": 38285,
+            "size_uncompressed": 89416,
+            "symlink_target": null,
+            "timestamp": 1774837985
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/client32.ini",
+            "size_compressed": 466,
+            "size_uncompressed": 756,
+            "symlink_target": null,
+            "timestamp": 1774837985
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/HTCTL32.DLL",
+            "size_compressed": 138285,
+            "size_uncompressed": 323912,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/msvcr100.dll",
+            "size_compressed": 320723,
+            "size_uncompressed": 773968,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/nskbfltr.inf",
+            "size_compressed": 227,
+            "size_uncompressed": 328,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/NSM.ini",
+            "size_compressed": 1216,
+            "size_uncompressed": 6099,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/NSM.LIC",
+            "size_compressed": 207,
+            "size_uncompressed": 251,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "48",
+            "name": "kqgWNAYv/nsm_vpro.ini",
+            "size_compressed": 46,
+            "size_uncompressed": 46,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/pcicapi.dll",
+            "size_compressed": 45310,
+            "size_uncompressed": 108944,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/PCICHEK.DLL",
+            "size_compressed": 7041,
+            "size_uncompressed": 14664,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/PCICL32.DLL",
+            "size_compressed": 1090329,
+            "size_uncompressed": 3490632,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/remcmdstub.exe",
+            "size_compressed": 28751,
+            "size_uncompressed": 59728,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/service.exe",
+            "size_compressed": 7749,
+            "size_uncompressed": 34288,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "51",
+            "name": "kqgWNAYv/TCCTL32.DLL",
+            "size_compressed": 170710,
+            "size_uncompressed": 387400,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          },
+          {
+            "is_encrypted": false,
+            "is_symlink": false,
+            "method": "48",
+            "name": "kqgWNAYv/",
+            "raw_name": "kqgWNAYv",
+            "size_compressed": 0,
+            "size_uncompressed": 0,
+            "symlink_target": null,
+            "timestamp": 1774837986
+          }
+        ],
+        "entry_count": 15,
+        "errors": [],
+        "fired_rules": [
+          "Embedded executable + risky extension (+5)",
+          "Dangerous extension inside archive (+3)"
+        ],
+        "high_entropy_filenames": [],
+        "indicator_flags": [
+          "dangerous_member",
+          "embedded_pe"
+        ],
+        "mime_mismatches": [],
+        "nested": [],
+        "null_byte_filenames": [],
+        "path_traversal": [],
+        "persistence_paths": [],
+        "recursion_depth_reached": false,
+        "rtlo_filenames": [],
+        "sfx": {
+          "embedded_format": null,
+          "is_sfx": false,
+          "offset": null
+        },
+        "symlink_attack": [],
+        "timestamp_anomaly": {
+          "reason": null,
+          "triggered": false
+        },
+        "total_uncompressed_size": 5290432,
+        "zip_header_mismatch": []
+      },
+      "module": "archive_analysis",
+      "reason": "Embedded executable + risky extension (+5); Dangerous extension inside archive (+3)",
+      "score_delta": 8,
+      "status": "success"
+    }
+  ],
+  "scoring": {
+    "breakdown": [
+      {
+        "module": "archive_analysis",
+        "reason": "Embedded executable + risky extension (+5); Dangerous extension inside archive (+3)",
+        "score_delta": 8
+      }
+    ],
+    "risk_band": "LOW",
+    "total_score": 8
+  },
+  "timing": {
+    "total_seconds": 1.0
+  }
+}

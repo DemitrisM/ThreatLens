@@ -1,0 +1,42 @@
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ThreatLens  Static Malware Analysis                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+                                          File Information                                          
+╭────────┬─────────────────────────────────────────────────────────────────────────────────────────╮
+│ File   │ GiftedCrook.xlsm                                                                        │
+│ Path   │ /home/pmafma/Documents/Malware/xlsm test malware/GiftedCrook.xlsm                       │
+│ Size   │ 592.6 KiB                                                                               │
+│ Type   │ Microsoft Excel 2007+                                                                   │
+│ MIME   │ application/vnd.openxmlformats-officedocument.spreadsheetml.sheet                       │
+│ MD5    │ 810a4dd4c0c9d0949698d1d7f0c7f925                                                        │
+│ SHA256 │ c2e920944d994ba28bc9e159491a89d83e305e63fafc4a4e25433db63800d5fa                        │
+│ TLSH   │ T125D4238A4573D289CC40D43D96DC0F391DEC02ED0DF836EE4651CA9ABB64FDDA5EA806                │
+│ ssdeep │ 12288:G7n7vTGbw6NbMHSeFXFx2Zae2vMV5pPq5a7saQ+1gOygsQeNlGZ+WVUlWA:+7vaZijFXFx2jcMV3CaQ+1 │
+│        │ 5VElGgCUlf                                                                              │
+╰────────┴─────────────────────────────────────────────────────────────────────────────────────────╯
+
+  ████░░░░░░░░░░░░░░░░░░  18/100  LOW
+
+  Low-risk file with auto-executing macro
+
+  FINDINGS
+                                                                                                    
+ Module           Δ   Reason                                                                        
+ ────────────────────────────────────────────────────────────────────────────────────────────────── 
+ doc_analysis   +18   AutoExec + Shell call — macro launches an OS command on open (+10); VBA       
+                      macros present (+3); oleid reported HIGH-risk...                              
+                                                                                                    
+
+  Office Document Indicators
+                                                                                           
+ Format / Classification   OPENXML — MALICIOUS                                             
+ VBA macros                2 stream(s), auto-exec: Workbook_Open, 11 suspicious keyword(s) 
+ MacroRaptor               flagged (A=False, W=False, X=False)                             
+                                                                                           
+
+  modules  ✓✓   2 ran
+
+Analysis complete  2026-01-01 00:00:00 UTC
+
