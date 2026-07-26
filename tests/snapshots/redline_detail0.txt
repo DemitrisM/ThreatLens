@@ -1,0 +1,82 @@
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ThreatLens  Static Malware Analysis                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+                                          File Information                                          
+╭────────┬─────────────────────────────────────────────────────────────────────────────────────────╮
+│ File   │ RedLineStealer.exe                                                                      │
+│ Path   │ /home/pmafma/Documents/Malware/exe test malware/RedLineStealer.exe                      │
+│ Size   │ 95.5 KiB                                                                                │
+│ Type   │ PE32 executable (console) Intel 80386 Mono/.Net assembly, for MS Windows, 3 sections    │
+│ MIME   │ application/vnd.microsoft.portable-executable                                           │
+│ MD5    │ ba69008a5c5e0096d3765ec7471ea066                                                        │
+│ SHA256 │ 3e8d997c6e26dcd0aad2ba74c99b5b46fbee0db1d0d46088ae5c8155fb827c33                        │
+│ TLSH   │ T1C2A35D2067AC9F19EAFD1B74B4B2012043F1E08A9091FB4B4DC164E61FA7B865957FF2                │
+│ ssdeep │ 1536:1qsklqWWlbG6jejoigI/43Ywzi0Zb78ivombfexv0ujXyyed2HteulgS6pg:zEReY/+zi0ZbYe1g0ujyzd │
+│        │ Lg                                                                                      │
+╰────────┴─────────────────────────────────────────────────────────────────────────────────────────╯
+
+  ███████████████░░░░░░░  68/100  HIGH
+
+  Likely malicious with .NET stealer rule class strings (+2), network IOC indicators, encoded data, 
+unsigned binary
+
+  FINDINGS
+                                                                                                    
+ Module              Δ   Reason                                                                     
+ ────────────────────────────────────────────────────────────────────────────────────────────────── 
+ pe_analysis       +15   No digital signature found; Compile timestamp is in the future             
+                         (2097-08-14) — likely forged                                               
+ string_analysis   +38   Suspicious strings: .NET stealer rule class, .NET stealer scan-routine,    
+                         Crypto wallet artefact, PowerShell download/e...                           
+ ioc_extractor     +15   Network IOCs found: 4 URLs/IPs; Domains: ipinfo.io                         
+                                                                                                    
+
+  PE Structural Indicators
+                                                        
+ DLL characteristics   missing: CFG                     
+ Imphash               f34d5f2d4577ed6d9ceec516c1f5a744 
+                                                        
+
+                  Indicators of Compromise (IOCs)                  
+╭────────────┬────────────────────────────────────────────────────╮
+│ Type       │ Value                                              │
+├────────────┼────────────────────────────────────────────────────┤
+│ Domain     │ ipinfo.io                                          │
+│ IP Address │ 45.88.91.67                                        │
+│ URL        │ https://api.ip.sb/geoip                            │
+│ URL        │ https://api.ipify.orgcookies//settinString.Removeg │
+│ URL        │ https://ipinfo.io/ip                               │
+╰────────────┴────────────────────────────────────────────────────╯
+
+                                         Suspicious Strings                                         
+╭───────────────────────────┬──────────────────────────────────────────────────────────────────────╮
+│ Category                  │ String                                                               │
+├───────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+│ .NET stealer scan-routine │ <ScanDiscord>k__BackingField                                         │
+│ .NET stealer scan-routine │ <ScanSteam>k__BackingField                                           │
+│ .NET stealer scan-routine │ <ScanTelegram>k__BackingField                                        │
+│ PowerShell download/exec  │ DownloadFile                                                         │
+│ .NET stealer rule class   │ DiscordRule                                                          │
+│ .NET stealer rule class   │ AllWalletsRule                                                       │
+│ PowerShell download/exec  │ FromBase64String                                                     │
+│ Base64 reference          │ FromBase64String                                                     │
+│ Crypto wallet artefact    │ user.config{0}\FileZilla\sitemanager.xmlcookies.sqlite\Program Files │
+│                           │ (x86)\configRoninWalletdisplayNamehost_key\Elect...                  │
+│ Crypto wallet artefact    │ Metamask                                                             │
+╰───────────────────────────┴──────────────────────────────────────────────────────────────────────╯
+  (+1 more — use -v to show all)
+
+  modules  ✓✓✓✓✓○○○○○   5 ran, 5 n/a
+
+╭───────────────────────────────────── Recommended Next Steps ─────────────────────────────────────╮
+│                                                                                                  │
+│    • Investigate IP(s): 45.88.91.67                                                              │
+│    • Check network logs for connections to: ipinfo.io                                            │
+│    • Consider dynamic analysis — set dynamic_provider in config.yaml                             │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Analysis complete  2026-01-01 00:00:00 UTC
+

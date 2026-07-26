@@ -24,6 +24,45 @@ can push the raw total above 100 — clamping happens once at the end in `core/s
 | 56–75   | HIGH RISK  |
 | 76–100  | CRITICAL   |
 
+### A second band vocabulary exists
+
+Four modules — `archive_analysis`, `doc_analysis`, `onenote_analysis` and the
+combo engines they share — additionally emit
+`MALICIOUS` / `SUSPICIOUS` / `INFORMATIONAL` / `CLEAN` in
+`data["classification"]`, on **their own thresholds**, which are not the
+0–100 bands above and are not consistent with each other:
+
+| Module | MALICIOUS | SUSPICIOUS | INFORMATIONAL | CLEAN | Cap |
+|---|---|---|---|---|---|
+| `archive_analysis` | ≥ 7 | 4–6 | 1–3 | 0 | 60 |
+| `doc_analysis` | ≥ 7 | 4–6 | 1–3 | 0 | 60 |
+| `onenote_analysis` | ≥ 25 | 10–24 | 1–9 | 0 | 60 |
+
+Both vocabularies render in the same report, so a green `LOW` score banner can
+sit directly above a red `MALICIOUS` classification — the archive scored 8/100
+overall while its own engine called it malicious. That reads as the tool
+contradicting itself and is a **known open issue**. Unifying them is a scoring
+change and belongs in the end-of-project calibration sweep, not the reporting
+layer.
+
+---
+
+## Verdict weights are NOT score weights
+
+Everything else in this file describes `score_delta` — how much a finding moves
+the 0–100 score. There is a **separate, unrelated** weight table in
+`reporting/shared.py` (`W_VT`, `W_YARA`, `W_STEALER`, … `W_WEAK`) that decides
+only the *order* indicators appear in the one-line verdict sentence.
+
+It exists because the verdict lists at most four indicators, so which four win
+those slots matters. `"unsigned binary"` fires for essentially every unsigned
+PE, so it carries `W_WEAK = 10` and can no longer lead ahead of, say, stealer
+strings — before Pass 4 it took the first slot on the RedLine sample.
+
+Changing a verdict weight changes **sentence wording only**. It never changes a
+score, a band, or an exit code. Keep the two tables mentally separate when
+calibrating.
+
 ---
 
 ## Score contributions (provisional, pending final calibration)

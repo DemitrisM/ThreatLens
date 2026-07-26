@@ -1,0 +1,74 @@
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ThreatLens  Static Malware Analysis                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+                                          File Information                                          
+╭────────┬─────────────────────────────────────────────────────────────────────────────────────────╮
+│ File   │ IcedID + Qakbot.one                                                                     │
+│ Path   │ /home/pmafma/Documents/Malware/onenote test malware/IcedID + Qakbot.one                 │
+│ Size   │ 213.1 KiB                                                                               │
+│ Type   │ Microsoft OneNote                                                                       │
+│ MIME   │ application/onenote                                                                     │
+│ MD5    │ eb8d50fd5a3afa04fe7fb476f2df9e99                                                        │
+│ SHA256 │ 3a60658cdbf960c135f07bd06d36124b5926b85c59a9c01948976b199e3959f8                        │
+│ TLSH   │ T12A247D15139B55F8D6B2BEF44DD69E06FB369A23522CC78E8F71AEAD0C50120DCA460F                │
+│ ssdeep │ 3072:HaA0YRw9/WITtTWR7IbNzvL1awhuWt4AJERnyNenUWHCoTCCCCCCCCCCCCCCCCC6:na9xytedL1jp4iERB │
+│        │ RCjTgV                                                                                  │
+╰────────┴─────────────────────────────────────────────────────────────────────────────────────────╯
+
+  ████████░░░░░░░░░░░░░░  35/100  MEDIUM
+
+  Suspicious file with embedded payload in OneNote
+
+  FINDINGS
+                                                                                                    
+ Module               Δ   Reason                                                                    
+ ────────────────────────────────────────────────────────────────────────────────────────────────── 
+ onenote_analysis   +35   OneNote carries an embedded HTA dropper (+25); Multiple dangerous         
+                          payloads stacked in one OneNote file (+10)                                
+                                                                                                    
+
+  OneNote Structure Indicators
+                                                                                
+ Classification   MALICIOUS                                                     
+ Blob count       6                                                             
+ Fired rule       OneNote carries an embedded HTA dropper (+25)                 
+ Fired rule       Multiple dangerous payloads stacked in one OneNote file (+10) 
+ Flag             contains_embedded_hta                                         
+ Flag             multiple_dangerous_blobs                                      
+                                                                                
+
+  Embedded Blobs
+
+  image/jpeg  image  86.8 KiB  @ 0x00001740
+  f918bb0c65d2f90593265fe4087b9c6905148bd7b46579d902b9abd5415415f5
+
+  image/jpeg  image  52.9 KiB  @ 0x0001d290
+  cbf4835796c6c58c2eebb12bfe73aaae73d0e9f37c5bd5dc63092ed776485fe8
+
+  image/png  image  239.0 B  @ 0x0002ae58
+  f3148b2cf70d225a76261e270e734f55d484d9ecf00b2dbd052d52fe40bd636c
+
+  image/png  image  296.0 B  @ 0x0002bb00
+  7e131d7dd2d98e5bf76866ffe0eb5c0ac994e1e791b07f61fb3a756f24d7317c
+
+  HTA application  hta  2.0 KiB  @ 0x0002bc60
+  4f069f918edc3919f59cd0608574bc214d6020e81f2603f0e3b3bad6e0f9939e
+
+  HTA application  hta  23.0 KiB  @ 0x0002d628
+  8e705cdf0d2ac84e3361421b934fa62484b95ade2bd2c72dc34441596c7ce764
+
+
+                                           Module Results                                           
+╭──────────────────┬─────────┬─────────┬───────────────────────────────────────────────────────────╮
+│ Module           │ Status  │ Score Δ │ Reason                                                    │
+├──────────────────┼─────────┼─────────┼───────────────────────────────────────────────────────────┤
+│ file_intake      │ success │       — │ File intake provides metadata only — no score             │
+│                  │         │         │ contribution.                                             │
+│ onenote_analysis │ success │     +35 │ OneNote carries an embedded HTA dropper (+25); Multiple   │
+│                  │         │         │ dangerous payloads stacked in one OneNote file (+10)      │
+╰──────────────────┴─────────┴─────────┴───────────────────────────────────────────────────────────╯
+
+Analysis complete  2026-01-01 00:00:00 UTC
+

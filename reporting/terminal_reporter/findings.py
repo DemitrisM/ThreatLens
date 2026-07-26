@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from rich import box
 from rich.table import Table
 
-from ._common import console
+from reporting.theme import rich_style
+
+from ._common import LIMITS, console
 
 
 def print_suspicious_strings(module_results: list[dict], detail_level: int) -> None:
@@ -19,7 +21,7 @@ def print_suspicious_strings(module_results: list[dict], detail_level: int) -> N
     if not matches:
         return
 
-    limit = len(matches) if detail_level >= 1 else 10
+    limit = len(matches) if detail_level >= 1 else LIMITS["suspicious_strings"]
     shown = matches[:limit]
     remaining = len(matches) - limit
 
@@ -28,7 +30,7 @@ def print_suspicious_strings(module_results: list[dict], detail_level: int) -> N
         box=box.ROUNDED,
         padding=(0, 1),
     )
-    table.add_column("Category", style="bold yellow", no_wrap=True)
+    table.add_column("Category", style=rich_style("medium"), no_wrap=True)
     table.add_column("String", overflow="fold")
 
     for m in shown:
@@ -54,7 +56,7 @@ def print_capabilities(module_results: list[dict], detail_level: int) -> None:
     if not capabilities:
         return
 
-    limit = len(capabilities) if detail_level >= 1 else 10
+    limit = len(capabilities) if detail_level >= 1 else LIMITS["capabilities"]
     shown = capabilities[:limit]
     remaining = len(capabilities) - limit
 
@@ -114,11 +116,11 @@ def print_virustotal(module_results: list[dict], detail_level: int) -> None:
     ratio = data.get("detection_ratio", f"{detections}/{total}")
 
     if detections > 10:
-        ratio_style = "bold red"
+        ratio_style = rich_style("critical")
     elif detections >= 1:
-        ratio_style = "yellow"
+        ratio_style = rich_style("warn")
     else:
-        ratio_style = "green"
+        ratio_style = rich_style("success")
 
     table.add_row("Detection", f"[{ratio_style}]{ratio} engines[/{ratio_style}]")
 

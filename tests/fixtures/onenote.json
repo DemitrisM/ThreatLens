@@ -1,0 +1,123 @@
+{
+  "dynamic": null,
+  "file": "/samples/IcedID + Qakbot.one",
+  "meta": {
+    "tool": "ThreatLens",
+    "version": "0.2.0"
+  },
+  "module_results": [
+    {
+      "data": {
+        "file_name": "IcedID + Qakbot.one",
+        "file_path": "/home/pmafma/Documents/Malware/onenote test malware/IcedID + Qakbot.one",
+        "file_size": 218256,
+        "file_type": {
+          "description": "Microsoft OneNote",
+          "mime_type": "application/onenote"
+        },
+        "hashes": {
+          "md5": "eb8d50fd5a3afa04fe7fb476f2df9e99",
+          "sha256": "3a60658cdbf960c135f07bd06d36124b5926b85c59a9c01948976b199e3959f8",
+          "ssdeep": "3072:HaA0YRw9/WITtTWR7IbNzvL1awhuWt4AJERnyNenUWHCoTCCCCCCCCCCCCCCCCC6:na9xytedL1jp4iERBRCjTgV",
+          "tlsh": "T12A247D15139B55F8D6B2BEF44DD69E06FB369A23522CC78E8F71AEAD0C50120DCA460F"
+        }
+      },
+      "module": "file_intake",
+      "reason": "File intake provides metadata only \u2014 no score contribution.",
+      "score_delta": 0,
+      "status": "success"
+    },
+    {
+      "data": {
+        "blob_count": 6,
+        "blobs": [
+          {
+            "kind": "image",
+            "label": "image/jpeg",
+            "md5": "4d5f7afd30851031376da0fa6d0e3f80",
+            "mime": "image/jpeg",
+            "offset": 5952,
+            "sha256": "f918bb0c65d2f90593265fe4087b9c6905148bd7b46579d902b9abd5415415f5",
+            "size": 88911
+          },
+          {
+            "kind": "image",
+            "label": "image/jpeg",
+            "md5": "2ccb7fd40e61b6dd2cd936e61929fb81",
+            "mime": "image/jpeg",
+            "offset": 119440,
+            "sha256": "cbf4835796c6c58c2eebb12bfe73aaae73d0e9f37c5bd5dc63092ed776485fe8",
+            "size": 54127
+          },
+          {
+            "kind": "image",
+            "label": "image/png",
+            "md5": "088833d5a4fdcd105a34657922326f76",
+            "mime": "image/png",
+            "offset": 175704,
+            "sha256": "f3148b2cf70d225a76261e270e734f55d484d9ecf00b2dbd052d52fe40bd636c",
+            "size": 239
+          },
+          {
+            "kind": "image",
+            "label": "image/png",
+            "md5": "33dca72504d567c57f95452a0358ed2f",
+            "mime": "image/png",
+            "offset": 178944,
+            "sha256": "7e131d7dd2d98e5bf76866ffe0eb5c0ac994e1e791b07f61fb3a756f24d7317c",
+            "size": 296
+          },
+          {
+            "kind": "hta",
+            "label": "HTA application",
+            "md5": "c9d2355fc2be90b0fa73ecb67061a77e",
+            "mime": "text/html",
+            "offset": 179296,
+            "sha256": "4f069f918edc3919f59cd0608574bc214d6020e81f2603f0e3b3bad6e0f9939e",
+            "size": 2071
+          },
+          {
+            "kind": "hta",
+            "label": "HTA application",
+            "md5": "b915056524f1b25937074727cdf5f87c",
+            "mime": "text/html",
+            "offset": 185896,
+            "sha256": "8e705cdf0d2ac84e3361421b934fa62484b95ade2bd2c72dc34441596c7ce764",
+            "size": 23577
+          }
+        ],
+        "classification": "MALICIOUS",
+        "embedded_executables": [],
+        "encrypted_section": false,
+        "fired_rules": [
+          "OneNote carries an embedded HTA dropper (+25)",
+          "Multiple dangerous payloads stacked in one OneNote file (+10)"
+        ],
+        "indicator_flags": [
+          "contains_embedded_hta",
+          "multiple_dangerous_blobs"
+        ],
+        "nested": [],
+        "onestore_header_present": true
+      },
+      "module": "onenote_analysis",
+      "reason": "OneNote carries an embedded HTA dropper (+25); Multiple dangerous payloads stacked in one OneNote file (+10)",
+      "score_delta": 35,
+      "status": "success"
+    }
+  ],
+  "scoring": {
+    "breakdown": [
+      {
+        "module": "onenote_analysis",
+        "reason": "OneNote carries an embedded HTA dropper (+25); Multiple dangerous payloads stacked in one OneNote file (+10)",
+        "score_delta": 35
+      }
+    ],
+    "risk_band": "MEDIUM",
+    "total_score": 35
+  },
+  "timing": {
+    "total_seconds": 1.0
+  }
+}

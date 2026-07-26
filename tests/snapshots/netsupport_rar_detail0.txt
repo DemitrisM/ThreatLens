@@ -1,0 +1,88 @@
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ThreatLens  Static Malware Analysis                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+                                      File Information                                      
+╭────────┬─────────────────────────────────────────────────────────────────────────────────╮
+│ File   │  NetSupport + booking + ini.rar                                                 │
+│ Path   │ /home/pmafma/Documents/Malware/rar test malware/ NetSupport + booking + ini.rar │
+│ Size   │ 1.8 MiB                                                                         │
+│ Type   │ RAR archive data, v5                                                            │
+│ MIME   │ application/x-rar                                                               │
+│ MD5    │ 09b56edc178e8352a844697155173f88                                                │
+│ SHA256 │ ed0b26555214dc2af3fa7052e62a55d84b8afa548374ea80f8b43f0f3e746ed5                │
+│ TLSH   │ T1F3853340C288ED11A9197489B31572598DC8739B09FE43903EBE89B16E57FE3EB4DD82        │
+│ ssdeep │ 49152:HE20pEa6hlv1tMVpy7ksLRxMgo39tyLUkbzNuY:kYDUVpNMofOXT                      │
+╰────────┴─────────────────────────────────────────────────────────────────────────────────╯
+
+  ██░░░░░░░░░░░░░░░░░░░░  8/100  LOW
+
+  Low-risk file with embedded executable in archive
+
+  FINDINGS
+                                                                                                    
+ Module              Δ   Reason                                                                     
+ ────────────────────────────────────────────────────────────────────────────────────────────────── 
+ archive_analysis   +8   Embedded executable + risky extension (+5); Dangerous extension inside     
+                         archive (+3)                                                               
+                                                                                                    
+
+  Archive Structure Indicators
+                                                             
+ Format           RAR                                        
+ Classification   MALICIOUS                                  
+ Fired rule       Embedded executable + risky extension (+5) 
+ Fired rule       Dangerous extension inside archive (+3)    
+                                                             
+
+               Dangerous Members                
+╭───────────────────────────┬──────┬───────────╮
+│ Name                      │ Ext  │      Size │
+├───────────────────────────┼──────┼───────────┤
+│ kqgWNAYv/AudioCapture.dll │ .dll │  87.3 KiB │
+│ kqgWNAYv/HTCTL32.DLL      │ .dll │ 316.3 KiB │
+│ kqgWNAYv/msvcr100.dll     │ .dll │ 755.8 KiB │
+│ kqgWNAYv/nskbfltr.inf     │ .inf │   328.0 B │
+│ kqgWNAYv/pcicapi.dll      │ .dll │ 106.4 KiB │
+│ kqgWNAYv/PCICHEK.DLL      │ .dll │  14.3 KiB │
+│ kqgWNAYv/PCICL32.DLL      │ .dll │   3.3 MiB │
+│ kqgWNAYv/remcmdstub.exe   │ .exe │  58.3 KiB │
+│ kqgWNAYv/service.exe      │ .exe │  33.5 KiB │
+│ kqgWNAYv/TCCTL32.DLL      │ .dll │ 378.3 KiB │
+╰───────────────────────────┴──────┴───────────╯
+
+  Embedded Executables
+
+  kqgWNAYv/AudioCapture.dll  PE32  87.3 KiB
+  2cc8ebea55c06981625397b04575ed0eaad9bb9f9dc896355c011a62febe49b5
+
+  kqgWNAYv/HTCTL32.DLL  PE32  316.3 KiB
+  6562585009f15155eea9a489e474cebc4dd2a01a26d846fdd1b93fdc24b0c269
+
+  kqgWNAYv/msvcr100.dll  PE32  755.8 KiB
+  8793353461826fbd48f25ea8b835be204b758ce7510db2af631b28850355bd18
+
+  kqgWNAYv/pcicapi.dll  PE32  106.4 KiB
+  2dfdc169dfc27462adc98dde39306de8d0526dcf4577a1a486c2eef447300689
+
+  kqgWNAYv/PCICHEK.DLL  PE32  14.3 KiB
+  0cff893b1e7716d09fb74b7a0313b78a09f3f48c586d31fc5f830bd72ce8331f
+
+  kqgWNAYv/PCICL32.DLL  PE32  3.3 MiB
+  b6d4ad0231941e0637485ac5833e0fdc75db35289b54e70f3858b70d36d04c80
+
+  kqgWNAYv/remcmdstub.exe  PE32  58.3 KiB
+  b11380f81b0a704e8c7e84e8a37885f5879d12fbece311813a41992b3e9787f2
+
+  kqgWNAYv/service.exe  PE32  33.5 KiB
+  275e5b085534f64313b50cbdcb08ecd59c57d21c96bb937f140ee92a3d27f792
+
+  kqgWNAYv/TCCTL32.DLL  PE32  378.3 KiB
+  6ffe12cdfe0a36dec4b4a40ecdafb4097b1af7c340b0fcecf9f5c67b7fa8b299
+
+
+  modules  ✓✓   2 ran
+
+Analysis complete  2026-01-01 00:00:00 UTC
+

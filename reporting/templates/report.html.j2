@@ -5,24 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ThreatLens Report — {{ file_name }}</title>
 <style>
-    :root {
-        --bg:           #0f1115;
-        --bg-panel:     #181b22;
-        --bg-panel-2:   #1f232c;
-        --border:       #2a2f3a;
-        --text:         #e6e8ee;
-        --text-dim:     #9aa3b2;
-        --text-faint:   #6b7280;
-        --accent:       #4cc9f0;
-        --critical:     #ff4d4f;
-        --high:         #ff8c1a;
-        --medium:       #ffd93d;
-        --low:          #5cb85c;
-        --success:      #5cb85c;
-        --skipped:      #d4a017;
-        --error:        #ff4d4f;
-        --code-bg:      #0b0d12;
-    }
+    {{ theme_css }}
     * { box-sizing: border-box; }
     html, body {
         margin: 0;
@@ -357,6 +340,48 @@
         </thead>
         <tbody>
         {% for ind in pe_indicators %}
+            <tr>
+                <td><strong>{{ ind.label }}</strong></td>
+                <td class="sev-{{ ind.severity }}">{{ ind.value }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {# ─────────── HTML SMUGGLING INDICATORS ─────────── #}
+    {% if html_indicators %}
+    <h2>HTML Smuggling Indicators</h2>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 220px;">Indicator</th>
+                <th>Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for ind in html_indicators %}
+            <tr>
+                <td><strong>{{ ind.label }}</strong></td>
+                <td class="sev-{{ ind.severity }}">{{ ind.value }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {# ─────────── PDF INDICATORS ─────────── #}
+    {% if pdf_indicators %}
+    <h2>PDF Indicators</h2>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 220px;">Indicator</th>
+                <th>Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for ind in pdf_indicators %}
             <tr>
                 <td><strong>{{ ind.label }}</strong></td>
                 <td class="sev-{{ ind.severity }}">{{ ind.value }}</td>

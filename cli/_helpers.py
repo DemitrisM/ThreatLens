@@ -12,7 +12,12 @@ passed straight to the reporter.
 import copy
 import logging
 
+import click
+
 from core.config_loader import DEFAULTS
+from core.pipeline import module_names, resolve_module_name
+
+logger = logging.getLogger(__name__)
 
 # ── Scan profile presets ────────────────────────────────────────────
 
@@ -42,27 +47,82 @@ def _apply_scan_profile(config: dict, profile: str) -> dict:
     return config
 
 
+#: Every module reads this one's metadata (hashes, type), so it is never
+#: optional — it is force-added to --modules and ignored in --skip.
+_MANDATORY_MODULE = "file_intake"
+
+
+def _resolve_list(raw: str, flag: str) -> list[str]:
+    """Split a comma-separated flag value into canonical module names.
+
+    Raises:
+        click.UsageError: on an unknown name or an empty selection. Both
+            are exit 2. Silently accepting either is how ``--modules
+            pe,capa,yara`` used to produce ``total_score: 0`` and a
+            confident LOW verdict on a scan that never ran.
+    """
+    tokens = [t.strip() for t in raw.split(",") if t.strip()]
+    if not tokens:
+        raise click.UsageError(
+            f"{flag} was given no module names. "
+            f"Valid names: {', '.join(module_names())}"
+        )
+
+    unknown = [t for t in tokens if resolve_module_name(t) is None]
+    if unknown:
+        raise click.UsageError(
+            f"{flag}: unknown module(s): {', '.join(unknown)}. "
+            f"Valid names: {', '.join(module_names())}"
+        )
+
+    resolved: list[str] = []
+    for token in tokens:
+        name = resolve_module_name(token)
+        # Aliases can collide (pe and exe both mean pe_analysis), so
+        # de-duplicate while keeping the order the user typed.
+        if name not in resolved:
+            resolved.append(name)
+    return resolved
+
+
 def _apply_module_overrides(
     config: dict, modules: str | None, skip: str | None
 ) -> dict:
     """Apply ``--modules`` and ``--skip`` overrides to ``enabled_modules``.
 
-    Names are still matched verbatim against the pipeline registry here;
-    Pass 3 of the CLI redesign adds alias resolution and rejects unknown
-    names with a usage error.
+    Both accept registry names and short aliases (``pe``, ``capa``, ``vt``).
+    ``--skip`` is applied after ``--modules``, so ``-p deep --skip
+    capa_analysis`` behaves as documented.
+
+    Unknown names are a usage error rather than a silent no-op — the CLI is
+    explicit intent, so a typo must not quietly change what ran.
+    ``enabled_modules`` in config.yaml stays permissive (the pipeline warns
+    and skips) so a stale config file cannot make the tool unrunnable.
     """
     if modules is not None:
-        names = [m.strip() for m in modules.split(",") if m.strip()]
-        # Every module reads file_intake's metadata, so it is never optional.
-        if "file_intake" not in names:
-            names.insert(0, "file_intake")
+        names = _resolve_list(modules, "--modules")
+        if _MANDATORY_MODULE not in names:
+            names.insert(0, _MANDATORY_MODULE)
         config["enabled_modules"] = names
 
     if skip is not None:
-        to_skip = {m.strip() for m in skip.split(",") if m.strip()}
+        to_skip = set(_resolve_list(skip, "--skip"))
+        if _MANDATORY_MODULE in to_skip:
+            logger.warning(
+                "%s cannot be skipped — every module reads its metadata",
+                _MANDATORY_MODULE,
+            )
+            to_skip.discard(_MANDATORY_MODULE)
         config["enabled_modules"] = [
             m for m in config["enabled_modules"] if m not in to_skip
         ]
+
+    remaining = [m for m in config["enabled_modules"] if m != _MANDATORY_MODULE]
+    if not remaining:
+        raise click.UsageError(
+            "No analysis modules left to run — every module was skipped or "
+            "deselected. A scan that runs nothing cannot report a verdict."
+        )
 
     return config
 

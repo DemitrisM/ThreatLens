@@ -61,9 +61,10 @@ def print_file_info(module_results: list[dict], file_path: str) -> None:
     console.print(table)
 
 
-def print_footer(timing: dict) -> None:
+def print_footer(timing: dict, *, now: datetime | None = None) -> None:
+    """Closing line. ``now`` is injectable so snapshots stay stable."""
     elapsed = timing.get("elapsed_seconds")
-    ts = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    ts = (now or datetime.now(tz=timezone.utc)).strftime("%Y-%m-%d %H:%M:%S UTC")
     parts = [f"[dim]Analysis complete[/dim]  [dim]{ts}[/dim]"]
     if elapsed is not None:
         parts.append(f"  [dim]({elapsed:.2f}s)[/dim]")

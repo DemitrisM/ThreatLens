@@ -1,22 +1,12 @@
-"""Stream-separated ``rich`` consoles.
+"""Re-export of the shared console singletons.
 
-stdout carries results and nothing else, so ``threatlens scan -f json``
-can be piped straight into ``jq``. Progress spinners, warnings and any
-other diagnostic chatter go to stderr, where redirecting stdout leaves
-them visible.
-
-Import these singletons rather than constructing a ``Console`` locally —
-each ``Console`` keeps its own terminal-detection and colour state, so
-multiple instances writing to the same stream can disagree about width
-and about whether colour is enabled.
+The objects themselves live in :mod:`reporting.console` because
+``reporting`` is the lower layer — ``cli`` imports it, never the reverse.
+Importing them here keeps every existing ``from cli._console import out,
+err`` call site working while guaranteeing there is exactly one stdout
+``Console`` in the tree.
 """
 
-from rich.console import Console
+from reporting.console import err, out
 
-#: Results — reports, tables, machine output.
-out = Console()
-
-#: Diagnostics — progress, warnings, saved-path notices, errors.
-err = Console(stderr=True)
-
-__all__ = ["out", "err"]
+__all__ = ["err", "out"]

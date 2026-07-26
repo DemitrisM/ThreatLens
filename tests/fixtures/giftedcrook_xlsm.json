@@ -1,0 +1,241 @@
+{
+  "dynamic": null,
+  "file": "/samples/GiftedCrook.xlsm",
+  "meta": {
+    "tool": "ThreatLens",
+    "version": "0.2.0"
+  },
+  "module_results": [
+    {
+      "data": {
+        "file_name": "GiftedCrook.xlsm",
+        "file_path": "/home/pmafma/Documents/Malware/xlsm test malware/GiftedCrook.xlsm",
+        "file_size": 606810,
+        "file_type": {
+          "description": "Microsoft Excel 2007+",
+          "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        },
+        "hashes": {
+          "md5": "810a4dd4c0c9d0949698d1d7f0c7f925",
+          "sha256": "c2e920944d994ba28bc9e159491a89d83e305e63fafc4a4e25433db63800d5fa",
+          "ssdeep": "12288:G7n7vTGbw6NbMHSeFXFx2Zae2vMV5pPq5a7saQ+1gOygsQeNlGZ+WVUlWA:+7vaZijFXFx2jcMV3CaQ+15VElGgCUlf",
+          "tlsh": "T125D4238A4573D289CC40D43D96DC0F391DEC02ED0DF836EE4651CA9ABB64FDDA5EA806"
+        }
+      },
+      "module": "file_intake",
+      "reason": "File intake provides metadata only \u2014 no score contribution.",
+      "score_delta": 0,
+      "status": "success"
+    },
+    {
+      "data": {
+        "classification": "MALICIOUS",
+        "format": "openxml",
+        "indicator_flags": [
+          "auto_exec",
+          "ole_object_in_container",
+          "oleid_high_risk",
+          "shell_keyword",
+          "vba_present"
+        ],
+        "macros": {
+          "vba": {
+            "auto_exec_keywords": [
+              {
+                "description": "Runs when the Excel Workbook is opened",
+                "keyword": "Workbook_Open",
+                "type": "AutoExec"
+              }
+            ],
+            "count": 2,
+            "heavy_obfuscation": false,
+            "ioc_keywords": [],
+            "modulestreamname_mismatch": false,
+            "mraptor_flags": {
+              "auto_exec": true,
+              "execute_command": true,
+              "suspicious": true,
+              "write_file": true
+            },
+            "present": true,
+            "stomping_check_performed": false,
+            "stomping_detected": false,
+            "streams": [
+              {
+                "code_preview": "Attribute VB_Name = \"ThisWorkbook\"\r\nAttribute VB_Base = \"0{00020819-0000-0000-C000-000000000046}\"\r\nAttribute VB_GlobalNameSpace = False\r\nAttribute VB_Creatable = False\r\nAttribute VB_PredeclaredId = True\r\nAttribute VB_Exposed = True\r\nAttribute VB_TemplateDerived = False\r\nAttribute VB_Customizable = True\r\nFunction GTRED(ByVal hpwxzavivwtyn As String) As Byte()\r\n    Dim mhgnhgeeq As Object\r\n    Set mhgnhgeeq = CreateObject(\"MSXML2.DOMDocument\")\r\n    Dim lioyujuhtrc As Object\r\n    Set lioyujuhtrc = ",
+                "filename": "ThisWorkbook.cls"
+              },
+              {
+                "code_preview": "Attribute VB_Name = \"Sheet1\"\r\nAttribute VB_Base = \"0{00020820-0000-0000-C000-000000000046}\"\r\nAttribute VB_GlobalNameSpace = False\r\nAttribute VB_Creatable = False\r\nAttribute VB_PredeclaredId = True\r\nAttribute VB_Exposed = True\r\nAttribute VB_TemplateDerived = False\r\nAttribute VB_Customizable = True\r\n",
+                "filename": "Sheet1.cls"
+              }
+            ],
+            "suspicious_keywords": [
+              {
+                "description": "May read system environment variables",
+                "keyword": "Environ",
+                "type": "Suspicious"
+              },
+              {
+                "description": "May open a file",
+                "keyword": "Open",
+                "type": "Suspicious"
+              },
+              {
+                "description": "May write to a file (if combined with Open)",
+                "keyword": "Write",
+                "type": "Suspicious"
+              },
+              {
+                "description": "May create a text file",
+                "keyword": "ADODB.Stream",
+                "type": "Suspicious"
+              },
+              {
+                "description": "May create a text file",
+                "keyword": "SaveToFile",
+                "type": "Suspicious"
+              },
+              {
+                "description": "May run an executable file or a system command",
+                "keyword": "Shell",
+                "type": "Suspicious"
+              },
+              {
+                "description": "May run an executable file or a system command",
+                "keyword": "vbNormalFocus",
+                "type": "Suspicious"
+              },
+              {
+                "description": "May call a DLL using Excel 4 Macros (XLM/XLF)",
+                "keyword": "Call",
+                "type": "Suspicious"
+              },
+              {
+                "description": "May create a directory",
+                "keyword": "MkDir",
+                "type": "Suspicious"
+              },
+              {
+                "description": "May create an OLE object",
+                "keyword": "CreateObject",
+                "type": "Suspicious"
+              },
+              {
+                "description": "Hex-encoded strings were detected, may be used to obfuscate strings (option --decode to see all)",
+                "keyword": "Hex Strings",
+                "type": "Suspicious"
+              }
+            ]
+          },
+          "xlm": {
+            "cell_count": 0,
+            "deobfuscated_cells": [],
+            "exec_call_found": false,
+            "performed": true,
+            "present": false,
+            "urls": []
+          }
+        },
+        "ole_objects": {
+          "equation_editor_candidates": [],
+          "high_risk_classes": [],
+          "ole_object_count": 0,
+          "package_count": 0,
+          "package_objects": [],
+          "raw_objupdate": false,
+          "rtf_classes": []
+        },
+        "oleid_indicators": [
+          {
+            "id": "ftype",
+            "name": "File format",
+            "risk": "info",
+            "value": "MS Excel 2007+ Macro-Enabled Workbook (.xlsm)"
+          },
+          {
+            "id": "container",
+            "name": "Container format",
+            "risk": "info",
+            "value": "OpenXML"
+          },
+          {
+            "id": "encrypted",
+            "name": "Encrypted",
+            "risk": "none",
+            "value": "False"
+          },
+          {
+            "id": "vba",
+            "name": "VBA Macros",
+            "risk": "HIGH",
+            "value": "Yes, suspicious"
+          },
+          {
+            "id": "xlm",
+            "name": "XLM Macros",
+            "risk": "none",
+            "value": "No"
+          },
+          {
+            "id": "ext_rels",
+            "name": "External Relationships",
+            "risk": "none",
+            "value": "0"
+          },
+          {
+            "id": "ObjectPool",
+            "name": "ObjectPool",
+            "risk": "none",
+            "value": "False"
+          },
+          {
+            "id": "flash",
+            "name": "Flash objects",
+            "risk": "none",
+            "value": "0"
+          }
+        ],
+        "openxml_findings": {
+          "alt_chunks": [],
+          "dangerous_embedded": [],
+          "decompression_bomb": false,
+          "embedded_files": [],
+          "external_relationships": [],
+          "ole_objects": [
+            "xl/vbaProject.bin"
+          ]
+        },
+        "template_injection": {
+          "alt_chunks": [],
+          "ooxml": [],
+          "rtf": []
+        },
+        "timings": {
+          "oleid": 0.030328552000355558,
+          "openxml_rels": 0.000773943998865434,
+          "vba": 0.1319508960004896,
+          "xlm": 0.10719144699942262
+        }
+      },
+      "module": "doc_analysis",
+      "reason": "AutoExec + Shell call \u2014 macro launches an OS command on open (+10); VBA macros present (+3); oleid reported HIGH-risk indicator (+3); Embedded OLE object stream (+2)",
+      "score_delta": 18,
+      "status": "success"
+    }
+  ],
+  "scoring": {
+    "breakdown": [
+      {
+        "module": "doc_analysis",
+        "reason": "AutoExec + Shell call \u2014 macro launches an OS command on open (+10); VBA macros present (+3); oleid reported HIGH-risk indicator (+3); Embedded OLE object stream (+2)",
+        "score_delta": 18
+      }
+    ],
+    "risk_band": "LOW",
+    "total_score": 18
+  },
+  "timing": {
+    "total_seconds": 1.0
+  }
+}

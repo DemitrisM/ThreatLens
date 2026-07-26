@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from reporting.shared import build_verdict
+from reporting.theme import css_root
 
 from .archive import archive_indicators
 from .debug import raw_modules
@@ -23,9 +24,11 @@ from .doc import doc_indicators
 from .file_info import file_info, module_results_for_template
 from .findings import capabilities, scored_categories, suspicious_strings, virustotal
 from .onenote import onenote_indicators
+from .pdf import pdf_indicators
 from .pe import pe_indicators
 from .recommendations import recommendations
 from .tables import attack_mappings, ioc_total, iocs_flat, timing_rows
+from .web import html_indicators
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,7 @@ def _build_context(report: dict) -> dict:
     file_path = report.get("file", "unknown")
 
     return {
+        "theme_css": css_root(),
         "tool_version": __version__,
         "generated_utc": datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "elapsed_seconds": timing.get("elapsed_seconds", 0.0),
@@ -102,6 +106,8 @@ def _build_context(report: dict) -> dict:
         "doc_indicators": doc_indicators(module_results),
         "archive_indicators": archive_indicators(module_results),
         "onenote_indicators": onenote_indicators(module_results),
+        "html_indicators": html_indicators(module_results),
+        "pdf_indicators": pdf_indicators(module_results),
 
         "attack_mappings": attack_mappings(module_results),
         "iocs_flat": iocs_flat(module_results),
