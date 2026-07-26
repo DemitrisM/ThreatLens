@@ -10,14 +10,14 @@ def _make_progress_cb(show: bool):
     if not show:
         return None, lambda: None
 
-    from rich.console import Console  # noqa: PLC0415
     from rich.live import Live  # noqa: PLC0415
     from rich.spinner import Spinner  # noqa: PLC0415
     from rich.text import Text  # noqa: PLC0415
 
-    console = Console(stderr=True)
+    from ._console import err  # noqa: PLC0415
+
     spinner = Spinner("dots", text="Initialising…", style="cyan")
-    live = Live(spinner, console=console, refresh_per_second=10, transient=True)
+    live = Live(spinner, console=err, refresh_per_second=10, transient=True)
     live.start()
 
     import time as _time  # noqa: PLC0415

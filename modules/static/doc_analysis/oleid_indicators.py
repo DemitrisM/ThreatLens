@@ -11,10 +11,13 @@ scoring signals.
 import logging
 from pathlib import Path
 
+from ._quiet import quiet_stdout
+
 logger = logging.getLogger(__name__)
 
 try:
-    from oletools.oleid import OleID
+    with quiet_stdout(logger, "oletools.oleid"):
+        from oletools.oleid import OleID
     _HAS_OLEID = True
 except ImportError:
     _HAS_OLEID = False

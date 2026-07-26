@@ -1,5 +1,12 @@
-"""``compare`` CLI command — side-by-side analysis of two files."""
+"""``compare`` CLI command — side-by-side analysis of two files.
 
+Shares the two-axis flag surface with ``scan``: ``-p`` picks what runs, ``-v``
+picks what prints. Both files are analysed under an independent copy of the
+config so neither run can contaminate the other's module state.
+"""
+
+import copy
+import logging
 from pathlib import Path
 
 import click
@@ -7,80 +14,81 @@ import click
 from core.config_loader import get_config
 from core.pipeline import run_pipeline
 
-from ._helpers import _setup_logging
+from ._console import err, out
+from ._exit import RuntimeFailure
+from ._helpers import PROFILES, _apply_module_overrides, _apply_scan_profile, _setup_logging
+from ._progress import _make_progress_cb
+
+logger = logging.getLogger(__name__)
 
 
-@click.command()
-@click.argument("file1", type=click.Path(exists=True, path_type=Path))
-@click.argument("file2", type=click.Path(exists=True, path_type=Path))
-@click.option("--config", "config_path", type=click.Path(path_type=Path), default=None)
-@click.option("--verbose", "-v", is_flag=True)
-@click.option("--debug", is_flag=True)
-@click.option("--recurse-archives", is_flag=True,
-              help="Feed nested archive members back through the full pipeline.")
-@click.option("--max-archive-depth", type=int, default=None,
-              help="Override max archive recursion depth (default: 3).")
-@click.option("--no-archive", is_flag=True, help="Disable archive_analysis.")
-@click.option("--recurse-onenote", is_flag=True,
-              help="Feed embedded OneNote payloads back through the full pipeline.")
+@click.command("compare")
+@click.argument("file1", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("file2", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "-p",
+    "--profile",
+    type=click.Choice(PROFILES, case_sensitive=False),
+    default="standard",
+    show_default=True,
+    help="Which modules run: quick (intake + PE), standard (all), deep (extended timeouts).",
+)
+@click.option(
+    "-v",
+    "--verbose",
+    "verbosity",
+    count=True,
+    help="How much prints: -v adds INFO logs, -vv adds DEBUG logs.",
+)
+@click.option(
+    "--modules",
+    default=None,
+    help="Comma-separated list of modules to run, by their registry names "
+    "(e.g. pe_analysis,capa_analysis,yara_scanner).",
+)
+@click.option("--skip", default=None, help="Comma-separated list of modules to skip.")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Path to config.yaml (default: ./config.yaml).",
+)
 def compare(
     file1: Path,
     file2: Path,
+    profile: str,
+    verbosity: int,
+    modules: str | None,
+    skip: str | None,
     config_path: Path | None,
-    verbose: bool,
-    debug: bool,
-    recurse_archives: bool,
-    max_archive_depth: int | None,
-    no_archive: bool,
-    recurse_onenote: bool,
 ) -> None:
-    """Compare analysis results of two files side-by-side."""
-    from rich.console import Console  # noqa: PLC0415
-    from rich.table import Table  # noqa: PLC0415
-    from rich.panel import Panel  # noqa: PLC0415
-    from rich.text import Text  # noqa: PLC0415
+    """Analyse FILE1 and FILE2 and show their scores side by side."""
     from rich import box  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
 
     from reporting.terminal_reporter._common import BAND_COLOURS  # noqa: PLC0415
 
+    _setup_logging(verbosity=verbosity)
     config = get_config(config_path)
-    _setup_logging(config["log_level"], verbose, debug)
+    _setup_logging(config["log_level"], verbosity)
 
-    if no_archive:
-        config["enabled_modules"] = [
-            m for m in config.get("enabled_modules", []) if m != "archive_analysis"
-        ]
-    if recurse_archives:
-        config["archive_full_recursion"] = True
-    if max_archive_depth is not None:
-        config["max_archive_recursion_depth"] = int(max_archive_depth)
-    if recurse_onenote:
-        config["onenote_full_recursion"] = True
+    config = _apply_scan_profile(config, profile.lower())
+    config = _apply_module_overrides(config, modules, skip)
 
-    console = Console()
+    err.print("\n[bold cyan]ThreatLens[/bold cyan]  [dim]Compare Mode[/dim]\n")
 
-    console.print("\n[bold cyan]ThreatLens[/bold cyan]  [dim]Compare Mode[/dim]\n")
-
-    # Run both analyses
-    console.print(f"[dim]Analysing {file1.name}…[/dim]")
-    report1 = run_pipeline(file1, config)
-    console.print(f"[dim]Analysing {file2.name}…[/dim]")
-    report2 = run_pipeline(file2, config)
+    report1 = _analyse(file1, config)
+    report2 = _analyse(file2, config)
 
     scoring1 = report1["scoring"]
     scoring2 = report2["scoring"]
 
-    # ── Comparison table ──
-    table = Table(
-        title="[bold]Comparison[/bold]",
-        box=box.ROUNDED,
-        padding=(0, 1),
-    )
+    table = Table(title="[bold]Comparison[/bold]", box=box.ROUNDED, padding=(0, 1))
     table.add_column("", style="bold dim", no_wrap=True)
     table.add_column(file1.name, overflow="fold")
     table.add_column(file2.name, overflow="fold")
 
-    # Score row
     c1 = BAND_COLOURS.get(scoring1["risk_band"], "white")
     c2 = BAND_COLOURS.get(scoring2["risk_band"], "white")
     table.add_row(
@@ -89,48 +97,87 @@ def compare(
         f"[{c2}]{scoring2['total_score']} / 100  {scoring2['risk_band']}[/{c2}]",
     )
 
-    # Hashes
-    def _get_hashes(report):
-        intake = next(
-            (r for r in report["module_results"] if r.get("module") == "file_intake"), None
-        )
-        if intake and intake.get("status") == "success":
-            return intake["data"].get("hashes", {})
-        return {}
-
     h1, h2 = _get_hashes(report1), _get_hashes(report2)
-    table.add_row("SHA256", h1.get("sha256", "N/A")[:16] + "…", h2.get("sha256", "N/A")[:16] + "…")
+    table.add_row(
+        "SHA256",
+        h1.get("sha256", "N/A")[:16] + "…",
+        h2.get("sha256", "N/A")[:16] + "…",
+    )
 
-    # TLSH similarity
-    if h1.get("tlsh") and h2.get("tlsh"):
-        try:
-            import tlsh  # noqa: PLC0415
-            diff = tlsh.diff(h1["tlsh"], h2["tlsh"])
-            similarity = "Identical" if diff == 0 else f"Distance: {diff} {'(similar)' if diff < 100 else '(different)'}"
-            table.add_row("TLSH similarity", similarity, "")
-        except ImportError:
-            pass
+    similarity = _tlsh_similarity(h1.get("tlsh"), h2.get("tlsh"))
+    if similarity:
+        table.add_row("TLSH similarity", similarity, "")
 
-    # Per-module score comparison
+    # Per-module score comparison.
     table.add_section()
-    all_modules = set()
-    def _mod_scores(report):
-        return {r["module"]: r.get("score_delta", 0) for r in report["module_results"]}
-    s1, s2 = _mod_scores(report1), _mod_scores(report2)
-    all_modules = sorted(set(s1) | set(s2))
-    for mod in all_modules:
-        d1 = s1.get(mod, 0)
-        d2 = s2.get(mod, 0)
-        d1_str = f"+{d1}" if d1 > 0 else ("—" if d1 == 0 else str(d1))
-        d2_str = f"+{d2}" if d2 > 0 else ("—" if d2 == 0 else str(d2))
-        table.add_row(mod, d1_str, d2_str)
+    s1, s2 = _module_scores(report1), _module_scores(report2)
+    for module in sorted(set(s1) | set(s2)):
+        table.add_row(module, _fmt_delta(s1.get(module, 0)), _fmt_delta(s2.get(module, 0)))
 
-    # Timing
     table.add_section()
-    t1 = report1["timing"]["elapsed_seconds"]
-    t2 = report2["timing"]["elapsed_seconds"]
-    table.add_row("Elapsed", f"{t1:.1f}s", f"{t2:.1f}s")
+    table.add_row(
+        "Elapsed",
+        f"{report1['timing']['elapsed_seconds']:.1f}s",
+        f"{report2['timing']['elapsed_seconds']:.1f}s",
+    )
 
-    console.print()
-    console.print(table)
-    console.print()
+    out.print()
+    out.print(table)
+    out.print()
+
+
+def _analyse(file: Path, config: dict) -> dict:
+    """Run the pipeline on *file* against an isolated copy of *config*.
+
+    Raises:
+        RuntimeFailure: On any pipeline exception — exit 3, not a traceback.
+    """
+    err.print(f"[dim]Analysing {file.name}…[/dim]")
+    progress_cb, progress_fin = _make_progress_cb(err.is_terminal)
+    try:
+        return run_pipeline(file, copy.deepcopy(config), progress_cb=progress_cb)
+    except Exception as exc:  # noqa: BLE001 — the pipeline is the boundary
+        # One line at default verbosity; the traceback is a -vv concern.
+        logger.error("Pipeline failed for %s: %s", file.name, exc)
+        logger.debug("Pipeline traceback", exc_info=True)
+        raise RuntimeFailure(f"analysis of {file.name} failed: {exc}") from exc
+    finally:
+        progress_fin()
+
+
+def _get_hashes(report: dict) -> dict:
+    """Return file_intake's hash dict, or empty if the module did not succeed."""
+    intake = next(
+        (r for r in report["module_results"] if r.get("module") == "file_intake"), None
+    )
+    if intake and intake.get("status") == "success":
+        return intake["data"].get("hashes", {})
+    return {}
+
+
+def _tlsh_similarity(tlsh1: str | None, tlsh2: str | None) -> str:
+    """Describe the TLSH distance between two digests, or "" if unavailable."""
+    if not (tlsh1 and tlsh2):
+        return ""
+    try:
+        import tlsh  # noqa: PLC0415
+    except ImportError:
+        logger.info("tlsh not installed — skipping similarity comparison")
+        return ""
+
+    diff = tlsh.diff(tlsh1, tlsh2)
+    if diff == 0:
+        return "Identical"
+    return f"Distance: {diff} {'(similar)' if diff < 100 else '(different)'}"
+
+
+def _module_scores(report: dict) -> dict[str, int]:
+    """Map module name → score_delta for one report."""
+    return {r["module"]: r.get("score_delta", 0) for r in report["module_results"]}
+
+
+def _fmt_delta(delta: int) -> str:
+    """Render a score delta: ``+15``, ``—`` for zero, plain for negative."""
+    if delta > 0:
+        return f"+{delta}"
+    return "—" if delta == 0 else str(delta)

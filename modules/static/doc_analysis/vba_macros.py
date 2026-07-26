@@ -13,16 +13,21 @@ import re
 import subprocess
 from pathlib import Path
 
+from ._quiet import quiet_stdout
+
 logger = logging.getLogger(__name__)
 
+# olevba pulls in XLMMacroDeobfuscator, which prints to stdout on import.
 try:
-    from oletools.olevba import VBA_Parser
+    with quiet_stdout(logger, "oletools.olevba"):
+        from oletools.olevba import VBA_Parser
     _HAS_OLEVBA = True
 except ImportError:
     _HAS_OLEVBA = False
 
 try:
-    from oletools.mraptor import MacroRaptor
+    with quiet_stdout(logger, "oletools.mraptor"):
+        from oletools.mraptor import MacroRaptor
     _HAS_MRAPTOR = True
 except ImportError:
     _HAS_MRAPTOR = False
