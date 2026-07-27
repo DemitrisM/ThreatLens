@@ -115,7 +115,7 @@ def derive_flags(module_results: list[dict]) -> set[str]:
         if data.get("found") and detections >= 1:
             flags.add("V")
 
-    for name in ("archive_analysis", "onenote_analysis"):
+    for name in ("archive_analysis", "onenote_analysis", "lnk_analysis"):
         mod = _module(module_results, name)
         if not mod:
             continue

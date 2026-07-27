@@ -107,7 +107,10 @@ def print_timing_table(module_results: list[dict], timing: dict) -> None:
     if not timed:
         return
 
-    timed.sort(key=lambda r: r.get("elapsed_seconds", 0), reverse=True)
+    # `or 0` rather than a `.get` default: the key can be *present and
+    # None*, which the default never catches, and sorting None against
+    # None raises TypeError — taking the whole -v report down.
+    timed.sort(key=lambda r: r.get("elapsed_seconds") or 0, reverse=True)
 
     table = Table(
         title="[bold]Module Timing[/bold]",

@@ -35,6 +35,8 @@ def test_defaults_carry_every_tuning_key_modules_read():
         "max_onenote_blobs",
         "onenote_full_recursion",
         "max_onenote_recursion_depth",
+        "max_lnk_size_mb",
+        "lnk_ansi_codepage",
     ):
         assert key in DEFAULTS, f"missing tuning key: {key}"
 

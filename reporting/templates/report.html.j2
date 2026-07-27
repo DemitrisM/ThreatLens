@@ -370,6 +370,78 @@
     </table>
     {% endif %}
 
+    {# ─────────── WINDOWS SHORTCUT INDICATORS ─────────── #}
+    {% if lnk_indicators %}
+    <h2>Windows Shortcut Indicators</h2>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 220px;">Indicator</th>
+                <th>Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for ind in lnk_indicators %}
+            <tr>
+                <td><strong>{{ ind.label }}</strong></td>
+                <td class="sev-{{ ind.severity }}">{{ ind.value }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    {# The NTFS file reference is what ties this shortcut to one specific
+       file on one specific volume — LECmd surfaces it, Python tooling
+       usually does not. #}
+    {% if lnk_shell_items %}
+    <h3>Shell Items (IDList)</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Type</th>
+                <th>Name</th>
+                <th>MFT entry</th>
+                <th>Seq</th>
+                <th>Modified</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for item in lnk_shell_items %}
+            <tr>
+                <td>{{ loop.index0 }}</td>
+                <td>{{ item.type_name }}</td>
+                <td>{{ item.long_name or item.name or '-' }}</td>
+                <td>{{ item.mft_entry if item.mft_entry is not none else '-' }}</td>
+                <td>{{ item.mft_sequence if item.mft_sequence is not none else '-' }}</td>
+                <td>{{ item.modified or '-' }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if lnk_property_store %}
+    <h3>Property Store</h3>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 320px;">Property</th>
+                <th>Value</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for prop in lnk_property_store %}
+            <tr>
+                <td><strong>{{ prop.name }}</strong></td>
+                <td>{{ prop.value }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+
     {# ─────────── PDF INDICATORS ─────────── #}
     {% if pdf_indicators %}
     <h2>PDF Indicators</h2>

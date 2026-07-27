@@ -260,6 +260,36 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
             if data.get("encrypted_section"):
                 add(W_STRUCTURE, "password-protected OneNote section")
 
+        elif module == "lnk_analysis":
+            flags = set(data.get("indicator_flags") or [])
+            target = data.get("target_basename") or "a LOLBin"
+
+            # The padding evasion leads whenever it fires — it is the one
+            # finding an analyst cannot see in Explorer's own UI.
+            if "args_padding_zdi" in flags:
+                add(W_EXPLOIT, "shortcut arguments padded past the visible field "
+                               "(ZDI-CAN-25373)")
+            if "encoded_powershell" in flags:
+                add(W_STEALER, f"{target} launching encoded PowerShell")
+            elif "download_cradle" in flags:
+                add(W_STEALER, f"{target} running a download cradle")
+            elif data.get("is_lolbin"):
+                add(W_STRUCTURE, f"shortcut targets {target}")
+            if "overlay_executable" in flags:
+                add(W_STEALER, "payload appended to the shortcut")
+            elif "overlay_present" in flags:
+                add(W_CONTAINER, "data appended after the shortcut structure")
+            if "icon_masquerade" in flags:
+                add(W_EXPLOIT, "document icon disguising an executable target")
+            if "remote_icon_location" in flags:
+                add(W_NETWORK, "shortcut icon fetched from a remote host")
+            if data.get("suspicious_hosts"):
+                add(W_NETWORK, "known malware-hosting infrastructure")
+            if "unc_or_webdav_target" in flags:
+                add(W_NETWORK, "UNC/WebDAV shortcut target")
+            if data.get("machine_id"):
+                add(W_WEAK, f"built on host '{data['machine_id']}'")
+
     # Strongest signal first, then dedupe. Sorting is stable, so equal
     # weights keep module execution order.
     indicators.sort(key=lambda pair: pair[0], reverse=True)
