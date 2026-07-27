@@ -46,7 +46,10 @@ DEFAULTS = {
     "floss_binary": "./bin/floss",
     "capa_binary": "./bin/capa",
     "output_dir": "./reports",
-    "log_level": "INFO",
+    # WARNING, not INFO: the shipped config.yaml and every doc say WARNING,
+    # and only the no-config path ever saw INFO — so a user without a
+    # config file got a chattier tool than the documentation promised.
+    "log_level": "WARNING",
     "module_timeout_seconds": 60,
     "capa_timeout_seconds": 120,
     "enabled_modules": [
@@ -61,6 +64,7 @@ DEFAULTS = {
         "html_analysis",
         "archive_analysis",
         "onenote_analysis",
+        "lnk_analysis",
         "virustotal",
     ],
     "dynamic_provider": "none",
@@ -78,6 +82,14 @@ DEFAULTS = {
     "max_onenote_blobs": 200,
     "onenote_full_recursion": False,
     "max_onenote_recursion_depth": 2,
+    # lnk_analysis tuning. The size cap is deliberately tight — a shell
+    # link past a few hundred KiB is carrying a payload, and the overlay
+    # carve records it without parsing megabytes.
+    "max_lnk_size_mb": 10,
+    # StringData is UTF-16LE when LinkFlags.IsUnicode is set; otherwise it
+    # is the *system default codepage* of the machine that built the file,
+    # which is not recoverable from the file itself.
+    "lnk_ansi_codepage": "cp1252",
     "rule_sources": [
         {
             "name": "signature-base",

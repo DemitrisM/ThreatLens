@@ -20,6 +20,7 @@ FIXTURES = [
     "giftedcrook_xlsm",
     "clickfix_html",
     "booking_pdf",
+    "grandoreiro_lnk",
 ]
 
 

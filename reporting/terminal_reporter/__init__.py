@@ -30,6 +30,7 @@ from .archive import print_archive_indicators
 from .doc import print_doc_indicators
 from .findings import print_capabilities, print_suspicious_strings, print_virustotal
 from .header import print_file_info, print_footer, print_header
+from .lnk import print_lnk_indicators
 from .onenote import print_onenote_indicators
 from .pdf import print_pdf_indicators
 from .pe import print_pe_indicators
@@ -86,6 +87,7 @@ def print_terminal_report(
         print_doc_indicators(module_results, detail_level)
         print_archive_indicators(module_results, detail_level)
         print_onenote_indicators(module_results, detail_level)
+        print_lnk_indicators(module_results, detail_level)
         print_html_indicators(module_results, detail_level)
         print_pdf_indicators(module_results, detail_level)
         print_attack_table(module_results, detail_level)

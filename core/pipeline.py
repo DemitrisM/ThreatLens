@@ -32,6 +32,7 @@ _MODULE_REGISTRY: dict[str, str] = {
     "html_analysis": "modules.static.html_analysis",
     "archive_analysis": "modules.static.archive_analysis",
     "onenote_analysis": "modules.static.onenote_analysis",
+    "lnk_analysis": "modules.static.lnk_analysis",
     "virustotal": "modules.enrichment.virustotal",
 }
 
@@ -56,6 +57,8 @@ MODULE_ALIASES: dict[str, str] = {
     "archive": "archive_analysis",
     "zip": "archive_analysis",
     "onenote": "onenote_analysis",
+    "lnk": "lnk_analysis",
+    "shortcut": "lnk_analysis",
     "vt": "virustotal",
 }
 

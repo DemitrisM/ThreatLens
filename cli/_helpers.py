@@ -23,7 +23,12 @@ logger = logging.getLogger(__name__)
 
 PROFILES = ("quick", "standard", "deep")
 
-_QUICK_MODULES = ["file_intake", "pe_analysis"]
+#: ``quick`` is the default profile for ``triage``, so anything omitted
+#: here makes a whole file type sweep as LOW across a directory.
+#: ``lnk_analysis`` earns its place on the same terms as ``pe_analysis``:
+#: pure in-memory parsing, no subprocess, no optional dependency, and
+#: sub-millisecond on a file that is almost always under 2 KiB.
+_QUICK_MODULES = ["file_intake", "pe_analysis", "lnk_analysis"]
 
 _DEEP_OVERRIDES = {
     "capa_timeout_seconds": 180,

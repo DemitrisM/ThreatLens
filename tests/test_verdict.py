@@ -102,8 +102,20 @@ def test_onenote_embedded_payload_reaches_the_verdict():
     assert "OneNote" in build_verdict([result("onenote_analysis", data)], HIGH)
 
 
+def test_lnk_padding_evasion_leads_the_verdict():
+    """The one finding an analyst cannot see in Explorer's own UI."""
+    data = {
+        "indicator_flags": ["args_padding_zdi", "lolbin_target"],
+        "target_basename": "cmd.exe",
+        "is_lolbin": True,
+    }
+    verdict = build_verdict([result("lnk_analysis", data)], HIGH)
+    assert "ZDI-CAN-25373" in verdict
+
+
 def test_real_samples_all_produce_a_verdict(
-    report_redline, report_rar, report_xlsm, report_onenote, report_html, report_pdf
+    report_redline, report_rar, report_xlsm, report_onenote, report_html,
+    report_pdf, report_lnk,
 ):
     """No scoring sample may render a blank verdict line."""
     for report in (
@@ -113,6 +125,7 @@ def test_real_samples_all_produce_a_verdict(
         report_onenote,
         report_html,
         report_pdf,
+        report_lnk,
     ):
         verdict = build_verdict(report["module_results"], report["scoring"])
         assert verdict, f"empty verdict for {report['file']}"

