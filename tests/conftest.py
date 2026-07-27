@@ -81,5 +81,12 @@ def report_pdf() -> dict:
 
 
 @pytest.fixture
+def report_lnk() -> dict:
+    """Real Grandoreiro shortcut — LOLBin target, 3 KiB encoded arguments,
+    a four-layer obfuscation chain, and TrackerDataBlock attribution."""
+    return load_report("grandoreiro_lnk")
+
+
+@pytest.fixture
 def console() -> Console:
     return make_console()

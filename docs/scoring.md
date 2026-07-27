@@ -26,8 +26,8 @@ can push the raw total above 100 — clamping happens once at the end in `core/s
 
 ### A second band vocabulary exists
 
-Four modules — `archive_analysis`, `doc_analysis`, `onenote_analysis` and the
-combo engines they share — additionally emit
+Four modules — `archive_analysis`, `doc_analysis`, `onenote_analysis` and
+`lnk_analysis`, through the combo engines they share — additionally emit
 `MALICIOUS` / `SUSPICIOUS` / `INFORMATIONAL` / `CLEAN` in
 `data["classification"]`, on **their own thresholds**, which are not the
 0–100 bands above and are not consistent with each other:
@@ -37,6 +37,7 @@ combo engines they share — additionally emit
 | `archive_analysis` | ≥ 7 | 4–6 | 1–3 | 0 | 60 |
 | `doc_analysis` | ≥ 7 | 4–6 | 1–3 | 0 | 60 |
 | `onenote_analysis` | ≥ 25 | 10–24 | 1–9 | 0 | 60 |
+| `lnk_analysis` | ≥ 25 | 10–24 | 1–9 | 0 | 60 |
 
 Both vocabularies render in the same report, so a green `LOW` score banner can
 sit directly above a red `MALICIOUS` classification — the archive scored 8/100
@@ -310,3 +311,77 @@ The `rarfile` library strips those suffixes from the entry name, so
 `archive_analysis/rar_raw_headers.py` parses the RAR4/RAR5 headers
 directly to recover the unsanitised form and expose it to the
 indicator as `ArchiveEntry.raw_name`.
+
+---
+
+## lnk_analysis (capped at 60 total)
+
+Frozenset combo rules in `modules/static/lnk_analysis/scoring.py`. A rule
+fires when its flag set is a subset of the observed flags; weights sum,
+then clamp at `SCORE_CAP = 60`. Bands are computed on the **uncapped**
+total and mirror `onenote_analysis` exactly (≥ 25 MALICIOUS, 10–24
+SUSPICIOUS, 1–9 INFORMATIONAL, 0 CLEAN) — reusing an existing vocabulary
+rather than inventing a fourth.
+
+| Flags | Weight | Rationale |
+|---|---|---|
+| `lolbin_target` + `args_padding_zdi` | 40 | ZDI-CAN-25373 / CVE-2025-9491 — the real command hidden past the Properties dialog's 260-character visible window |
+| `lolbin_target` + `encoded_powershell` | 35 | Base64 `-enc` payload behind a LOLBin |
+| `overlay_present` + `overlay_extraction_command` | 35 | Appended payload *and* the findstr/mshta/PowerShell that carves it out |
+| `overlay_executable` | 30 | PE/ZIP/script appended past the terminal block |
+| `lolbin_target` + `download_cradle` | 30 | Download-and-execute |
+| `webdav_remote_exec` | 30 | `\\host@SSL\share` — runs a payload off an attacker share with nothing written to disk, so no download-cradle pattern can fire |
+| `lolbin_target` + `remote_url_in_args` | 28 | LOLBin fetching a remote URL |
+| `args_smuggled_in_target` | 25 | Arguments hidden in the target field |
+| `icon_masquerade` | 25 | Document icon over an executable target (T1027.012) |
+| `remote_icon_location` | 25 | Icon fetched remotely — download + NTLM coercion primitive |
+| `suspicious_host` | 22 | Known malware-hosting infrastructure |
+| `unc_or_webdav_target` | 20 | UNC/WebDAV target |
+| `env_path_override_mismatch` | 20 | EnvironmentVariableDataBlock overrides the displayed target |
+| `args_padding_heavy` | 20 | Strong whitespace padding short of the full ZDI shape |
+| `unc_in_arguments` | 18 | Command line references a UNC network path |
+| `lolbin_target` + `hidden_window` | 18 | `-w hidden` |
+| `lolbin_target` + `exec_bypass` | 16 | `-nop` / `-ep bypass` |
+| `args_over_1024_chars` | 15 | Argument string far past any legitimate length |
+| `long_relative_path_traversal` | 15 | More than 4 `..\` levels |
+| `double_extension_name` | 15 | `Invoice.pdf.lnk` |
+| `no_tracker_block` + `has_arguments` + `lolbin_target` | 15 | Built programmatically, not by Explorer |
+| `sanitised_machine_id` | 14 | TrackerDataBlock present but MachineID blanked |
+| `obfuscation` | 13 | Caret/backtick splitting, `%VAR:~n,m%`, base64 decode |
+| `timestamp_source_mismatch` | 12 | Header FILETIMEs disagree with the shell items' DOS dates |
+| `high_entropy` | 12 | ≥ 6.5 — bartblaze's `High_Entropy_LNK` threshold |
+| `large_file` | 12 | > 100 KiB — bartblaze's `Large_filesize_LNK` threshold |
+| `overlay_present` | 10 | Any data past the terminal block |
+| `target_in_user_dir` | 10 | Target under `%TEMP%`/`%APPDATA%`/Public |
+| `filesize_zero` | 10 | Header claims a 0-byte target while carrying arguments |
+| `vm_oui_mac` | 10 | Build NIC MAC belongs to VMware/VirtualBox/QEMU/Hyper-V |
+| `header_anomaly` | 10 | [MS-SHLLINK] MUST-violations |
+| `script_payload` | 9 | Script extension in the command line |
+| `timestamps_fabricated` | 8 | Zeroed, identical, or write-before-creation |
+| `many_arguments` | 6 | More than four tokens (Intezer heuristic) |
+| `args_padding_light` | 5 | 8–99 consecutive whitespace characters |
+| `lolbin_target` | 5 | **Deliberately low** — see below |
+
+**Why `lolbin_target` alone is only worth 5.** The Windows Start Menu
+ships `Windows PowerShell.lnk`, whose target *is* `powershell.exe`. A
+module that classes that SUSPICIOUS is useless on a real desktop. The
+score has to come from combinations, which is also how the format is
+actually abused. `tests/test_lnk_analysis.py::test_stock_start_menu_shortcut_stays_quiet`
+pins this.
+
+**Padding thresholds.** The position-aware ZDI check is the high-fidelity
+one: the first 260 characters ≥ 95% whitespace *and* non-whitespace
+content beyond offset 260. The cruder tiers come from SigmaHQ
+`proc_creation_win_susp_lnk_exec_hidden_cmd` (17 consecutive spaces, 6
+consecutive newlines). The whitespace *ratio* rule only applies once the
+string exceeds 260 characters — below that everything is on screen, so a
+space-heavy argument is untidy rather than evasive.
+
+**What is deliberately not scored.** Unit 42's structural prevalence
+figures (LinkTargetIDList in 99.53% of malicious samples, RELATIVE_PATH
+75.49%, COMMAND_LINE_ARGUMENTS 35.52%) are recorded in `data` as context
+but carry no weight — they are too common in benign shortcuts to
+discriminate. The widely-repeated 4096-character argument limit is also
+not validated: it has no primary Microsoft source and is probably a
+shell/dialog limit. The format ceiling is the uint16 `CountCharacters`
+field, 65,535.
