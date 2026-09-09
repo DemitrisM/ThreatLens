@@ -1,6 +1,35 @@
-"""Import / export extraction, suspicious-API tagging, dynamic resolution."""
+"""Import / export extraction, suspicious-API tagging, dynamic resolution.
+
+Design notes
+------------
+The import table answers "what can this program do" more directly than any
+other static feature, because Windows makes almost every interesting action go
+through a named API. That is also why it is the first thing packers destroy:
+a packed binary imports LoadLibrary and GetProcAddress and nothing else, then
+rebuilds the real table at runtime.
+
+So this module scores in two opposite directions. A *rich* table of dangerous
+APIs is suspicious for what it says the program does. A *suspiciously empty*
+table is suspicious for what it says the program is hiding - hence
+``_classify_import_footprint``, and ``_detect_dynamic_api_resolution`` which
+catches an API name sitting in the file as a plain string while absent from
+the imports.
+
+No single API here is malicious. VirtualAlloc is in every allocator and
+CreateProcess in every launcher. The weight comes from co-occurrence, which is
+why the category buckets and the hollowing set exist.
+"""
 
 
+# ----------------------------------------------------------------------
+# The flat watch-list, grouped by comment only.
+#
+# Membership tags an import for display and feeds the suspicious-set the
+# scoring in __init__.py works from. Deliberately broad: better to surface
+# an API and let the combination logic decide than to miss the one call
+# that mattered. Both the A and W variants of every name are listed
+# because the linker records whichever the source happened to use.
+# ----------------------------------------------------------------------
 # Suspicious imports that indicate potentially malicious behaviour.
 _SUSPICIOUS_IMPORTS = {
     # Memory allocation / process injection
@@ -170,8 +199,15 @@ _DYNAMIC_API_CANDIDATES = frozenset({
 def _extract_imports(pe: "pefile.PE") -> tuple[dict, set]:
     """Extract imported DLLs and functions, flag suspicious ones.
 
+    Args:
+        pe: A parsed ``pefile.PE`` object.
+
     Returns:
         (imports_dict, set_of_suspicious_function_names)
+
+        The dict maps DLL name to its function list. Both are empty when
+        the binary has no import directory, which is itself meaningful:
+        a packed or .NET executable often has almost none.
     """
     imports: dict[str, list[str]] = {}
     suspicious: set[str] = set()
@@ -183,6 +219,10 @@ def _extract_imports(pe: "pefile.PE") -> tuple[dict, set]:
         dll_name = entry.dll.decode("utf-8", errors="replace")
         functions = []
         for imp in entry.imports:
+            # An import is by name or by ordinal. Ordinal-only imports
+            # are recorded as "ordinal_<n>" rather than dropped:
+            # importing purely by ordinal hides which function is being
+            # called, and is itself a mild evasion signal.
             if imp.name:
                 func_name = imp.name.decode("utf-8", errors="replace")
                 functions.append(func_name)
@@ -196,7 +236,16 @@ def _extract_imports(pe: "pefile.PE") -> tuple[dict, set]:
 
 
 def _extract_exports(pe: "pefile.PE") -> list[str]:
-    """Extract exported function names."""
+    """Extract exported function names.
+
+    Args:
+        pe: A parsed ``pefile.PE`` object.
+
+    Returns:
+        Exported names, with ordinal-only exports rendered as
+        ``ordinal_<n>``. An EXE that exports anything at all is unusual
+        and worth seeing - it is the shape of a dual-purpose DLL/EXE.
+    """
     exports = []
     if not hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
         return exports
@@ -216,12 +265,22 @@ def _classify_import_footprint(imports: dict, is_dotnet: bool) -> dict:
     import table — usually a single DLL (kernel32) with just a handful
     of functions (LoadLibrary, GetProcAddress, VirtualAlloc, …) so the
     real imports can be resolved at runtime.
+
+    Args:
+        imports:   The dict from ``_extract_imports``.
+        is_dotnet: Whether this is a CLR assembly.
+
+    Returns:
+        ``{"dll_count", "is_kernel32_only", "loader_only"}``.
     """
     info = {
         "dll_count": len(imports),
         "is_kernel32_only": False,
         "loader_only": False,
     }
+    # .NET assemblies import exactly one function (mscoree._CorExeMain)
+    # by design, so every check below would fire on every managed binary.
+    # Bail out before that happens.
     if is_dotnet:
         return info
     dll_names = {dll.lower() for dll in imports.keys()}
@@ -229,6 +288,10 @@ def _classify_import_footprint(imports: dict, is_dotnet: bool) -> dict:
         info["is_kernel32_only"] = True
         funcs = {f.lower() for f in imports.get("kernel32.dll", [])
                  if isinstance(f, str)}
+        # issubset, not intersection: "loader_only" means the table holds
+        # NOTHING BUT loader primitives. A binary that also imports file
+        # or network APIs is doing real work and is not merely a stub,
+        # however suspicious those other APIs may be.
         loader_set = {"loadlibrarya", "loadlibraryw", "getprocaddress",
                       "virtualalloc", "virtualprotect", "exitprocess"}
         if funcs and funcs.issubset(loader_set | {"getmodulehandlea",
@@ -246,14 +309,31 @@ def _detect_dynamic_api_resolution(
     import it is almost certainly resolving the function at runtime via
     GetProcAddress / hash-based resolution — a packer / shellcode
     loader hallmark.
+
+    Args:
+        pe:                 A parsed ``pefile.PE`` object.
+        suspicious_imports: Names already found in the import table,
+                            subtracted so a legitimately imported API is
+                            never double-reported here.
+
+    Returns:
+        ``{"count": int, "apis": [...]}`` - count is the true total, the
+        list is capped at ten for display.
     """
     info = {"count": 0, "apis": []}
     try:
         raw = pe.__data__
     except Exception:  # noqa: BLE001
         return info
+    # The set difference is the whole trick: an API that IS imported
+    # tells us nothing here, so only names absent from the table get
+    # searched for as raw strings.
     candidates = _DYNAMIC_API_CANDIDATES - suspicious_imports
     found: list[str] = []
+    # One full-file scan per candidate. Acceptable because the candidate
+    # set is small and fixed, and `in` on bytes is a C-level search - but
+    # it is linear in file size per name, which is why this set is kept
+    # short rather than reusing the whole _SUSPICIOUS_IMPORTS list.
     for api in candidates:
         # Use a quick byte search; the API names are ASCII-only.
         if api.encode("ascii") in raw:
@@ -269,6 +349,15 @@ def _count_forwarded_exports(pe: "pefile.PE") -> int:
     Forwarded exports are how Windows API set DLLs (api-ms-win-*)
     redirect calls to their real implementation. On a normal EXE
     they're suspicious because they suggest a proxy / hijack DLL.
+
+    Args:
+        pe: A parsed ``pefile.PE`` object.
+
+    Returns:
+        The count, or 0 when there is no export directory. A DLL hijack
+        works by re-exporting the legitimate DLL's entire surface so the
+        host program keeps working while the attacker's code runs
+        alongside it - which shows up as many forwarders.
     """
     if not hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
         return 0

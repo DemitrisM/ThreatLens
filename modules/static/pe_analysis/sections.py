@@ -1,4 +1,19 @@
-"""PE section analysis — entropy, RWX, size mismatch, permission anomalies."""
+"""PE section analysis — entropy, RWX, size mismatch, permission anomalies.
+
+Design notes
+------------
+Every check here asks the same underlying question: does this section's
+*shape* match the role its name claims? Compilers are extremely consistent —
+.text is read+execute, .data is read+write, raw and virtual sizes track each
+other — so deviations are cheap, high-signal indicators that do not depend on
+recognising any particular malware family.
+
+Entropy is the headline metric and the most abused one. Above ~7.0 a byte
+stream is indistinguishable from random, which means compressed, encrypted or
+packed. It is not evidence of malice on its own: installers, embedded media
+and any packed commercial binary reach it legitimately. That is why .rsrc is
+excluded here and handled separately, and why the weights are moderate.
+"""
 
 import math
 
@@ -9,15 +24,28 @@ _SCN_MEM_WRITE   = 0x80000000
 
 
 def _shannon_entropy(data: bytes) -> float:
-    """Calculate Shannon entropy of a byte sequence."""
+    """Calculate Shannon entropy of a byte sequence.
+
+    Args:
+        data: Raw bytes to measure.
+
+    Returns:
+        Entropy in bits per byte, 0.0 to 8.0. 0.0 means every byte is
+        identical; 8.0 means a perfectly uniform distribution. Above
+        ~7.0 in practice means compressed or encrypted.
+    """
     if not data:
         return 0.0
+    # A fixed 256-entry list rather than a dict or Counter: this runs over
+    # multi-megabyte sections, and direct indexing avoids the hashing.
     frequency = [0] * 256
     for byte in data:
         frequency[byte] += 1
     length = len(data)
     entropy = 0.0
     for count in frequency:
+        # Skip absent byte values — log2(0) is undefined, and their
+        # contribution to the sum is zero anyway.
         if count:
             p = count / length
             entropy -= p * math.log2(p)
@@ -26,6 +54,9 @@ def _shannon_entropy(data: bytes) -> float:
 
 def _analyse_sections(pe: "pefile.PE") -> tuple[list[dict], int, list[str]]:
     """Analyse PE sections and compute per-section Shannon entropy.
+
+    Args:
+        pe: A parsed ``pefile.PE`` object.
 
     Returns:
         (section_list, score_delta, reason_strings)
@@ -40,6 +71,12 @@ def _analyse_sections(pe: "pefile.PE") -> tuple[list[dict], int, list[str]]:
     reasons: list[str] = []
     high_entropy_sections = []
 
+    # ------------------------------------------------------------------
+    # Step 1: Describe every section, and collect the high-entropy ones.
+    #
+    # The descriptive list is built for ALL sections including .rsrc —
+    # the exclusion below is only from scoring, never from the report.
+    # ------------------------------------------------------------------
     for section in pe.sections:
         name = section.Name.rstrip(b"\x00").decode("utf-8", errors="replace")
         entropy = section.get_entropy()
@@ -64,6 +101,13 @@ def _analyse_sections(pe: "pefile.PE") -> tuple[list[dict], int, list[str]]:
         if entropy > 7.0:
             high_entropy_sections.append((name, entropy))
 
+    # ------------------------------------------------------------------
+    # Step 2: Score once for the whole file, on the worst section.
+    #
+    # Scoring per section would let a packer with six compressed sections
+    # outweigh every other indicator in the report; the finding is "this
+    # binary is packed", which is true once regardless of section count.
+    # ------------------------------------------------------------------
     if high_entropy_sections:
         # Score scales: 7.0-7.5 = +15, 7.5+ = +20
         max_entropy = max(e for _, e in high_entropy_sections)
@@ -84,6 +128,14 @@ def _find_rwx_sections(pe: "pefile.PE") -> list[str]:
     every modern compiler emits .text as RX and .data as RW. RWX
     typically indicates a self-modifying unpacker stub or hand-crafted
     shellcode loader.
+
+    Args:
+        pe: A parsed ``pefile.PE`` object.
+
+    Returns:
+        Names of RWX sections, empty when none. Writable-and-executable
+        together is what matters: it lets code rewrite itself at
+        runtime, which is precisely what an unpacker stub must do.
     """
     rwx: list[str] = []
     for section in pe.sections:
@@ -102,11 +154,27 @@ def _detect_section_size_mismatch(
     A section with little data on disk but a large virtual footprint
     will be filled in at load time — the classic shape of a packed
     section that decompresses itself in memory.
+
+    Args:
+        pe:       A parsed ``pefile.PE`` object.
+        sections: Section dicts (unused; uniform submodule signature).
+
+    Returns:
+        ``{"count": int, "names": [...]}`` with names capped at five to
+        keep the report readable; the count is the true total.
     """
     bad: list[str] = []
     for section in pe.sections:
         raw = section.SizeOfRawData
         virt = section.Misc_VirtualSize
+
+        # --------------------------------------------------------------
+        # Case 1: no bytes on disk at all.
+        #
+        # Legitimate for uninitialised data (.bss, .data, .tls), which is
+        # why those three names are excused. Anywhere else it means the
+        # section's contents arrive only at runtime.
+        # --------------------------------------------------------------
         if raw == 0 and virt > 0x100:
             # Zero raw size + non-trivial virtual size = pure runtime
             # buffer (legitimate for .bss but not for code sections).
@@ -114,6 +182,14 @@ def _detect_section_size_mismatch(
             if name.lower() not in {".bss", ".data", ".tls"}:
                 bad.append(name)
             continue
+
+        # --------------------------------------------------------------
+        # Case 2: disproportionate expansion.
+        #
+        # Both conditions are needed. The 4x ratio alone fires on small
+        # sections where alignment padding dominates; the 64 KiB absolute
+        # floor requires the gap to be big enough to hold a real payload.
+        # --------------------------------------------------------------
         if raw > 0 and virt > raw * 4 and virt - raw > 0x10000:
             name = section.Name.rstrip(b"\x00").decode("utf-8", errors="replace")
             bad.append(name)
@@ -132,7 +208,12 @@ def _detect_section_permission_anomalies(pe: "pefile.PE") -> list[str]:
       • A writable .rdata — read-only data section that is writable,
         commonly seen with hand-modified PEs.
 
-    Returns a list of human-readable anomaly strings.
+    Args:
+        pe: A parsed ``pefile.PE`` object.
+
+    Returns:
+        A list of human-readable anomaly strings, deduplicated in
+        first-seen order.
     """
     out: list[str] = []
     for section in pe.sections:
@@ -143,12 +224,24 @@ def _detect_section_permission_anomalies(pe: "pefile.PE") -> list[str]:
         c = section.Characteristics
         is_x = bool(c & _SCN_MEM_EXECUTE)
         is_w = bool(c & _SCN_MEM_WRITE)
+        # `is_w and not (is_x and is_w)` reduces to "writable but NOT
+        # executable", so a writable+executable .text is left to
+        # _find_rwx_sections instead of being reported twice.
+        #
+        # NOTE: that exclusion is applied ONLY here. The two data-section
+        # checks below do not test for it, so an RWX .rdata currently
+        # raises "executable .rdata", "writable .rdata" AND the separate
+        # RWX finding. Flagged rather than changed: suppressing findings
+        # alters scoring, which does not belong in a comment pass.
         if name in (".text", "code", ".code") and is_w and not (is_x and is_w):
             out.append(f"writable {name}")
         if name in (".data", ".rdata", ".bss") and is_x:
             out.append(f"executable {name}")
         if name == ".rdata" and is_w:
             out.append("writable .rdata")
+    # Order-preserving dedup: a binary with several executable data
+    # sections should report the anomaly once, but the first one seen
+    # stays first in the report.
     # de-dup while preserving order
     seen: set[str] = set()
     unique: list[str] = []
