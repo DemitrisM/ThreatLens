@@ -1,4 +1,4 @@
-"""stdout carries results, stderr carries everything else — NOTES.md rule 8."""
+"""stdout carries results, stderr carries everything else — design rule 8."""
 
 import sys
 
