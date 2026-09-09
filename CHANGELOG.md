@@ -8,6 +8,23 @@
   design-notes headers on each module. The remaining packages follow in later
   passes.
 - Added this changelog.
+- Fixed a blank `virustotal_api_key:` in `config.yaml` crashing the pipeline.
+  A YAML key written with no value parses to `None` rather than `""`, and the
+  default in `dict.get` only applies to an absent key, so `.strip()` raised
+  `AttributeError` and took down the whole scan over one missing pair of
+  quotes.
+- Fixed a negative `Retry-After` header from VirusTotal reaching
+  `time.sleep()`, which raises `ValueError`. The wait is now bounded at both
+  ends rather than only capped.
+- Fixed `{"data": null}` in a VirusTotal response raising `AttributeError`
+  instead of degrading — valid JSON for an empty state, and the chained
+  `.get()` could not survive it.
+- Added `tests/test_virustotal.py` (23 tests). No test performs a real
+  network request. Suite is now 605.
+- Known issue: `virustotal` has no shared rate budget. Embedded-hash lookups
+  issue one request each and can sleep up to 120s apiece on a rate limit, so
+  an archive with many payloads will stall against the free tier's 4
+  requests/minute.
 - Fixed `config_loader` handing out `DEFAULTS["rule_sources"]` by reference
   when a config file's `rule_sources` was malformed. The returned list *was*
   the module constant, so anything mutating it rewrote the YARA rule source
