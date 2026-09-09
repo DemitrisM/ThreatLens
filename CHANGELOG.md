@@ -2,11 +2,24 @@
 
 ## Unreleased
 
-- Added a block-per-section commenting standard, piloted across the `core/`
-  package: docstrings with Args/Returns/Raises on every function, section
-  banners on every multi-phase function, and design-notes headers on each
-  module. The remaining packages follow in later passes.
+- Added a block-per-section commenting standard, applied to the `core/` and
+  `modules/static/pe_analysis/` packages: docstrings with Args/Returns/Raises
+  on every function, section banners on every multi-phase function, and
+  design-notes headers on each module. The remaining packages follow in later
+  passes.
 - Added this changelog.
+- Fixed `_has_tls_callbacks` reading a fixed 8 bytes from the TLS callback
+  array. The array is NULL-terminated by one pointer, which is 4 bytes on a
+  32-bit image, so on PE32 the read ran past the terminator and reported a
+  callback whenever the trailing bytes were non-zero. The width now follows
+  `OptionalHeader.Magic`.
+- Added `tests/test_pe_analysis.py`, previously an empty stub — eight tests
+  covering the TLS callback check across both pointer widths. Suite is now
+  445 tests.
+- Fixed four statements in the `pe_analysis` module docstring that
+  contradicted the code: the section size-mismatch thresholds, a
+  `no_isolation` flag that is not returned, `.itext` as a benign entry-point
+  section, and two API category buckets that do not exist.
 - Fixed `_run_module`'s docstring in `core/pipeline.py`, which claimed the
   function enforced the per-module timeout. It never has — timeouts are
   enforced inside the modules that shell out (capa's subprocess, XLM
