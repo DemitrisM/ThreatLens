@@ -6,6 +6,7 @@ IOCs. Filters known false positives.
 Returns a standard module result dict with score_delta and reason.
 """
 
+import ipaddress
 import logging
 import re
 from pathlib import Path
@@ -50,9 +51,6 @@ _FP_IPS = {
     "1.0.0.0", "1.0.0.1",  # version-like
     "2.0.0.0", "3.0.0.0", "4.0.0.0", "6.0.0.0",
 }
-
-# IP prefixes that are almost always internal / benign.
-_FP_IP_PREFIXES = ("192.168.", "10.", "169.254.", "224.")
 
 # Common DLL and system file names that trigger domain/path FPs.
 _FP_DOMAINS = {
@@ -364,19 +362,41 @@ def _filter_url_fps(urls: set[str]) -> set[str]:
 
 
 def _filter_ip_fps(ips: set[str]) -> set[str]:
-    """Filter false-positive IPv4 addresses."""
+    """Filter false-positive IPv4 addresses.
+
+    Args:
+        ips: Candidate dotted quads straight from the regex sweep.
+
+    Returns:
+        Only addresses that could plausibly be an external indicator.
+
+    Non-routable addresses are dropped through the stdlib ``ipaddress``
+    module rather than a list of string prefixes. The prefix list this
+    replaced omitted 172.16.0.0/12 entirely, so every internal address
+    from 172.16.x to 172.31.x — a whole RFC 1918 block, and the default
+    range for Docker bridge networks — was reported as an external IOC.
+    Prefix strings cannot express a /12 without enumerating sixteen of
+    them, which is exactly how that gap survived.
+    """
     result: set[str] = set()
     for ip in ips:
         if ip in _FP_IPS:
             continue
-        if any(ip.startswith(p) for p in _FP_IP_PREFIXES):
-            continue
         if _VERSION_LIKE_RE.match(ip):
             continue
-        # Validate each octet is 0-255 (regex allows 999.999...).
-        octets = ip.split(".")
-        if all(0 <= int(o) <= 255 for o in octets):
-            result.add(ip)
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            # The regex admits things like 999.1.1.1; ip_address does not.
+            continue
+        # Everything that cannot appear as an external C2: RFC 1918
+        # private space, loopback, link-local, multicast, and the
+        # reserved and unspecified ranges.
+        if (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_multicast or addr.is_reserved
+                or addr.is_unspecified):
+            continue
+        result.add(ip)
     return result
 
 
