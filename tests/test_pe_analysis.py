@@ -400,3 +400,53 @@ def test_zero_import_pe_is_not_scored_twice():
     _data, _score, reasons = _analyse_pe(_ImportPE())
     import_reasons = _reasons_mentioning(reasons, "import table")
     assert len(import_reasons) == 1, import_reasons
+
+
+# ----------------------------------------------------------------------
+# Version-info scoring
+# ----------------------------------------------------------------------
+
+from modules.static.pe_analysis.metadata import _score_version_info
+
+
+def test_missing_version_block_scores_nothing():
+    """A missing version block must not score.
+
+    The docstring once promised +5 here and the code never implemented
+    it. Go, Rust and MinGW binaries routinely ship without a version
+    resource, so the penalty would fire across a large benign
+    population. This pins the intended behaviour so the phantom check is
+    not "restored" by a future reader.
+    """
+    assert _score_version_info({}) == (0, "")
+
+
+def test_ordinary_version_block_scores_nothing():
+    """A normal vendor block with a real description is not suspicious."""
+    score, reason = _score_version_info({
+        "CompanyName": "Some Small Vendor Ltd",
+        "ProductName": "Invoice Tool",
+        "FileDescription": "Invoice preparation utility",
+    })
+    assert (score, reason) == (0, "")
+
+
+def test_impersonated_vendor_with_generic_description_scores():
+    """A well-known vendor name over boilerplate is impersonation."""
+    score, reason = _score_version_info({
+        "CompanyName": "Microsoft Corporation",
+        "ProductName": "Windows",
+        "FileDescription": "Application",
+    })
+    assert score == 10
+    assert "impersonat" in reason.lower()
+
+
+def test_impersonated_vendor_with_real_description_is_left_alone():
+    """Genuine Microsoft binaries name what they actually are."""
+    score, reason = _score_version_info({
+        "CompanyName": "Microsoft Corporation",
+        "ProductName": "Microsoft Windows Operating System",
+        "FileDescription": "Windows Explorer Shell",
+    })
+    assert (score, reason) == (0, "")

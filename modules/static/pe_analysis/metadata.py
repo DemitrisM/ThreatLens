@@ -289,24 +289,25 @@ def _extract_version_info(pe: "pefile.PE") -> dict:
 def _score_version_info(info: dict) -> tuple[int, str]:
     """Score the version info block.
 
-    Two failure modes:
-      • Block missing entirely (score +5, mild — common in Go/Rust too).
-      • Block claims a Microsoft / Google / well-known vendor identity
-        but the binary is unsigned and small (impersonation +10).
+    One failure mode is scored: the block claims a Microsoft / Google /
+    well-known vendor identity while the FileDescription is missing or
+    boilerplate (impersonation, +10).
+
+    A *missing* block is deliberately not scored. Go, Rust and MinGW
+    binaries routinely ship without one, so penalising its absence would
+    fire across a large benign population for no discriminating power.
+    An earlier version of this docstring promised +5 for that case; the
+    code never implemented it, and the intended behaviour is the code's,
+    not the docstring's.
 
     Args:
-        info: The dict from ``_extract_version_info``.
+        info: The dict from ``_extract_version_info``. Empty when the
+              binary carries no VS_VERSIONINFO resource.
 
     Returns:
-        ``(score_delta, reason)`` — ``(0, "")`` when nothing fires.
+        ``(score_delta, reason)`` — ``(0, "")`` when nothing fires,
+        including for a missing block.
     """
-    # NOTE: the "+5 for a missing block" case described above is NOT
-    # implemented — an empty dict returns 0 here. The docstring records
-    # the original intent; the code deliberately stays silent because
-    # Go, Rust and MinGW binaries routinely ship no version block, so
-    # the check would have fired on a large benign population. Left as
-    # documentation rather than reworded, since restoring or dropping it
-    # is a scoring decision, not a comment one.
     if not info:
         return 0, ""
     company = (info.get("CompanyName") or "").strip()
