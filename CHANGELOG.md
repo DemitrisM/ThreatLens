@@ -2,11 +2,12 @@
 
 ## Unreleased
 
-- Added a block-per-section commenting standard, applied to the `core/` and
-  `modules/static/pe_analysis/` packages: docstrings with Args/Returns/Raises
-  on every function, section banners on every multi-phase function, and
-  design-notes headers on each module. The remaining packages follow in later
-  passes.
+- Added a block-per-section commenting standard, applied to `core/`,
+  `modules/static/pe_analysis/` and `modules/enrichment/`: docstrings with
+  Args/Returns/Raises on every function, section banners on every multi-phase
+  function, and design-notes headers on each module. Every package documented
+  so far has surfaced real defects, listed below. The remaining packages
+  follow in later passes.
 - Added this changelog.
 - Fixed a blank `virustotal_api_key:` in `config.yaml` crashing the pipeline.
   A YAML key written with no value parses to `None` rather than `""`, and the
@@ -20,7 +21,8 @@
   instead of degrading — valid JSON for an empty state, and the chained
   `.get()` could not survive it.
 - Added `tests/test_virustotal.py` (23 tests). No test performs a real
-  network request. Suite is now 605.
+  network request. **The suite is now 605 tests, up from 437 at the start
+  of this work, with no empty stubs remaining.**
 - Known issue: `virustotal` has no shared rate budget. Embedded-hash lookups
   issue one request each and can sleep up to 120s apiece on a rate limit, so
   an archive with many payloads will stall against the free tier's 4
@@ -44,7 +46,7 @@
 - Removed three dead branches and one dead constant table.
 - Filled the last three empty test stubs. `test_scoring.py` (30),
   `test_pipeline.py` (48) and `test_ioc_extractor.py` (32) join
-  `test_pe_analysis.py` (34). Suite is now 582 tests, with no stubs left.
+  `test_pe_analysis.py` (34), plus `test_virustotal.py` (23). No stubs left.
 - Known issue: the pipeline enforces no per-module timeout.
   `module_timeout_seconds` is validated and never read, so a slow pure-Python
   module runs to completion regardless. Timeouts exist only inside the modules
@@ -60,8 +62,7 @@
   callback whenever the trailing bytes were non-zero. The width now follows
   `OptionalHeader.Magic`.
 - Added `tests/test_pe_analysis.py`, previously an empty stub — eight tests
-  covering the TLS callback check across both pointer widths. Suite is now
-  445 tests.
+  covering the TLS callback check across both pointer widths.
 - Fixed four statements in the `pe_analysis` module docstring that
   contradicted the code: the section size-mismatch thresholds, a
   `no_isolation` flag that is not returned, `.itext` as a benign entry-point
@@ -80,9 +81,6 @@
   0–100 into LOW/MEDIUM/HIGH/CRITICAL while `archive`, `doc`, `onenote` and
   `lnk` emit MALICIOUS/SUSPICIOUS/INFORMATIONAL/CLEAN on their own
   thresholds, so a green `LOW` banner can sit above a red `MALICIOUS` one.
-- Known issue: `core/config_loader.py` assigns `DEFAULTS["rule_sources"]` by
-  reference in its validation fallback, defeating the `copy.deepcopy` the
-  same function performs to protect the module-level constant.
 - Known issue: all 18 validated `.lnk` samples pin at exactly +60, so
   `SCORE_CAP` is doing the work and the corpus cannot rank within MALICIOUS.
   Detection is unaffected; triage ordering is not yet meaningful.
