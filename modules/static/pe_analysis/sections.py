@@ -224,16 +224,19 @@ def _detect_section_permission_anomalies(pe: "pefile.PE") -> list[str]:
         c = section.Characteristics
         is_x = bool(c & _SCN_MEM_EXECUTE)
         is_w = bool(c & _SCN_MEM_WRITE)
-        # `is_w and not (is_x and is_w)` reduces to "writable but NOT
-        # executable", so a writable+executable .text is left to
-        # _find_rwx_sections instead of being reported twice.
-        #
-        # NOTE: that exclusion is applied ONLY here. The two data-section
-        # checks below do not test for it, so an RWX .rdata currently
-        # raises "executable .rdata", "writable .rdata" AND the separate
-        # RWX finding. Flagged rather than changed: suppressing findings
-        # alters scoring, which does not belong in a comment pass.
-        if name in (".text", "code", ".code") and is_w and not (is_x and is_w):
+
+        # A read+write+execute section belongs to _find_rwx_sections and
+        # is skipped entirely here. Without this an RWX .rdata matched
+        # both data rules below AND the RWX check, scoring one physical
+        # section three times. Excluding it once, at the top, applies
+        # the rule uniformly instead of only in the .text branch.
+        if is_x and is_w:
+            continue
+
+        # Past the guard `is_w` already implies "not executable", so the
+        # remaining rules describe genuinely non-RWX anomalies: a code
+        # section that is writable, or a data section that is executable.
+        if name in (".text", "code", ".code") and is_w:
             out.append(f"writable {name}")
         if name in (".data", ".rdata", ".bss") and is_x:
             out.append(f"executable {name}")
