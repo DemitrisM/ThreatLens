@@ -8,6 +8,11 @@
   design-notes headers on each module. The remaining packages follow in later
   passes.
 - Added this changelog.
+- Bumped the version to 0.4.0. `cli/__init__.py` still declared 0.2.0 while
+  this changelog recorded 0.3.0 and 0.4.0 as shipped, so `--version`,
+  `pyproject.toml` and every report's `meta.version` all understated what the
+  tool actually was. The fixtures under `tests/fixtures/` keep their captured
+  `"version": "0.2.0"` — they are historical records and no test reads it.
 - Fixed `_has_tls_callbacks` reading a fixed 8 bytes from the TLS callback
   array. The array is NULL-terminated by one pointer, which is 4 bytes on a
   32-bit image, so on PE32 the read ran past the terminator and reported a
