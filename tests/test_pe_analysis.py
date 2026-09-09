@@ -128,3 +128,94 @@ def test_unreadable_callback_array_still_reports_the_pointer():
             raise ValueError("data at RVA cannot be fetched")
 
     assert _has_tls_callbacks(_RaisingPE(_FakePE.PE32, b"")) is True
+
+
+# ----------------------------------------------------------------------
+# Packer detection
+# ----------------------------------------------------------------------
+
+from modules.static.pe_analysis.packers import _detect_packers
+
+
+class _FakeSection:
+    def __init__(self, name):
+        self.Name = name.encode("ascii").ljust(8, b"\x00")
+
+
+class _PackerPE:
+    """Stand-in exposing only what _detect_packers reads."""
+
+    def __init__(self, overlay=b""):
+        self.__data__ = b"MZ" + b"\x00" * 512 + overlay
+        self._overlay_at = 514 if overlay else None
+
+    def get_overlay_data_start_offset(self):
+        return self._overlay_at
+
+
+def _sections(*names):
+    return [{"name": n} for n in names]
+
+
+@pytest.mark.parametrize(
+    "section_name, expected",
+    [
+        ("UPX0", "UPX"),
+        ("UPX1", "UPX"),
+        (".mpress1", "MPRESS"),
+        (".themida", "Themida"),
+        (".vmp0", "VMProtect"),
+        (".aspack", "ASPack"),
+        (".petite", "Petite"),
+        (".nsp0", "NSPack"),
+    ],
+)
+def test_known_packer_sections_are_detected(section_name, expected):
+    """Every packer the matcher already handled must keep working."""
+    found = _detect_packers(_PackerPE(), _sections(section_name, ".text"))
+    assert expected in found
+
+
+@pytest.mark.parametrize(
+    "section_name, expected",
+    [
+        (".yP", "Y0da"),
+        (".packed", "Generic"),
+    ],
+)
+def test_packer_sections_listed_but_never_matched(section_name, expected):
+    """Sections named in _PACKER_SECTION_NAMES must actually be matched.
+
+    `.yP` (Y0da Packer) and `.packed` were listed in the signature table
+    and never consulted by the matcher, so a binary carrying them was
+    reported as unpacked.
+    """
+    found = _detect_packers(_PackerPE(), _sections(section_name, ".text"))
+    assert found, f"{section_name} was not detected as a packer section"
+    assert any(expected.lower() in f.lower() for f in found)
+
+
+def test_pecompact_signature_is_detected():
+    """PECompact is in _PACKER_SIGNATURES but was never searched for."""
+    found = _detect_packers(_PackerPE(overlay=b"PECompact2" + b"\x00" * 32),
+                            _sections(".text", ".data"))
+    assert "PECompact" in found
+
+
+def test_upx_overlay_magic_still_detected_when_sections_renamed():
+    """The renamed-section UPX fallback must survive the refactor."""
+    found = _detect_packers(_PackerPE(overlay=b"UPX!" + b"\x00" * 32),
+                            _sections(".text", ".data"))
+    assert "UPX" in found
+
+
+def test_clean_binary_reports_no_packer():
+    """A normal section layout must not produce a false positive."""
+    found = _detect_packers(_PackerPE(), _sections(".text", ".rdata", ".data", ".rsrc"))
+    assert found == []
+
+
+def test_packer_names_are_not_duplicated():
+    """UPX0/UPX1/UPX2 together must report UPX once."""
+    found = _detect_packers(_PackerPE(), _sections("UPX0", "UPX1", "UPX2"))
+    assert found.count("UPX") == 1
