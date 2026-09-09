@@ -2,6 +2,21 @@
 
 Provides a single get_config() entry point that returns a validated
 configuration dict with sensible defaults for any missing keys.
+
+Design notes
+------------
+Every key the tool reads is present in ``DEFAULTS``, so the no-config path
+behaves identically to a config file that happens to match the defaults. A
+key that exists only in the shipped ``config.yaml`` would vanish for users
+without one, and each module would silently fall back to its own literal.
+
+Validation never rejects. A bad value is logged and replaced with the
+default, because a typo in one tuning key must not stop an analyst scanning
+a sample. The one exception is an unparseable file, which is a mistake the
+user needs to see immediately.
+
+This module raises its own exception types rather than ``click`` ones so
+``core/`` carries no dependency on the CLI framework.
 """
 
 import copy
@@ -40,6 +55,13 @@ class ConfigNotFound(Exception):
 class ConfigError(Exception):
     """A config file exists but could not be parsed."""
 
+# ----------------------------------------------------------------------
+# Default configuration.
+#
+# This is the complete set of keys the tool reads — see the module
+# docstring for why partial defaults are not acceptable. Never mutate this
+# dict; get_config() hands out deep copies precisely so callers cannot.
+# ----------------------------------------------------------------------
 DEFAULTS = {
     "virustotal_api_key": "",
     "yara_rules_dir": "./rules/yara",
@@ -52,6 +74,9 @@ DEFAULTS = {
     "log_level": "WARNING",
     "module_timeout_seconds": 60,
     "capa_timeout_seconds": 120,
+    # Mirrors _MODULE_REGISTRY in core/pipeline.py, in execution order.
+    # Order matters: virustotal trails archive_analysis so it can look up
+    # the hashes archive extraction surfaced.
     "enabled_modules": [
         "file_intake",
         "pe_analysis",
@@ -73,6 +98,8 @@ DEFAULTS = {
     # no-config path and each module falls back to its own literal.
     "archive_full_recursion": False,
     "max_archive_recursion_depth": 3,
+    # A whole-tree budget, not per-archive: the cap is what stops a nested
+    # zip bomb from filling the disk one small archive at a time.
     "max_archive_extracted_size_mb": 500,
     "archive_bomb_ratio_threshold": 100,
     "archive_bomb_member_count_threshold": 1000,
@@ -102,12 +129,21 @@ DEFAULTS = {
     ],
 }
 
+# Allow-lists for the two enumerated settings. Anything outside these is
+# replaced with the default rather than rejected — see _validate().
 VALID_DYNAMIC_PROVIDERS = {"none", "speakeasy", "vm_worker", "cape"}
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 
 def _search_paths() -> list[Path]:
-    """Config locations to try, in clig.dev precedence order."""
+    """Config locations to try, in clig.dev precedence order.
+
+    Returns:
+        Paths to try in order, most specific first: the environment
+        variable, then the working directory, then the per-user config
+        directory. ``--config`` is not represented here because an
+        explicit path bypasses the search entirely.
+    """
     paths = []
     env_value = os.environ.get(CONFIG_ENV_VAR)
     if env_value:
@@ -138,12 +174,23 @@ def get_config(config_path: Path | None = None, *, required: bool = True) -> dic
         ConfigNotFound: *config_path* was given, required, and is missing.
         SystemExit:     the file exists but is not parseable.
     """
+    # ------------------------------------------------------------------
+    # Step 1: Start from an independent copy of the defaults.
+    # ------------------------------------------------------------------
     # deepcopy, not dict(): a shallow copy shares enabled_modules and
     # rule_sources with the module-level constant, so both _validate's
     # setdefault calls and any caller mutation would corrupt DEFAULTS for
     # the rest of the process.
     config = copy.deepcopy(DEFAULTS)
 
+    # ------------------------------------------------------------------
+    # Step 2: Decide which file to read, if any.
+    #
+    # Three outcomes: an explicit path (honoured or raised on), a search
+    # hit, or nothing at all. The two no-file paths still run the env
+    # overlay and validation before returning, so every exit from this
+    # function yields a config that has been through the same treatment.
+    # ------------------------------------------------------------------
     if config_path is not None:
         if not config_path.exists():
             if required:
@@ -163,6 +210,14 @@ def get_config(config_path: Path | None = None, *, required: bool = True) -> dic
 
     logger.debug("Loading config from %s", chosen)
 
+    # ------------------------------------------------------------------
+    # Step 3: Parse it.
+    #
+    # safe_load, never load: a config file is untrusted input as far as
+    # arbitrary object construction is concerned. Unlike a bad *value*, an
+    # unparseable *file* is fatal — the user asked for settings that
+    # cannot be applied, and continuing would hide that.
+    # ------------------------------------------------------------------
     try:
         with chosen.open("r", encoding="utf-8") as fh:
             loaded = yaml.safe_load(fh)
@@ -173,9 +228,17 @@ def get_config(config_path: Path | None = None, *, required: bool = True) -> dic
         logger.error("Could not read config file %s: %s", chosen, exc)
         raise SystemExit(1) from exc
 
+    # An empty file parses to None, which is a legitimate "use defaults".
     if loaded and isinstance(loaded, dict):
         config.update(loaded)
 
+    # ------------------------------------------------------------------
+    # Step 4: Post-process, in a fixed order that matters.
+    #
+    # The permission check runs before the env overlay so it judges the
+    # file's own contents — a key supplied by the environment says nothing
+    # about whether the file on disk is safe.
+    # ------------------------------------------------------------------
     _warn_if_world_readable(chosen, config)
     _apply_env_overrides(config)
     _validate(config)
@@ -188,10 +251,14 @@ def _apply_env_overrides(config: dict) -> None:
     The environment wins so a container or CI job can inject a key without
     a writable config file. An exported-but-empty variable is ignored — it
     is a common shell accident and must not silently disable VirusTotal.
+
+    Args:
+        config: The config dict, mutated in place.
     """
     env_key = (os.environ.get(VT_KEY_ENV_VAR) or "").strip()
     if env_key:
         config["virustotal_api_key"] = env_key
+        # Logs that the key was *sourced*, never the key itself.
         logger.debug("VirusTotal key taken from %s", VT_KEY_ENV_VAR)
 
 
@@ -201,7 +268,13 @@ def _warn_if_world_readable(path: Path, config: dict) -> None:
     Only fires for files that actually carry a secret — nagging about a
     keyless config would train users to ignore the warning. The value is
     never included in the message.
+
+    Args:
+        path:   The config file that was read.
+        config: The parsed config, inspected for credential keys.
     """
+    # POSIX mode bits are meaningless on Windows, where the equivalent
+    # check is an ACL query this tool does not attempt.
     if os.name != "posix":
         return
     if not any(str(config.get(k, "")).strip() for k in _SECRET_CONFIG_KEYS):
@@ -209,7 +282,10 @@ def _warn_if_world_readable(path: Path, config: dict) -> None:
     try:
         mode = stat.S_IMODE(path.stat().st_mode)
     except OSError:
+        # A permission check that cannot run is not worth failing over.
         return
+    # 0o077 covers every group and other bit: any access at all by anyone
+    # but the owner is too much for a file holding an API key.
     if mode & 0o077:
         logger.warning(
             "%s holds an API key but is readable by other users (mode %o). "
@@ -221,7 +297,18 @@ def _warn_if_world_readable(path: Path, config: dict) -> None:
 
 
 def _validate(config: dict) -> None:
-    """Apply sanity checks and normalise values in-place."""
+    """Apply sanity checks and normalise values in-place.
+
+    Every check follows the same shape: detect a bad value, warn naming
+    both the value and its replacement, then substitute the default. No
+    check raises — a typo in one tuning key must not stop a scan.
+
+    Args:
+        config: The config dict, mutated in place.
+    """
+    # ------------------------------------------------------------------
+    # Step 1: Enumerated values, checked against their allow-lists.
+    # ------------------------------------------------------------------
     provider = config.get("dynamic_provider", "none")
     if provider not in VALID_DYNAMIC_PROVIDERS:
         logger.warning(
@@ -229,6 +316,8 @@ def _validate(config: dict) -> None:
         )
         config["dynamic_provider"] = "none"
 
+    # Normalised to upper case unconditionally so `log_level: debug` in a
+    # hand-written config reaches the logging module in the form it wants.
     log_level = str(config.get("log_level", "INFO")).upper()
     if log_level not in VALID_LOG_LEVELS:
         logger.warning(
@@ -237,6 +326,9 @@ def _validate(config: dict) -> None:
         log_level = "INFO"
     config["log_level"] = log_level
 
+    # ------------------------------------------------------------------
+    # Step 2: Numeric timeouts.
+    # ------------------------------------------------------------------
     timeout = config.get("module_timeout_seconds", 60)
     # bool is a subclass of int, so `module_timeout_seconds: true` would
     # otherwise be accepted as a one-second timeout.
@@ -246,6 +338,7 @@ def _validate(config: dict) -> None:
         )
         config["module_timeout_seconds"] = 60
 
+    # Same three-part guard as above: right type, not a bool, positive.
     capa_timeout = config.get("capa_timeout_seconds", 120)
     if not isinstance(capa_timeout, (int, float)) or isinstance(
         capa_timeout, bool
@@ -255,6 +348,14 @@ def _validate(config: dict) -> None:
         )
         config["capa_timeout_seconds"] = 120
 
+    # ------------------------------------------------------------------
+    # Step 3: rule_sources, the one structured setting.
+    #
+    # Per-source defaults are filled with setdefault so a user can name
+    # just a URL and get a working source. Non-dict entries are skipped
+    # rather than repaired: there is no sane default for a source that is
+    # not even a mapping.
+    # ------------------------------------------------------------------
     sources = config.get("rule_sources")
     if sources is not None:
         if not isinstance(sources, list):
