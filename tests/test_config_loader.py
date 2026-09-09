@@ -156,3 +156,36 @@ def test_malformed_yaml_still_exits(tmp_path):
     cfg.write_text("key: [unclosed\n")
     with pytest.raises(SystemExit):
         get_config(cfg)
+
+
+# ----------------------------------------------------------------------
+# DEFAULTS isolation
+# ----------------------------------------------------------------------
+
+def test_malformed_rule_sources_does_not_alias_the_defaults(tmp_path):
+    """The rule_sources fallback must hand out a copy, not the constant.
+
+    get_config deepcopies DEFAULTS so a caller cannot corrupt the module
+    constant for the rest of the process. The fallback for a malformed
+    rule_sources assigned DEFAULTS["rule_sources"] directly, which
+    reintroduced exactly the aliasing the deepcopy exists to prevent.
+    """
+    from core import config_loader
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("rule_sources: not-a-list\n", encoding="utf-8")
+
+    original = copy.deepcopy(config_loader.DEFAULTS["rule_sources"])
+
+    config = config_loader.get_config(cfg_file)
+    # Mutate what the caller was handed, the way any consumer legitimately might.
+    config["rule_sources"].append({"name": "injected", "enabled": True})
+    config["rule_sources"][0]["url"] = "https://attacker.example/evil.git"
+
+    assert config_loader.DEFAULTS["rule_sources"] == original, (
+        "mutating the returned config corrupted the module-level DEFAULTS"
+    )
+
+    # A second, independent load must not see the first caller's mutation.
+    second = config_loader.get_config(cfg_file)
+    assert second["rule_sources"] == original
