@@ -360,7 +360,13 @@ def _validate(config: dict) -> None:
     if sources is not None:
         if not isinstance(sources, list):
             logger.warning("rule_sources must be a list — falling back to defaults")
-            config["rule_sources"] = DEFAULTS["rule_sources"]
+            # deepcopy, not the constant itself. Assigning DEFAULTS'
+            # own list here would alias it into the returned config and
+            # undo the deepcopy at the top of get_config — a caller
+            # mutating config["rule_sources"] would then rewrite the
+            # module constant, and every later load in the process would
+            # inherit the change.
+            config["rule_sources"] = copy.deepcopy(DEFAULTS["rule_sources"])
         else:
             for src in sources:
                 if not isinstance(src, dict):
