@@ -21,36 +21,52 @@ parsed, so they are consulted before any byte scan.
 import pefile
 
 # ----------------------------------------------------------------------
-# NOTE: the two tables below are currently UNUSED. `_detect_packers`
-# matches with an inline startswith chain instead, and that chain covers
-# fewer packers than these tables list — ".yP" (Y0da), ".packed" and
-# PECompact appear here but are never actually matched. Kept as the
-# reference list they were written to be; wiring them into the matcher is
-# a behaviour change and belongs in its own commit.
+# Section-name prefixes, mapped to the packer they identify.
+#
+# PREFIXES, not exact names: packers number their sections (UPX0/UPX1/
+# UPX2, .vmp0/.vmp1) and the count varies with the packed program, so an
+# exact-match lookup would miss every section but the first. Keys are
+# lowercase; the matcher lowercases the section name before comparing.
 # ----------------------------------------------------------------------
-# Known packer section names and signatures.
-_PACKER_SECTION_NAMES = {
-    "UPX0", "UPX1", "UPX2", "UPX!",
-    ".mpress1", ".mpress2", "MPRESS1", "MPRESS2",
-    ".themida", ".vmp0", ".vmp1", ".vmp2",
-    ".aspack", ".adata",
-    ".nsp0", ".nsp1",  # NSPack
-    ".petite",
-    ".yP",  # Y0da Packer
-    ".packed",
+_PACKER_SECTION_NAMES: dict[str, str] = {
+    "upx": "UPX",
+    ".mpress": "MPRESS",
+    "mpress": "MPRESS",
+    ".themida": "Themida",
+    "themida": "Themida",
+    ".vmp": "VMProtect",
+    ".aspack": "ASPack",
+    ".adata": "ASPack",
+    ".nsp": "NSPack",
+    ".petite": "Petite",
+    ".yp": "Y0da Packer",
+    ".packed": "Generic packer",
 }
 
-# Common packer strings found in PE overlay or headers.
-_PACKER_SIGNATURES = {
-    "UPX": "UPX",
-    "MPRESS": "MPRESS",
-    "Themida": "Themida",
-    "VMProtect": "VMProtect",
-    "ASPack": "ASPack",
-    "PECompact": "PECompact",
-    "Petite": "Petite",
-    "NSPack": "NSPack",
+# ----------------------------------------------------------------------
+# Vendor strings, searched in the DOS/PE header area and the overlay.
+#
+# Deliberately NOT searched across the whole image. A full-file scan for
+# a word like "UPX" or "Petite" fires on any binary that merely mentions
+# it - a security tool, an installer's own string table - and the header
+# and overlay are where a packer's own stub and trailer actually live.
+# ----------------------------------------------------------------------
+_PACKER_SIGNATURES: dict[str, bytes] = {
+    "UPX": b"UPX",
+    "MPRESS": b"MPRESS",
+    "Themida": b"Themida",
+    "VMProtect": b"VMProtect",
+    "ASPack": b"ASPack",
+    "PECompact": b"PECompact",
+    "Petite": b"Petite",
+    "NSPack": b"NSPack",
 }
+
+#: Bytes of the file head and of the overlay searched for the vendor
+#: strings above. Both are generous for a packer stub and bounded so the
+#: scan cost does not scale with the sample.
+_HEADER_SCAN_BYTES = 4096
+_OVERLAY_SCAN_BYTES = 64 * 1024
 
 
 def _detect_packers(pe: "pefile.PE", sections: list[dict]) -> list[str]:
@@ -66,56 +82,49 @@ def _detect_packers(pe: "pefile.PE", sections: list[dict]) -> list[str]:
         (UPX0/UPX1/UPX2) would otherwise report it repeatedly.
     """
     found: list[str] = []
-    section_names = {s["name"] for s in sections}
+
+    def _add(name: str) -> None:
+        """Append a packer name once."""
+        if name not in found:
+            found.append(name)
 
     # ------------------------------------------------------------------
-    # Step 1: Match section names.
+    # Step 1: Match section names against the prefix table.
     #
-    # Prefix matching rather than equality, because packers number their
-    # sections (UPX0/UPX1/UPX2, .vmp0/.vmp1) and the count varies with
-    # the packed program.
+    # Longest prefix first so a more specific entry wins over a shorter
+    # one that also matches, rather than the result depending on dict
+    # ordering.
     # ------------------------------------------------------------------
-    # Check section names against known packer section names.
-    for name in section_names:
-        name_upper = name.upper().strip()
-        if name_upper.startswith("UPX"):
-            if "UPX" not in found:
-                found.append("UPX")
-        elif name_upper.startswith("MPRESS") or name_upper.startswith(".MPRESS"):
-            if "MPRESS" not in found:
-                found.append("MPRESS")
-        elif name_upper in (".THEMIDA", "THEMIDA"):
-            if "Themida" not in found:
-                found.append("Themida")
-        elif name_upper.startswith(".VMP"):
-            if "VMProtect" not in found:
-                found.append("VMProtect")
-        elif name_upper in (".ASPACK", ".ADATA"):
-            if "ASPack" not in found:
-                found.append("ASPack")
-        elif name_upper == ".PETITE":
-            if "Petite" not in found:
-                found.append("Petite")
-        elif name_upper.startswith(".NSP"):
-            if "NSPack" not in found:
-                found.append("NSPack")
+    ordered = sorted(_PACKER_SECTION_NAMES.items(), key=lambda kv: -len(kv[0]))
+    for section in sections:
+        name = str(section.get("name", "")).strip().lower()
+        if not name:
+            continue
+        for prefix, packer in ordered:
+            if name.startswith(prefix):
+                _add(packer)
+                break
 
     # ------------------------------------------------------------------
-    # Step 2: Catch UPX that renamed its sections.
+    # Step 2: Search the header area and the overlay for vendor strings.
     #
-    # Renaming UPX0/UPX1 is the standard trick for evading the check
-    # above, but the "UPX!" magic in the trailing header survives it
-    # because the unpacker stub needs it to find its own metadata.
+    # Catches packers that renamed their sections, which is the standard
+    # way of defeating step 1. The UPX case matters most: the "UPX!"
+    # magic in the trailing header survives renaming because the
+    # unpacker stub needs it to find its own metadata.
     # ------------------------------------------------------------------
-    # Check for UPX magic bytes in the PE overlay (after all sections).
     try:
+        raw = pe.__data__
+        haystack = raw[:_HEADER_SCAN_BYTES]
         overlay_offset = pe.get_overlay_data_start_offset()
         if overlay_offset is not None:
-            overlay_data = pe.__data__[overlay_offset:overlay_offset + 256]
-            if b"UPX!" in overlay_data and "UPX" not in found:
-                found.append("UPX")
+            haystack += raw[overlay_offset:overlay_offset + _OVERLAY_SCAN_BYTES]
     except Exception:  # noqa: BLE001
-        pass
+        return found
+
+    for packer, marker in _PACKER_SIGNATURES.items():
+        if marker in haystack:
+            _add(packer)
 
     return found
 
