@@ -219,3 +219,88 @@ def test_packer_names_are_not_duplicated():
     """UPX0/UPX1/UPX2 together must report UPX once."""
     found = _detect_packers(_PackerPE(), _sections("UPX0", "UPX1", "UPX2"))
     assert found.count("UPX") == 1
+
+
+# ----------------------------------------------------------------------
+# Section permission anomalies vs the separate RWX finding
+# ----------------------------------------------------------------------
+
+from modules.static.pe_analysis.sections import (
+    _detect_section_permission_anomalies,
+    _find_rwx_sections,
+)
+
+_SCN_MEM_EXECUTE = 0x20000000
+_SCN_MEM_READ = 0x40000000
+_SCN_MEM_WRITE = 0x80000000
+
+
+class _PermSection:
+    def __init__(self, name, characteristics):
+        self.Name = name.encode("ascii").ljust(8, b"\x00")
+        self.Characteristics = characteristics
+
+
+class _PermPE:
+    def __init__(self, *sections):
+        self.sections = list(sections)
+
+
+def test_rwx_rdata_is_reported_once_not_three_times():
+    """One RWX section must not raise three separate findings.
+
+    An RWX `.rdata` matched both data-section rules ("executable .rdata"
+    and "writable .rdata") on top of the dedicated RWX finding, scoring
+    one physical section three times.
+    """
+    rwx = _SCN_MEM_READ | _SCN_MEM_WRITE | _SCN_MEM_EXECUTE
+    pe = _PermPE(_PermSection(".rdata", rwx))
+
+    assert _find_rwx_sections(pe) == [".rdata"]
+    assert _detect_section_permission_anomalies(pe) == []
+
+
+def test_rwx_data_is_left_to_the_rwx_check():
+    """The same rule applies to `.data`."""
+    rwx = _SCN_MEM_READ | _SCN_MEM_WRITE | _SCN_MEM_EXECUTE
+    pe = _PermPE(_PermSection(".data", rwx))
+    assert _find_rwx_sections(pe) == [".data"]
+    assert _detect_section_permission_anomalies(pe) == []
+
+
+def test_executable_data_without_write_is_still_an_anomaly():
+    """A non-RWX anomaly must keep being reported.
+
+    Execute-without-write on a data section is not RWX, so the RWX check
+    will not catch it and this one must.
+    """
+    rx = _SCN_MEM_READ | _SCN_MEM_EXECUTE
+    pe = _PermPE(_PermSection(".data", rx))
+    assert _find_rwx_sections(pe) == []
+    assert _detect_section_permission_anomalies(pe) == ["executable .data"]
+
+
+def test_writable_rdata_without_execute_is_still_an_anomaly():
+    """Write-without-execute on .rdata likewise stays reported."""
+    rw = _SCN_MEM_READ | _SCN_MEM_WRITE
+    pe = _PermPE(_PermSection(".rdata", rw))
+    assert _find_rwx_sections(pe) == []
+    assert _detect_section_permission_anomalies(pe) == ["writable .rdata"]
+
+
+def test_writable_text_without_execute_is_still_an_anomaly():
+    """The .text branch already had this exclusion; it must not regress."""
+    rw = _SCN_MEM_READ | _SCN_MEM_WRITE
+    pe = _PermPE(_PermSection(".text", rw))
+    assert _detect_section_permission_anomalies(pe) == ["writable .text"]
+
+
+def test_normal_section_permissions_produce_no_anomalies():
+    """A conventional layout must stay silent."""
+    pe = _PermPE(
+        _PermSection(".text", _SCN_MEM_READ | _SCN_MEM_EXECUTE),
+        _PermSection(".rdata", _SCN_MEM_READ),
+        _PermSection(".data", _SCN_MEM_READ | _SCN_MEM_WRITE),
+    )
+    assert _detect_section_permission_anomalies(pe) == []
+    assert _find_rwx_sections(pe) == []
