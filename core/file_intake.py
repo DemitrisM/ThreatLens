@@ -3,6 +3,19 @@
 Uses python-magic for true file-type identification (not extension-based),
 generates MD5, SHA256, and TLSH fuzzy hashes, and returns structured
 file metadata for downstream modules.
+
+Design notes
+------------
+This is the first module the pipeline runs and the only one that always
+returns ``score_delta: 0``. It is a metadata provider, not a detector: every
+later module reads the MIME type it publishes to decide whether it applies
+at all, so an intake failure degrades the whole scan and is reported as
+``status: "error"`` rather than swallowed.
+
+Type detection is content-based on purpose. Malware routinely ships a PE
+named ``invoice.pdf``; trusting the extension is exactly the mistake the
+tool exists to catch. The extension map at the bottom of ``_detect_file_type``
+is a last resort for machines without libmagic, not the primary path.
 """
 
 import hashlib
@@ -11,7 +24,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Graceful imports — each optional dependency degrades independently.
+# ----------------------------------------------------------------------
+# Optional dependencies.
+#
+# Each import is guarded separately so the three capabilities degrade
+# independently: a box without libmagic still gets SHA256, and a box
+# without TLSH still gets type detection. Design rule 2 forbids letting a
+# missing dependency abort the pipeline, so these set a flag and warn
+# instead of raising.
+# ----------------------------------------------------------------------
 try:
     import magic
 
@@ -33,6 +54,9 @@ try:
 
     _HAS_SSDEEP = True
 except ImportError:
+    # ppdeep is a pure-Python reimplementation with the same hash() API.
+    # It is slower but needs no C extension, which is what makes the tool
+    # installable on a locked-down lab machine.
     try:
         import ppdeep as ssdeep  # Pure-python fallback
 
@@ -42,15 +66,34 @@ except ImportError:
         logger.warning("ssdeep/ppdeep not available — ssdeep fuzzy hashing disabled")
 
 
+# 64 KiB read chunks. Large enough to keep syscall overhead negligible,
+# small enough that a multi-gigabyte sample never lands in memory.
 _BUF_SIZE = 65536  # 64 KiB read chunks for hashing
 
 
 def _compute_hashes(file_path: Path) -> dict:
     """Compute MD5, SHA256, and (optionally) TLSH and ssdeep hashes.
 
-    Returns a dict with keys: md5, sha256, tlsh, ssdeep.
-    Unavailable hashes are set to None.
+    Args:
+        file_path: Path to the file to hash. Must exist and be readable;
+                   the caller is responsible for that check.
+
+    Returns:
+        A dict with keys ``md5``, ``sha256``, ``tlsh`` and ``ssdeep``.
+        Unavailable or inapplicable hashes are set to None rather than
+        omitted, so downstream consumers can index the dict blindly.
+
+    Raises:
+        OSError: propagated from the read loop; ``run()`` catches it.
     """
+    # ------------------------------------------------------------------
+    # Step 1: Prepare the hashers.
+    #
+    # MD5 is retained despite being cryptographically broken because
+    # VirusTotal, MalwareBazaar and most published IOC lists are still
+    # keyed on it — the noqa marks it as a deliberate interop choice, not
+    # an oversight.
+    # ------------------------------------------------------------------
     md5 = hashlib.md5()  # noqa: S324
     sha256 = hashlib.sha256()
 
@@ -59,6 +102,11 @@ def _compute_hashes(file_path: Path) -> dict:
     else:
         tlsh_hasher = None
 
+    # ------------------------------------------------------------------
+    # Step 2: Stream the file once, feeding every hasher from the same
+    # chunk. Reading the file three times would triple the I/O on the
+    # large samples where it actually matters.
+    # ------------------------------------------------------------------
     with file_path.open("rb") as fh:
         while True:
             chunk = fh.read(_BUF_SIZE)
@@ -69,6 +117,14 @@ def _compute_hashes(file_path: Path) -> dict:
             if tlsh_hasher is not None:
                 tlsh_hasher.update(chunk)
 
+    # ------------------------------------------------------------------
+    # Step 3: Finalise TLSH.
+    #
+    # TLSH is a similarity digest, not a checksum: it needs roughly 50
+    # bytes of input with enough variance to produce a value at all, and
+    # signals failure by raising from final(). A tiny file is a normal
+    # outcome here, so this is a debug line rather than a warning.
+    # ------------------------------------------------------------------
     tlsh_digest = None
     if tlsh_hasher is not None:
         try:
@@ -78,6 +134,12 @@ def _compute_hashes(file_path: Path) -> dict:
             # TLSH requires a minimum amount of data (~50 bytes).
             logger.debug("File too small for TLSH hashing")
 
+    # ------------------------------------------------------------------
+    # Step 4: ssdeep, which has no streaming API in either backend and so
+    # needs the whole file in memory. It is deliberately last and
+    # separately guarded: a MemoryError or backend quirk on a huge sample
+    # costs only the fuzzy hash, not the MD5/SHA256 already computed.
+    # ------------------------------------------------------------------
     ssdeep_digest = None
     if _HAS_SSDEEP:
         try:
@@ -99,9 +161,20 @@ def _compute_hashes(file_path: Path) -> dict:
 def _detect_file_type(file_path: Path) -> dict:
     """Detect MIME type and human-readable description using libmagic.
 
-    Returns a dict with keys: mime_type, description.
-    Falls back to basic extension mapping if python-magic is unavailable.
+    Args:
+        file_path: Path to the file to identify.
+
+    Returns:
+        A dict with keys ``mime_type`` and ``description``. Always
+        populated — an unidentifiable file yields
+        ``application/octet-stream``.
     """
+    # ------------------------------------------------------------------
+    # Preferred path: content-based identification via libmagic.
+    #
+    # Two calls are needed because python-magic returns either the MIME
+    # type or the prose description, never both from one invocation.
+    # ------------------------------------------------------------------
     if _HAS_MAGIC:
         try:
             mime_type = magic.from_file(str(file_path), mime=True)
@@ -110,6 +183,13 @@ def _detect_file_type(file_path: Path) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("python-magic detection failed: %s", exc)
 
+    # ------------------------------------------------------------------
+    # Fallback path: extension guess, used only when libmagic is absent
+    # or threw. Trusting the extension is precisely the weakness this
+    # module normally avoids, so the map covers just the nine types the
+    # pipeline can route on, and anything unlisted is reported honestly
+    # as unknown rather than guessed at.
+    # ------------------------------------------------------------------
     # Fallback: extension-based guess (better than nothing).
     suffix = file_path.suffix.lower()
     fallback_map = {
@@ -150,6 +230,13 @@ def run(file_path: Path, _config: dict) -> dict:
     """
     logger.info("Running file intake on %s", file_path.name)
 
+    # ------------------------------------------------------------------
+    # Step 1: Reject anything that is not a regular file.
+    #
+    # This is an error, not a skip: every later module depends on the
+    # metadata produced here, so a scan that cannot read its own target
+    # must not go on to report a clean verdict (design rule 10).
+    # ------------------------------------------------------------------
     if not file_path.is_file():
         logger.error("Target path does not exist or is not a file: %s", file_path)
         return {
@@ -161,6 +248,13 @@ def run(file_path: Path, _config: dict) -> dict:
         }
 
     try:
+        # --------------------------------------------------------------
+        # Step 2: Gather size, hashes and type.
+        #
+        # file_path.resolve() is stored rather than the argument as given
+        # so the report records an unambiguous absolute path even when
+        # the user scanned via a relative path or a symlink.
+        # --------------------------------------------------------------
         file_size = file_path.stat().st_size
         hashes = _compute_hashes(file_path)
         file_type = _detect_file_type(file_path)
@@ -188,6 +282,13 @@ def run(file_path: Path, _config: dict) -> dict:
             "reason": "File intake provides metadata only — no score contribution.",
         }
 
+    # ------------------------------------------------------------------
+    # Step 3: Convert I/O failure into a standard error result.
+    #
+    # Only OSError is caught. A bug inside this module should surface as
+    # a traceback during development rather than be disguised as an
+    # unreadable file.
+    # ------------------------------------------------------------------
     except OSError as exc:
         logger.error("File intake failed (I/O error): %s", exc)
         return {
@@ -200,7 +301,16 @@ def run(file_path: Path, _config: dict) -> dict:
 
 
 def _human_size(nbytes: int) -> str:
-    """Format byte count as a human-readable string."""
+    """Format byte count as a human-readable string.
+
+    Args:
+        nbytes: Size in bytes.
+
+    Returns:
+        The size with a binary unit suffix, e.g. ``"1.5 MiB"``. Binary
+        units (KiB/MiB) are used rather than decimal because they match
+        what the section-size fields inside a PE actually mean.
+    """
     for unit in ("B", "KiB", "MiB", "GiB"):
         if nbytes < 1024:
             return f"{nbytes:.1f} {unit}"
