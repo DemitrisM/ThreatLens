@@ -8,6 +8,30 @@
   design-notes headers on each module. The remaining packages follow in later
   passes.
 - Added this changelog.
+- Fixed `config_loader` handing out `DEFAULTS["rule_sources"]` by reference
+  when a config file's `rule_sources` was malformed. The returned list *was*
+  the module constant, so anything mutating it rewrote the YARA rule source
+  URL for the rest of the process.
+- Fixed `ioc_extractor` reporting the whole of 172.16.0.0/12 as external
+  indicators. The private-range filter used string prefixes that omitted that
+  block entirely, so every internal address from 172.16.x to 172.31.x — and
+  the default Docker bridge range — was extracted as an IOC. Now uses the
+  stdlib `ipaddress` module.
+- Fixed packer detection ignoring its own signature tables. `.yP` (Y0da),
+  `.packed` and PECompact were listed and never matched; detection now runs
+  off the tables, with prefix matching so `UPX0`/`UPX1`/`UPX2` still resolve.
+- Fixed a single RWX `.rdata` section raising three separate findings.
+- Fixed a native PE with exactly zero imports scoring nothing — the
+  small-import-table check started above zero and the branch meant to catch
+  the empty case did nothing. An empty table now scores +10.
+- Removed three dead branches and one dead constant table.
+- Filled the last three empty test stubs. `test_scoring.py` (30),
+  `test_pipeline.py` (48) and `test_ioc_extractor.py` (32) join
+  `test_pe_analysis.py` (34). Suite is now 582 tests, with no stubs left.
+- Known issue: the pipeline enforces no per-module timeout.
+  `module_timeout_seconds` is validated and never read, so a slow pure-Python
+  module runs to completion regardless. Timeouts exist only inside the modules
+  that shell out. `tests/test_pipeline.py` pins this as a documented gap.
 - Bumped the version to 0.4.0. `cli/__init__.py` still declared 0.2.0 while
   this changelog recorded 0.3.0 and 0.4.0 as shipped, so `--version`,
   `pyproject.toml` and every report's `meta.version` all understated what the
