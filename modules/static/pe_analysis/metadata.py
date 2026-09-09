@@ -1,10 +1,28 @@
-"""Rich header, DOS stub, debug PDB info, version info — PE metadata."""
+"""Rich header, DOS stub, debug PDB info, version info — PE metadata.
+
+Design notes
+------------
+Metadata is what a binary says about itself, so all four checks here look for
+the same thing: a claim that does not hold up. The Rich header and DOS stub
+are written by the Microsoft toolchain and are hard to reproduce correctly by
+hand, which makes a *corrupted* one more telling than a missing one. The PDB
+path and version block are free text, which makes them a source of attacker
+mistakes — a leaked username, a project name like "stub" or "crypter", a
+stolen CompanyName over a generic FileDescription.
+
+None of these is conclusive alone. Go and Rust binaries have no Rich header,
+plenty of legitimate software ships no version block, and packers strip all of
+it. They earn their weight in combination with the structural indicators.
+"""
 
 import re
 
 # Default DOS stub message in MS toolchain output.
 _DEFAULT_DOS_STUB = b"This program cannot be run in DOS mode."
 
+# Tokens seen in real attacker PDB paths: stealer/RAT family names, C2
+# frameworks, and generic build-role words. Matched case-insensitively on
+# word boundaries so "loader" does not fire inside "downloader_test".
 # Suspicious tokens that often appear in attacker PDB paths.
 _SUSPICIOUS_PDB_TOKENS = re.compile(
     r"\b(?:redline|lumma|vidar|raccoon|stealc|asyncrat|njrat|quasar|"
@@ -17,9 +35,21 @@ _SUSPICIOUS_PDB_TOKENS = re.compile(
 
 
 def _rol32(value: int, bits: int) -> int:
-    """32-bit rotate-left helper used by the Rich header checksum."""
+    """32-bit rotate-left helper used by the Rich header checksum.
+
+    Args:
+        value: The value to rotate; masked to 32 bits first.
+        bits:  Rotation amount, masked to 0-31.
+
+    Returns:
+        The rotated 32-bit value. Python integers are unbounded, so both
+        the input and the result must be masked explicitly to emulate
+        the 32-bit arithmetic the linker performs.
+    """
     value &= 0xFFFFFFFF
     bits &= 0x1F
+    # A rotate by zero is returned unchanged: `value >> 32` would shift
+    # the whole value out rather than being a no-op.
     return ((value << bits) | (value >> (32 - bits))) & 0xFFFFFFFF if bits else value
 
 
@@ -33,6 +63,14 @@ def _analyse_rich_header(pe: "pefile.PE") -> dict:
     checksum against a recomputed value — a mismatch is a strong
     tampering signal (some crypters strip or rebuild the header
     incorrectly).
+
+    Args:
+        pe: A parsed ``pefile.PE`` object.
+
+    Returns:
+        ``{"present", "n_entries", "corrupted", "checksum", "tools"}``.
+        Absence is NOT reported as corruption: Go, Rust, MinGW and every
+        non-Microsoft toolchain legitimately emit no Rich header.
     """
     info = {
         "present": False,
@@ -57,6 +95,14 @@ def _analyse_rich_header(pe: "pefile.PE") -> dict:
     if stored_checksum is not None:
         info["checksum"] = stored_checksum
 
+    # ------------------------------------------------------------------
+    # Recompute the checksum and compare.
+    #
+    # This is the whole point of the function. The checksum doubles as
+    # the XOR key for the header, so a crypter that rewrites the region
+    # without recomputing it leaves a mismatch behind — evidence the
+    # binary was modified after the linker finished with it.
+    # ------------------------------------------------------------------
     # Verify the Rich header checksum. The linker computes:
     #   csum = e_lfanew
     #   for each byte b in dos_header_and_stub (excluding e_lfanew bytes):
@@ -75,6 +121,8 @@ def _analyse_rich_header(pe: "pefile.PE") -> dict:
                 if k < len(buf):
                     buf[k] = 0
             csum = pe.DOS_HEADER.e_lfanew & 0xFFFFFFFF
+            # Each byte is rotated by its own offset, so the sum depends
+            # on position as well as content.
             for i, b in enumerate(buf):
                 csum = (csum + _rol32(b, i & 0x1F)) & 0xFFFFFFFF
             # Pairs of (comp_id, count).
@@ -84,8 +132,17 @@ def _analyse_rich_header(pe: "pefile.PE") -> dict:
                 csum = (csum + _rol32(comp_id, count & 0x1F)) & 0xFFFFFFFF
             info["corrupted"] = (csum != (stored_checksum & 0xFFFFFFFF))
         except Exception:  # noqa: BLE001
+            # A failed computation is not evidence of tampering, so this
+            # resets the flag rather than leaving it ambiguous.
             info["corrupted"] = False
 
+    # ------------------------------------------------------------------
+    # Summarise the toolchain.
+    #
+    # Bucketing by the high 16 bits (the product family) avoids shipping
+    # Microsoft's full Comp.ID table for what is a display-only field.
+    # Top six by object count keeps the report readable.
+    # ------------------------------------------------------------------
     # Best-effort toolchain summary — translate top Comp.IDs to a
     # human-readable list ("MSVC linker x.y", "MASM", …). We do not
     # ship the full Microsoft Comp.ID database; just bucket by the
@@ -109,9 +166,20 @@ def _analyse_dos_stub(pe: "pefile.PE") -> dict:
     Most legitimate Microsoft toolchain binaries contain the literal
     'This program cannot be run in DOS mode.' inside the DOS stub.
     Packers and crypters frequently overwrite this region.
+
+    Args:
+        pe: A parsed ``pefile.PE`` object.
+
+    Returns:
+        ``{"modified": bool, "preview": str}``. The preview is included
+        so a reader can see what replaced the stub rather than only
+        being told that something did.
     """
     info = {"modified": False, "preview": ""}
     try:
+        # The DOS header is a fixed 64 bytes, and e_lfanew (its last
+        # field) points at the PE header — so the stub is everything
+        # between them.
         # The PE header starts at e_lfanew. Everything before that
         # (after the DOS header) is the stub.
         e_lfanew = pe.DOS_HEADER.e_lfanew
@@ -128,6 +196,9 @@ def _analyse_dos_stub(pe: "pefile.PE") -> dict:
 
 def _extract_debug_info(pe: "pefile.PE") -> dict:
     """Extract the PDB debug path from the IMAGE_DEBUG_DIRECTORY.
+
+    Args:
+        pe: A parsed ``pefile.PE`` object.
 
     Returns:
         {
@@ -147,6 +218,8 @@ def _extract_debug_info(pe: "pefile.PE") -> dict:
             data = entry.entry
         except AttributeError:
             continue
+        # Three attribute spellings cover the CodeView formats across
+        # pefile versions: RSDS (PDB 7.0) and the older NB10 (PDB 2.0).
         # CodeView entries (RSDS / NB10) carry the PDB path.
         for attr in ("PdbFileName", "Pdb70FileName", "Pdb20FileName"):
             pdb = getattr(data, attr, None)
@@ -156,9 +229,14 @@ def _extract_debug_info(pe: "pefile.PE") -> dict:
                 info["pdb_path"] = pdb
                 if _SUSPICIOUS_PDB_TOKENS.search(pdb):
                     info["suspicious_pdb"] = True
+                # A build path under C:\Users\<name>\ leaks the account
+                # the binary was compiled on — frequently the operator's
+                # own handle, and directly useful for attribution.
                 m = re.search(r"[\\/]Users[\\/]([^\\/]+)", pdb, re.IGNORECASE)
                 if m:
                     info["pdb_username"] = m.group(1)
+                # First CodeView entry wins; a PE carries only one real
+                # PDB reference and later entries are other debug types.
                 return info
     return info
 
@@ -167,11 +245,26 @@ def _extract_version_info(pe: "pefile.PE") -> dict:
     """Pull CompanyName / ProductName / FileDescription / etc.
 
     Goes through the resource VS_VERSIONINFO StringFileInfo block.
+
+    Args:
+        pe: A parsed ``pefile.PE`` object.
+
+    Returns:
+        A flat dict of whatever string keys the block declared, or ``{}``
+        when there is no version resource. Keys are not normalised —
+        they are whatever the binary named them, which is itself
+        informative.
     """
     info: dict = {}
     if not hasattr(pe, "FileInfo"):
         return info
     try:
+        # ------------------------------------------------------------------
+        # Walk VS_VERSIONINFO -> StringFileInfo -> StringTable -> entries.
+        #
+        # The isinstance check normalises a pefile API change: newer
+        # versions return a list of lists here, older ones a flat list.
+        # ------------------------------------------------------------------
         for fileinfo in pe.FileInfo:
             # pefile gives us a list-of-lists in newer versions.
             if not isinstance(fileinfo, list):
@@ -185,6 +278,7 @@ def _extract_version_info(pe: "pefile.PE") -> dict:
                             key = k.decode("utf-8", errors="replace") if isinstance(k, bytes) else str(k)
                             val = v.decode("utf-8", errors="replace") if isinstance(v, bytes) else str(v)
                         except Exception:  # noqa: BLE001
+                            # Skip the unreadable pair, keep the rest.
                             continue
                         info[key] = val.strip("\x00").strip()
     except Exception:  # noqa: BLE001
@@ -199,7 +293,20 @@ def _score_version_info(info: dict) -> tuple[int, str]:
       • Block missing entirely (score +5, mild — common in Go/Rust too).
       • Block claims a Microsoft / Google / well-known vendor identity
         but the binary is unsigned and small (impersonation +10).
+
+    Args:
+        info: The dict from ``_extract_version_info``.
+
+    Returns:
+        ``(score_delta, reason)`` — ``(0, "")`` when nothing fires.
     """
+    # NOTE: the "+5 for a missing block" case described above is NOT
+    # implemented — an empty dict returns 0 here. The docstring records
+    # the original intent; the code deliberately stays silent because
+    # Go, Rust and MinGW binaries routinely ship no version block, so
+    # the check would have fired on a large benign population. Left as
+    # documentation rather than reworded, since restoring or dropping it
+    # is a scoring decision, not a comment one.
     if not info:
         return 0, ""
     company = (info.get("CompanyName") or "").strip()
@@ -214,6 +321,10 @@ def _score_version_info(info: dict) -> tuple[int, str]:
     }
     company_lower = company.lower()
     if company_lower in impersonated:
+        # The vendor name alone is not enough — legitimate Microsoft
+        # binaries obviously carry it. The pairing with a missing or
+        # boilerplate FileDescription is the actual tell, because a real
+        # vendor build always fills that field with something specific.
         # Real impersonation detection requires cert checking too —
         # we surface it as suspicious-only when desc/product also look
         # off (very short or generic).

@@ -19,17 +19,19 @@ render them in the "PE Structural Indicators" panel):
 - `compiled_language` — `"go" | "rust" | "nim" | None` (fingerprint
   via `.symtab` / `Go build ID:`, `rust_panic` / `/rustc/`, `nimrtl`).
 - `dll_characteristics_flags` — `{aslr, dep, cfg, seh,
-  high_entropy_va, force_integrity, no_isolation}` from
+  high_entropy_va, force_integrity}` from
   `IMAGE_DLLCHARACTERISTICS_*`. ASLR + DEP missing on a modern binary
   is a strong "old or stripped" signal; CFG missing is normal for
   many malware families and Go/Rust binaries.
 - `entry_point_section` — `{section, anomaly}`. Anomaly fires when
   AddressOfEntryPoint lands outside a recognised code section
-  (`.text`, `CODE`, `.itext`, etc.) — packers and unpackers commonly
-  redirect entry into `.rsrc`, `.data`, or a custom section.
+  (`.text`, `code`, `.code`, `text`, `CODE`, `INIT`) or outside every
+  section entirely — packers and unpackers commonly redirect entry
+  into `.rsrc`, `.data`, or a custom section.
 - `section_size_mismatch` — sections whose VirtualSize is much larger
-  than RawSize (≥2× and ≥0x1000 absolute delta). Classic packed-code
-  marker.
+  than RawSize (>4× and >0x10000 absolute delta), plus sections with a
+  zero RawSize and a non-trivial VirtualSize outside `.bss`/`.data`/
+  `.tls`. Classic packed-code marker.
 - `rich_header` — `{present, n_entries, corrupted, checksum, tools}`.
   Absent on non-MS toolchains (Go/Rust/MinGW). Corruption is verified
   by recomputing the linker XOR checksum (rotate-left over the DOS
@@ -82,8 +84,9 @@ render them in the "PE Structural Indicators" panel):
   `CreateProcessA/W` with the suspended flag, `ZwUnmapViewOfSection`).
   Two or more = process-hollowing pattern.
 - `api_categories` — coarse behavioural buckets the imports cover
-  (`execution`, `network`, `persistence`, `antidebug`, `crypto`,
-  `injection`, `filesystem`, `registry`). Diversity ≥4 = multi-stage
+  (`injection`, `execution`, `loader`, `antidebug`, `network`,
+  `persistence`, `keylog`, `crypto`, `privilege`). Diversity of 3
+  scores +5, 4 scores +10, 5 or more scores +15 as a multi-stage
   malware profile.
 - `dynamic_api_resolution` — `{count, apis}`. Suspicious WinAPI names
   appearing as raw strings only (not in IAT) — the GetProcAddress
@@ -96,6 +99,25 @@ render them in the "PE Structural Indicators" panel):
   overlay/resource entropy).
 
 See `docs/scoring.md` for the per-indicator score weights.
+
+Design notes
+------------
+Roughly forty indicators feed one score, and none of them is conclusive on
+its own. Packing, a missing signature, high entropy and a Go build are each
+ordinary in isolation; what identifies malware is the combination. The
+weights are therefore deliberately small and additive, and the pipeline
+clamps the total once at the end rather than letting any one finding
+dominate.
+
+Several checks are ordered because later ones depend on earlier results:
+`_is_dotnet` runs before the import scoring (a managed binary legitimately
+imports one function), and `_check_signature` runs before both the
+certificate extraction and the checksum comparison (a checksum mismatch only
+means tampering on a file that was signed in the first place).
+
+`pe.close()` is in a `finally` so the memory map is released even when
+analysis raises — without it a `triage` run over a large directory would
+accumulate open mappings until it hit the file-descriptor limit.
 """
 
 import logging
@@ -214,8 +236,17 @@ def run(file_path: Path, config: dict) -> dict:
 def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
     """Run all PE sub-analyses and aggregate findings.
 
+    Args:
+        pe: A parsed ``pefile.PE`` object, owned by the caller — this
+            function does not close it.
+
     Returns:
         (data_dict, total_score_delta, list_of_reason_strings)
+
+        Every indicator appends to `reasons` only when it actually
+        fires, so the reason list doubles as the audit trail for the
+        score: each entry names one contribution, and an empty list
+        means nothing scored.
     """
     score_delta = 0
     reasons: list[str] = []
@@ -228,12 +259,22 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
     score_delta += entropy_delta
     reasons.extend(entropy_reasons)
 
+    # ------------------------------------------------------------------
+    # .NET detection, deliberately early.
+    #
+    # Several later checks would fire on every managed binary without
+    # it: a .NET assembly imports exactly one function, has no real
+    # native import table, and often carries a high-entropy .text.
+    # ------------------------------------------------------------------
     # --- .NET detection (needed before import scoring decisions) ---
     is_dotnet = _is_dotnet(pe)
 
     # --- Imports ---
     imports, suspicious_imports = _extract_imports(pe)
     total_imports = sum(len(funcs) for funcs in imports.values())
+    # Tiered rather than per-API: scoring each suspicious import
+    # individually would let one API-heavy binary outweigh every
+    # structural finding combined.
     if suspicious_imports:
         # Tier the import score by how many suspicious APIs are present.
         n_susp = len(suspicious_imports)
@@ -307,6 +348,15 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
     # --- Exports ---
     exports = _extract_exports(pe)
 
+    # ------------------------------------------------------------------
+    # Digital signature.
+    #
+    # Asymmetric on purpose: absence scores, presence does not. A valid
+    # signature would be evidence of provenance, but this only checks
+    # that a signature EXISTS, and commodity stealers routinely ship
+    # with stolen or self-signed certificates. Rewarding presence would
+    # therefore reward the attacker who bothered to sign.
+    # ------------------------------------------------------------------
     # --- Digital signature ---
     # Presence-only check: we never validated the signature, and many
     # commodity stealers (Lumma, Vidar, …) ship with stolen / abused
@@ -327,6 +377,14 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
         score_delta += 15
         reasons.append(f"Packer detected: {', '.join(packers_found)}")
 
+    # ------------------------------------------------------------------
+    # Section count, anomalous at both extremes.
+    #
+    # A typical compiler emits 4-6. Many sections suggest an appended or
+    # rebuilt table; exactly one means the whole binary is a single
+    # blob, which is what a shellcode loader looks like — hence the
+    # heavier weight on the low end.
+    # ------------------------------------------------------------------
     # --- Section count anomaly ---
     n_sections = len(sections)
     if n_sections >= 8:
@@ -405,6 +463,14 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
                 )
                 break
 
+    # ------------------------------------------------------------------
+    # Imphash: a hash of the import table's names and order.
+    #
+    # Scores nothing by itself. Its value is comparative — samples from
+    # one family built by one toolchain share an imphash even when every
+    # byte of the payload differs, which makes it a pivot for
+    # VirusTotal and for clustering across a triage run.
+    # ------------------------------------------------------------------
     # --- Imphash (for clustering / future YARA fingerprinting) ---
     try:
         imphash = pe.get_imphash()
@@ -469,6 +535,10 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
             "— leaks attacker project / username"
         )
     elif debug_info.get("pdb_path"):
+        # NOTE: dead branch. A clean PDB path is already carried in
+        # `data["debug_info"]` for the reporters, so there is nothing to
+        # add here; kept as a marker of where an informational tier
+        # would attach if one is ever added.
         # Path is present but not on the suspicious list — informational.
         pass
 
@@ -541,6 +611,10 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
             "Only kernel32.dll imported — classic packer / shellcode-loader footprint"
         )
     elif dll_footprint["dll_count"] == 0 and not is_dotnet:
+        # NOTE: dead branch — scores nothing. The tiny-import-table
+        # check above only fires on `0 < total_imports < 5`, so a PE
+        # with zero imports currently scores nothing from either. Left
+        # as-is because closing the gap is a scoring change.
         # Already partially handled by tiny-import-table check, but a
         # zero-DLL native PE is its own red flag.
         pass
@@ -572,10 +646,16 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
         )
 
     # --- Forwarded exports (DLL-hijack / proxy DLL hint) ---
+    # Reports but does not score: forwarded exports are normal in API
+    # set DLLs and only mildly odd elsewhere, so this earns a line in
+    # the report without moving the number.
     forwarded = _count_forwarded_exports(pe)
     if forwarded >= 1:
         # A handful of forwarded exports are normal in API set DLLs;
         # only flag when present alongside an export table on a non-DLL.
+        # 0x2000 is IMAGE_FILE_DLL in FileHeader.Characteristics. The
+        # value was stringified to hex by _extract_headers for display,
+        # so it has to be parsed back to test the bit.
         is_dll = bool(headers.get("characteristics")) and (
             int(headers["characteristics"], 16) & 0x2000
         )
@@ -591,6 +671,13 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
         score_delta += ts_delta
         reasons.append(ts_reason)
 
+    # ------------------------------------------------------------------
+    # Assemble the result.
+    #
+    # Every indicator is published whether or not it scored: the report
+    # shows what was examined, not only what was damning, and a reader
+    # needs the clean results to trust the flagged ones.
+    # ------------------------------------------------------------------
     data = {
         "headers": headers,
         "sections": sections,
