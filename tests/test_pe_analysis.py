@@ -304,3 +304,99 @@ def test_normal_section_permissions_produce_no_anomalies():
     )
     assert _detect_section_permission_anomalies(pe) == []
     assert _find_rwx_sections(pe) == []
+
+
+# ----------------------------------------------------------------------
+# Import-table scoring at the zero boundary
+# ----------------------------------------------------------------------
+
+from modules.static.pe_analysis import _analyse_pe
+
+
+class _ImportPE:
+    """Enough of a PE for _analyse_pe to reach the import-table checks.
+
+    Every indicator _analyse_pe consults is either absent (so the
+    hasattr guards short-circuit) or returns a benign value, leaving the
+    import-table branch as the only thing that can score.
+    """
+
+    class _FileHeader:
+        Machine = 0x014C
+        TimeDateStamp = 0
+        NumberOfSections = 3
+        Characteristics = 0x0102
+
+    class _OptHeader:
+        Magic = 0x10B
+        AddressOfEntryPoint = 0x1000
+        ImageBase = 0x400000
+        DllCharacteristics = 0x0140  # ASLR + DEP set, so no mitigation score
+        Subsystem = 2
+        CheckSum = 0
+        DATA_DIRECTORY = []
+
+    class _Section:
+        def __init__(self, name):
+            self.Name = name.encode("ascii").ljust(8, b"\x00")
+            self.VirtualAddress = 0x1000
+            self.Misc_VirtualSize = 0x200
+            self.SizeOfRawData = 0x200
+            self.PointerToRawData = 0x400
+            self.Characteristics = 0x40000040
+
+        def get_entropy(self):
+            return 4.0
+
+    class _DosHeader:
+        e_lfanew = 0x80
+
+    def __init__(self, imports=None):
+        self.FILE_HEADER = self._FileHeader()
+        self.OPTIONAL_HEADER = self._OptHeader()
+        self.DOS_HEADER = self._DosHeader()
+        self.sections = [self._Section(".text"), self._Section(".rdata"),
+                         self._Section(".data")]
+        self.__data__ = (b"MZ" + b"\x00" * 62
+                         + b"This program cannot be run in DOS mode."
+                         + b"\x00" * 512)
+        if imports is not None:
+            self.DIRECTORY_ENTRY_IMPORT = imports
+
+    def get_imphash(self):
+        return ""
+
+    def get_overlay_data_start_offset(self):
+        return None
+
+    def parse_rich_header(self):
+        return None
+
+    def generate_checksum(self):
+        return 0
+
+    def get_data(self, rva, size):
+        raise ValueError("no data")
+
+
+def _reasons_mentioning(reasons, *words):
+    return [r for r in reasons if any(w.lower() in r.lower() for w in words)]
+
+
+def test_native_pe_with_zero_imports_scores():
+    """A native PE importing nothing at all must score.
+
+    The tiny-import-table check fired on `0 < total_imports < 5`, so a
+    PE with exactly zero imports fell through it, and the zero-DLL
+    branch below was a bare `pass`. The most extreme shape scored least.
+    """
+    _data, score, reasons = _analyse_pe(_ImportPE())
+    assert score > 0
+    assert _reasons_mentioning(reasons, "import table", "imports"), reasons
+
+
+def test_zero_import_pe_is_not_scored_twice():
+    """The empty-table case must produce one import finding, not two."""
+    _data, _score, reasons = _analyse_pe(_ImportPE())
+    import_reasons = _reasons_mentioning(reasons, "import table")
+    assert len(import_reasons) == 1, import_reasons

@@ -299,7 +299,18 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
     # Tiny native import table is itself an indicator of dynamic
     # API resolution / packing — but only on non-.NET binaries
     # (.NET binaries legitimately import only mscoree!_CorExeMain).
-    if not is_dotnet and 0 < total_imports < 5:
+    #
+    # The empty table is scored higher than a merely small one, and both
+    # live in this single branch. Handling zero separately further down
+    # would double-count it, since any threshold covering "very small"
+    # necessarily covers "none".
+    if not is_dotnet and total_imports == 0:
+        score_delta += 10
+        reasons.append(
+            "Empty import table — the binary resolves every API at runtime "
+            "or unpacks itself before doing anything"
+        )
+    elif not is_dotnet and total_imports < 5:
         score_delta += 5
         reasons.append(
             f"Very small import table ({total_imports} functions) — "
@@ -534,13 +545,9 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
             f"Suspicious PDB debug path: {debug_info['pdb_path']} "
             "— leaks attacker project / username"
         )
-    elif debug_info.get("pdb_path"):
-        # NOTE: dead branch. A clean PDB path is already carried in
-        # `data["debug_info"]` for the reporters, so there is nothing to
-        # add here; kept as a marker of where an informational tier
-        # would attach if one is ever added.
-        # Path is present but not on the suspicious list — informational.
-        pass
+    # A PDB path that is present but unremarkable is not scored and needs
+    # no branch: it already reaches the reporters through
+    # `data["debug_info"]`.
 
     # --- Resource version info (CompanyName / ProductName / …) ---
     version_info = _extract_version_info(pe)
@@ -610,14 +617,9 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
         reasons.append(
             "Only kernel32.dll imported — classic packer / shellcode-loader footprint"
         )
-    elif dll_footprint["dll_count"] == 0 and not is_dotnet:
-        # NOTE: dead branch — scores nothing. The tiny-import-table
-        # check above only fires on `0 < total_imports < 5`, so a PE
-        # with zero imports currently scores nothing from either. Left
-        # as-is because closing the gap is a scoring change.
-        # Already partially handled by tiny-import-table check, but a
-        # zero-DLL native PE is its own red flag.
-        pass
+    # A zero-DLL native PE is deliberately NOT scored here — the empty
+    # import table check near the top of this function already owns that
+    # case, and scoring it in both places would count one shape twice.
 
     # --- Resource type breakdown + AutoIt detection ---
     rsrc_types = _analyse_resource_types(pe)
