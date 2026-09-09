@@ -13,7 +13,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# IOC regex patterns (from NOTES.md spec)
+# IOC regex patterns (from the project specification)
 # ---------------------------------------------------------------------------
 
 _IOC_PATTERNS: dict[str, re.Pattern] = {

@@ -62,7 +62,7 @@ def test_module_names_lists_every_registry_key():
 
 
 def test_the_documented_example_resolves():
-    """docs/usage.md and context.md both show these short forms."""
+    """docs/usage.md documents these short forms."""
     assert [resolve_module_name(n) for n in ("pe", "capa", "yara")] == [
         "pe_analysis",
         "capa_analysis",

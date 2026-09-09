@@ -331,7 +331,7 @@ def _parse_response(body: dict, sha256: str) -> dict:
 def _compute_score(detections: int, total_engines: int, threat_label: str | None) -> tuple[int, str]:
     """Determine score_delta and reason from VT detections.
 
-    Scoring rules (from NOTES.md):
+    Scoring rules (see docs/scoring.md):
       >10 engines detect  → +25
       1–10 engines detect → +10
       0 detections (found) →  -5  (seen but no detections = mild reassurance)
