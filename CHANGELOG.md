@@ -1,6 +1,24 @@
 # Changelog
 
+Versions step in small increments. **1.0.0 is reserved for a tool that does
+both static and dynamic analysis end to end** — that means Phase 5's
+detonation providers working, Phase 4's packaging and CI done, and a README.
+Everything before it is a step toward that.
+
+| Version | What it takes |
+|---|---|
+| 0.5.0 | *(current)* Defect sweep, full test coverage, commenting standard |
+| 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
+| 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
+| 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
+| 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
+| 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
 ## Unreleased
+
+Nothing yet.
+
+## 0.5.0
 
 - Added a block-per-section commenting standard, applied to `core/`,
   `modules/static/pe_analysis/` and `modules/enrichment/`: docstrings with
