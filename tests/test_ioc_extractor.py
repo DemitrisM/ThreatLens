@@ -165,6 +165,25 @@ def test_python_source_filename_is_not_a_domain():
     assert _filter_domain_fps({"threading.py"}) == set()
 
 
+def test_shouted_domain_is_reported():
+    """Config strings are frequently stored uppercase; DNS is case-blind."""
+    assert "EVIL-C2-PANEL.TOP" in _filter_domain_fps({"EVIL-C2-PANEL.TOP"})
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    ["System.IO", "System.Net", "BCrypt.BCryptGetProperty", "byteOrder.Uint64"],
+)
+def test_mixed_case_identifiers_are_still_rejected(identifier):
+    """The uppercase rule exists for these; only all-caps is exempted."""
+    assert _filter_domain_fps({identifier}) == set()
+
+
+def test_shouted_benign_domain_is_still_whitelisted():
+    """The allow-list is compared case-folded, so shouting cannot bypass it."""
+    assert _filter_domain_fps({"WWW.W3.ORG"}) == set()
+
+
 def test_common_benign_domain_is_whitelisted():
     """Noise from linked libraries and manifests, not an indicator."""
     assert _filter_domain_fps({"www.w3.org"}) == set()
