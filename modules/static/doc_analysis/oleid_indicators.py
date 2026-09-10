@@ -29,8 +29,10 @@ often explains a sample at a glance.
 
 Indicator values are read through ``str()`` and compared as text. oleid's
 value types are not stable across indicators: some are booleans, some
-are counts, and some are prose. Any comparison here must account for
-that per indicator, not assume a shared shape.
+are counts, and some are prose — ``encrypted`` is a bool, ``vba`` reads
+"No" or "Yes, suspicious". Comparisons therefore go through
+:func:`_says_yes` rather than testing equality against a fixed string,
+which answered correctly for the bool and never for the prose.
 """
 
 import logging
@@ -40,12 +42,49 @@ from ._quiet import quiet_stdout
 
 logger = logging.getLogger(__name__)
 
+# Indicator ids that answer "does this document carry macros of any kind".
+# Both are needed: "no macros" has to mean neither VBA nor Excel 4.0, and
+# oleid reports them as separate indicators.
+_MACRO_INDICATOR_IDS = ("vba", "vba_macros", "xlm")
+
 try:
     with quiet_stdout(logger, "oletools.oleid"):
         from oletools.oleid import OleID
     _HAS_OLEID = True
 except ImportError:
     _HAS_OLEID = False
+
+
+def _says_yes(value: str) -> bool:
+    """Interpret one oleid indicator value as a yes/no answer.
+
+    Args:
+        value: The indicator's value, already stringified by the caller.
+
+    Returns:
+        True when the value asserts the condition holds.
+
+    oleid's value types are not uniform: ``encrypted`` really is a bool, so
+    it stringifies to "True", while ``vba`` is prose — "No",  "Yes", or
+    "Yes, suspicious". A test for equality with "true" therefore answers
+    correctly for one indicator and never for the other, which is exactly
+    the bug this replaces.
+
+    Three forms are accepted. Prose and booleans are matched by prefix; a
+    numeric value is read as a count, where any non-zero is a yes — some
+    indicators (``ext_rels``, ``flash``) already answer that way, and
+    treating "1" as a prefix would have said yes to 10 and no to 2.
+    Anything unrecognised ("Unknown", an error string) reads as no, which
+    is the conservative direction: it costs a flag rather than inventing
+    one.
+    """
+    text = value.strip().lower()
+    if text.startswith(("yes", "true")):
+        return True
+    try:
+        return float(text) != 0
+    except ValueError:
+        return False
 
 
 def analyse_oleid(file_path: Path) -> dict:
@@ -91,17 +130,18 @@ def analyse_oleid(file_path: Path) -> dict:
         # here is worth the three points the rule set gives it.
         if row["risk"].upper() == "HIGH":
             out["indicator_flags"].add("oleid_high_risk")
-        if row["id"] == "encrypted" and row["value"].lower() in ("true", "1"):
+        if row["id"] == "encrypted" and _says_yes(row["value"]):
             encrypted = True
-        if row["id"] in ("vba", "vba_macros") and row["value"].lower() in ("true", "1"):
+        if row["id"] in _MACRO_INDICATOR_IDS and _says_yes(row["value"]):
             has_macros = True
 
     # "Encryption only" — file is password-protected and has no macros.
     # This is a common evasion pattern; contribute a small score.
     #
-    # The two halves are not symmetric in reliability: `encrypted` comes
-    # from an indicator whose value really is a boolean, while the macro
-    # indicator's value is prose. See the module docstring on value types.
+    # Both halves go through _says_yes because the two indicators answer in
+    # different types — a bool for encryption, prose for macros. Comparing
+    # either against a fixed string is how the macro half came to be
+    # permanently false.
     if encrypted and not has_macros:
         out["encryption_only"] = True
         out["indicator_flags"].add("encryption_only")

@@ -145,6 +145,109 @@ def test_local_rtf_template_is_recorded_but_not_flagged():
 
 
 # ----------------------------------------------------------------------
+# oleid indicators
+# ----------------------------------------------------------------------
+
+class _FakeIndicator:
+    def __init__(self, id_, value, risk="none"):
+        self.id = id_
+        self.name = id_
+        self.value = value
+        self.risk = risk
+
+
+def _fake_oleid(monkeypatch, indicators):
+    """Point analyse_oleid at a canned indicator list."""
+    from modules.static.doc_analysis import oleid_indicators
+
+    class _FakeOleID:
+        def __init__(self, _path):
+            pass
+
+        def check(self):
+            return indicators
+
+    monkeypatch.setattr(oleid_indicators, "OleID", _FakeOleID)
+    monkeypatch.setattr(oleid_indicators, "_HAS_OLEID", True)
+    return oleid_indicators.analyse_oleid
+
+
+def test_encrypted_document_with_macros_is_not_encryption_only(tmp_path, monkeypatch):
+    """oleid reports macros as prose, not as a boolean.
+
+    The check tested value.lower() in ("true", "1"), while oleid's vba
+    indicator actually reads 'Yes, suspicious' or 'No' — verified against
+    the installed oletools. has_macros could therefore never be true, so
+    encryption_only fired for any encrypted document, including ones whose
+    macros oleid had just reported.
+    """
+    run = _fake_oleid(monkeypatch, [
+        _FakeIndicator("encrypted", True),
+        _FakeIndicator("vba", "Yes, suspicious", risk="HIGH"),
+    ])
+    out = run(tmp_path / "x.docx")
+    assert out["encryption_only"] is False
+    assert "encryption_only" not in out["indicator_flags"]
+
+
+def test_encrypted_document_without_macros_is_encryption_only(tmp_path, monkeypatch):
+    run = _fake_oleid(monkeypatch, [
+        _FakeIndicator("encrypted", True),
+        _FakeIndicator("vba", "No"),
+        _FakeIndicator("xlm", "No"),
+    ])
+    out = run(tmp_path / "x.docx")
+    assert out["encryption_only"] is True
+    assert "encryption_only" in out["indicator_flags"]
+
+
+def test_xlm_macros_also_count_as_macros(tmp_path, monkeypatch):
+    """"No macros" has to mean neither kind, not just no VBA."""
+    run = _fake_oleid(monkeypatch, [
+        _FakeIndicator("encrypted", True),
+        _FakeIndicator("vba", "No"),
+        _FakeIndicator("xlm", "Yes"),
+    ])
+    assert run(tmp_path / "x.docx")["encryption_only"] is False
+
+
+def test_unencrypted_document_is_never_encryption_only(tmp_path, monkeypatch):
+    run = _fake_oleid(monkeypatch, [
+        _FakeIndicator("encrypted", False),
+        _FakeIndicator("vba", "No"),
+    ])
+    assert run(tmp_path / "x.docx")["encryption_only"] is False
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("Yes", True), ("Yes, suspicious", True), ("True", True), (True, True),
+     ("No", False), ("False", False), (False, False), ("Unknown", False),
+     ("1", True), ("2", True), ("10", True), ("0", False), (0, False),
+     ("", False), ("   ", False)],
+)
+def test_indicator_value_interpretation(value, expected):
+    """oleid answers in booleans, prose and counts, depending on the row."""
+    from modules.static.doc_analysis.oleid_indicators import _says_yes
+
+    assert _says_yes(str(value)) is expected
+
+
+def test_high_risk_indicator_is_flagged(tmp_path, monkeypatch):
+    run = _fake_oleid(monkeypatch, [_FakeIndicator("vba", "Yes, suspicious", risk="HIGH")])
+    assert "oleid_high_risk" in run(tmp_path / "x.docx")["indicator_flags"]
+
+
+def test_all_indicators_are_carried_into_the_payload(tmp_path, monkeypatch):
+    run = _fake_oleid(monkeypatch, [
+        _FakeIndicator("ftype", "MS Word 2007+"),
+        _FakeIndicator("ext_rels", 0),
+    ])
+    rows = run(tmp_path / "x.docx")["indicators"]
+    assert {r["id"] for r in rows} == {"ftype", "ext_rels"}
+
+
+# ----------------------------------------------------------------------
 # Scoring engine
 # ----------------------------------------------------------------------
 
