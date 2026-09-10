@@ -77,6 +77,12 @@ SCORE_CAP = 60
 # class-name flags below (packager_shell, shell_explorer, htmlfile) come
 # from ole_objects._HIGH_RISK_CLASS_SUBSTRINGS, so adding an entry there
 # means adding a rule here too.
+#
+# rels_oversize is priced at 7 — MALICIOUS on its own — deliberately. A
+# relationship part is structurally a few kilobytes; padding one past half
+# a megabyte has no benign cause and its only effect is that the part is
+# not parsed. An evasion that perfectly blinds a check has to convict the
+# file, or it is simply a cheaper way to hide than the thing it hides.
 COMBO_RULES: list[tuple[frozenset[str], int, str]] = [
     (frozenset({"auto_exec", "shell_keyword"}), 10,
      "AutoExec + Shell call — macro launches an OS command on open"),
@@ -90,6 +96,8 @@ COMBO_RULES: list[tuple[frozenset[str], int, str]] = [
      "XLM macro uses EXEC/CALL/FORMULA.FILL"),
     (frozenset({"template_inject_non_ms"}), 7,
      "Template injection to non-Microsoft URL"),
+    (frozenset({"rels_oversize"}), 7,
+     "Relationship part padded past the parse cap — blinds .rels inspection"),
     (frozenset({"template_inject_high"}), 6,
      "External attachedTemplate / oleObject / frame / subDocument"),
     (frozenset({"altchunk"}), 6,
@@ -110,6 +118,9 @@ COMBO_RULES: list[tuple[frozenset[str], int, str]] = [
      "RTF uses \\objupdate — forces object load on open"),
     (frozenset({"dangerous_embedded_file"}), 4,
      "Dangerous file extension inside OOXML container"),
+    (frozenset({"rels_size_mismatch"}), 4,
+     "Relationship part declares a smaller size than its stream holds — "
+     "parser differential"),
     (frozenset({"vba_present"}), 3,
      "VBA macros present"),
     (frozenset({"xlm_url"}), 3,

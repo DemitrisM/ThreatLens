@@ -45,6 +45,7 @@ relationship type and the host are separate questions — which is why the
 flags exist separately at all.
 """
 
+import copy
 import logging
 import re
 import zipfile
@@ -89,6 +90,12 @@ _DANGEROUS_EMBEDDED_EXTS = frozenset({
 _RTF_TEMPLATE_RE = re.compile(
     rb"\{\s*\\\*\\template\s+([^}]+)\}", re.IGNORECASE
 )
+# A relationship part lists a handful of short entries; real ones are a few
+# kilobytes. Anything past this is padding, so the part is not parsed — but
+# the padding is itself reported, since skipping in silence is what made an
+# oversize .rels a way to switch this pass off.
+_MAX_RELS_BYTES = 512 * 1024
+
 _REL_TAG_RE = re.compile(r"<Relationship[^>]+>")
 
 # One compiled pattern per attribute name, built on first use. XML permits
@@ -115,6 +122,9 @@ def analyse_openxml_rels(file_path: Path) -> dict:
       - ``embedded_files``, ``dangerous_embedded`` — any risky files in the ZIP
       - ``ole_objects`` — inline OLE streams in the container
       - ``decompression_bomb`` — guard tripped
+      - ``indicator_flags`` additionally carries ``rels_oversize`` when a
+        relationship part was too large to parse, and ``malformed_openxml``
+        when one could not be read at all — both findings in themselves
       - ``indicator_flags`` — set of scoring flags
 
     Never raises: a malformed container sets ``malformed_openxml`` and
@@ -189,12 +199,33 @@ def analyse_openxml_rels(file_path: Path) -> dict:
             for info in infos:
                 if not info.filename.endswith(".rels"):
                     continue
-                if info.file_size > 512 * 1024:
+                # The declared size is a cheap early exit, but it is
+                # attacker-controlled metadata from the central directory,
+                # so it is never the only bound — the read below is.
+                if info.file_size > _MAX_RELS_BYTES:
+                    logger.warning(
+                        "doc_analysis: .rels part %s declares %d bytes — over "
+                        "the %d-byte cap, not parsed",
+                        info.filename, info.file_size, _MAX_RELS_BYTES,
+                    )
+                    out["indicator_flags"].add("rels_oversize")
                     continue
                 try:
-                    content = zf.read(info.filename).decode("utf-8", errors="replace")
-                except Exception:  # noqa: BLE001
+                    raw = _read_rels_stream(zf, info, out)
+                except Exception as exc:  # noqa: BLE001
+                    # A part that cannot be read is a finding, not a
+                    # non-event: silently skipping it is how a corrupt or
+                    # deliberately broken .rels used to switch this pass
+                    # off without trace.
+                    logger.info(
+                        "doc_analysis: .rels part %s could not be read: %s",
+                        info.filename, exc,
+                    )
+                    out["indicator_flags"].add("malformed_openxml")
                     continue
+                if raw is None:
+                    continue
+                content = raw.decode("utf-8", errors="replace")
                 _scan_rels_content(content, out)
     # A container that will not open is flagged; any other failure is
     # logged and swallowed, because the passes that already ran have
@@ -206,6 +237,94 @@ def analyse_openxml_rels(file_path: Path) -> dict:
         logger.debug("OpenXML rels inspection failed: %s", exc)
 
     return out
+
+
+def _read_rels_stream(zf: zipfile.ZipFile, info: zipfile.ZipInfo, out: dict) -> bytes | None:
+    """Read one relationship part, bounded, and detect a size differential.
+
+    Args:
+        zf:   The open container.
+        info: The entry to read. Passed as a ZipInfo, never as a name: a ZIP
+              may carry two entries at one path, and a name lookup resolves
+              through zipfile's dictionary to whichever came last, so
+              pairing a malicious .rels with a benign one at the same path
+              would have the benign copy read twice.
+        out:  Result dict, mutated to record what the read found.
+
+    Returns:
+        The part's bytes, or None when it must not be parsed.
+
+    The declared uncompressed size is metadata an attacker controls, and
+    zipfile trusts it: it stops reading at that length, then verifies the
+    CRC. Understating the size and forging the CRC over the truncated
+    prefix therefore yields a clean, short read — while a consumer that
+    decompresses to the end of the deflate stream sees the whole part.
+    That parser differential is how a relationship hides from a scanner
+    that reads the archive politely.
+
+    So the stream is read twice: once as declared, which is what an
+    ordinary consumer sees, and once through a probe whose declared size
+    and CRC are lifted so the decompressor runs as far as the data
+    actually goes. A disagreement is not a quirk to work around — it is
+    the finding.
+
+    The declared read is allowed to *fail* without ending the attempt.
+    An attacker who understates the size but leaves the real CRC in place
+    — which is what a consumer verifying the whole stream requires — makes
+    zipfile raise on the short read. Treating that as the end of the story
+    would skip the very part the probe exists to recover.
+    """
+    declared = b""
+    declared_failed = False
+    try:
+        with zf.open(info) as fh:
+            declared = fh.read(_MAX_RELS_BYTES + 1)
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "doc_analysis: .rels part %s failed its declared read: %s",
+            info.filename, exc,
+        )
+        declared_failed = True
+
+    # Same entry, with the two fields that bound and verify the read
+    # neutralised. Reading at most one byte past the cap keeps this bounded
+    # even for a part that inflates enormously.
+    probe = copy.copy(info)
+    probe.file_size = _MAX_RELS_BYTES + 1
+    probe.CRC = None
+    try:
+        with zf.open(probe) as fh:
+            actual = fh.read(_MAX_RELS_BYTES + 1)
+    except Exception as exc:  # noqa: BLE001
+        # Best-effort. A probe failure on a part that read cleanly says
+        # nothing about the document, so the ordinary read still stands.
+        logger.debug("rels size probe failed for %s: %s", info.filename, exc)
+        actual = declared
+
+    # Neither view is readable: the part is broken rather than deceptive.
+    if declared_failed and not actual:
+        out["indicator_flags"].add("malformed_openxml")
+        return None
+
+    if declared_failed or len(actual) > len(declared):
+        logger.warning(
+            "doc_analysis: .rels part %s declares %d bytes but its stream "
+            "holds at least %d — parser differential",
+            info.filename, len(declared), len(actual),
+        )
+        out["indicator_flags"].add("rels_size_mismatch")
+
+    # Analyse whichever view is larger: a scanner reading less than the
+    # target application does is the failure being avoided.
+    content = actual if len(actual) >= len(declared) else declared
+    if len(content) > _MAX_RELS_BYTES:
+        logger.warning(
+            "doc_analysis: .rels part %s exceeds the %d-byte cap on read — "
+            "not parsed", info.filename, _MAX_RELS_BYTES,
+        )
+        out["indicator_flags"].add("rels_oversize")
+        return None
+    return content
 
 
 def _scan_rels_content(content: str, out: dict) -> None:

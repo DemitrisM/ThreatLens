@@ -221,6 +221,7 @@ delivery wrapped around it.
 | `vba_stomping` | +8 | VBA stomping detected (source/p-code divergence) |
 | `xlm_exec_call` | +7 | XLM macro uses EXEC/CALL/FORMULA.FILL |
 | `template_inject_non_ms` | +7 | Template injection to non-Microsoft URL |
+| `rels_oversize` | +7 | Relationship part padded past the parse cap — blinds .rels inspection |
 | `template_inject_high` | +6 | External attachedTemplate / oleObject / frame / subDocument |
 | `altchunk` | +6 | altChunk relationship (template-injection vector) |
 | `heavy_vba_obfuscation` | +6 | Heavy VBA obfuscation (Chr/hex arithmetic) |
@@ -231,6 +232,7 @@ delivery wrapped around it.
 | `htmlfile` | +4 | htmlfile ActiveX object embedded — script execution primitive |
 | `rtf_objupdate` | +4 | RTF uses \objupdate — forces object load on open |
 | `dangerous_embedded_file` | +4 | Dangerous file extension inside OOXML container |
+| `rels_size_mismatch` | +4 | Relationship part declares a smaller size than its stream holds — parser differential |
 | `vba_present` | +3 | VBA macros present |
 | `xlm_url` | +3 | XLM deobfuscated cells contain HTTP URL |
 | `oleid_high_risk` | +3 | oleid reported HIGH-risk indicator |

