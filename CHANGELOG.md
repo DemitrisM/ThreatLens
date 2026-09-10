@@ -54,8 +54,38 @@ Everything before it is a step toward that.
   field it has no value for, so one unmapped rule cost the module every
   capability it had found.
 - Added `tests/test_pdf_analysis.py` (12 tests) and
-  `tests/test_capa_analysis.py` (14 tests), neither of which existed. **The
-  suite is now 644 tests, up from 605.**
+  `tests/test_capa_analysis.py` (14 tests), neither of which existed.
+- Applied the commenting standard to `doc_analysis` — fifth package. Records
+  why routing answers "should this run" generously and "which passes run"
+  strictly, why the passes talk to scoring through one flat flag set, why
+  `_quiet.py` has to wrap the import rather than the call, and that the
+  module's MALICIOUS/SUSPICIOUS bands are computed on the uncapped total and
+  are not the pipeline's risk bands.
+- Fixed `doc_analysis` reading only double-quoted `.rels` attributes. XML
+  permits either style and Word accepts both, so a single-quoted relationship
+  part parsed as no relationships at all — no target, no external check, no
+  flags — while Word still fetched the remote template.
+- Fixed five `doc_analysis` indicator flags that were emitted and never scored:
+  `packager_shell`, `shell_explorer`, `htmlfile`, `ole_package` and
+  `altchunk_absolute_path`. A Packager Shell Object embedded in a document
+  contributed nothing. A test now reads every flag off the package's AST and
+  asserts the rule set covers it. Twelve of the 31 doc samples score higher and
+  CVE-2023-36884.docx is now MALICIOUS within `doc_analysis`.
+- Fixed `oleid_indicators` testing its macro indicator against `"true"`/`"1"`
+  when oleid answers in prose (`'Yes, suspicious'`), so the `encryption_only`
+  evasion flag fired for encrypted documents that did have macros.
+- Fixed a padded or misdeclared `.rels` part evading relationship inspection.
+  Parts over the parse cap were skipped silently, and the declared uncompressed
+  size — central-directory metadata zipfile trusts — could understate a part so
+  ThreatLens read a fragment while a tolerant consumer read the whole
+  relationship. Parts are now read twice and compared, opened by ZipInfo rather
+  than by name so duplicate paths cannot shadow each other, and padding past
+  the cap convicts the file.
+- Rewrote the `doc_analysis` section of `docs/scoring.md`, which still described
+  the additive engine the weighted combo engine replaced — it listed weights
+  (altChunk +30, VBA present +10) that no longer existed anywhere in the code.
+- Added `tests/test_doc_analysis.py` (54 tests). **The suite is now 698 tests,
+  up from 605.**
 
 ## 0.5.0
 
