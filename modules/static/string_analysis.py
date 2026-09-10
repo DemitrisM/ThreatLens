@@ -3,6 +3,31 @@
 Invokes FLOSS (Mandiant) via subprocess for deobfuscated string extraction.
 Falls back to basic regex-based string extraction if FLOSS is unavailable.
 Returns a standard module result dict with score_delta and reason.
+
+Design notes
+------------
+Two extraction paths, one analysis path. FLOSS is preferred because it
+recovers strings that are *never present in the file* — stack strings built
+byte by byte at runtime, and strings the sample decodes with its own routine
+— which is exactly the population a packed stealer hides its C2 in. When
+FLOSS is absent, times out, or fails, the module degrades to a `strings`
+equivalent rather than skipping (design rule 2): raw strings still carry
+most indicators, and reporting nothing would be worse than reporting less.
+``data["source"]`` records which path ran, because the same sample scores
+differently under each and the report must not hide that.
+
+Scoring counts *distinct categories*, never occurrences. A binary naming
+"CreateRemoteThread" forty times is one injection signal, not forty, and
+occurrence counting is precisely how a string-matching module ends up
+outweighing every structural finding in the pipeline. Each severity tier
+then gets its own sub-cap on top (30/15/10), so no single tier can carry
+the module on its own.
+
+Pattern authoring rule: every pattern is word-bounded unless it names a
+path fragment or a URL shape. The unanchored versions produced a steady
+stream of false positives from ordinary identifiers — 'imap' inside
+'abiMap', 'ida' inside 'reconstruIDA', 'Atomic' inside Go's sync/atomic —
+and each \b in the table below is there because of a specific one.
 """
 
 import json
@@ -27,6 +52,21 @@ _WIDE_RE = re.compile(
 # Suspicious string patterns. Each entry is (pattern, category, severity).
 # Severity values: "critical", "high", "medium", "low".
 # Critical patterns are nearly definitive indicators of malware.
+#
+# The tier is a statement about *how often the pattern is wrong*, not about
+# how bad the behaviour would be. "critical" is reserved for strings with
+# no plausible benign source: a family name a builder stamped into its own
+# output, a Telegram bot token in exfil URL form, a browser credential-store
+# path. "high" covers strings that are damning in a sample but ordinary in a
+# security tool or installer. "medium" is context. "low" scores nothing at
+# all and exists only so the category still appears in the report.
+#
+# Section banners below mark the tiers, but the severity in each tuple is
+# what counts — one SMTP pattern sits under the MEDIUM banner carrying a
+# "high" severity, and the tuple wins.
+#
+# Categories, not patterns, are the scoring unit, so several patterns may
+# share a category name deliberately to keep one behaviour worth one score.
 # Word boundaries (\b) are used aggressively to avoid substring false
 # positives (e.g. 'imap' inside 'abiMap', 'ida' inside 'reconstruIDA').
 _SUSPICIOUS_PATTERNS: list[tuple[re.Pattern, str, str]] = [
@@ -172,9 +212,14 @@ _SUSPICIOUS_PATTERNS: list[tuple[re.Pattern, str, str]] = [
 ]
 
 # Maximum number of strings to store in data (prevent huge reports).
+# The full count is reported separately as total_strings, so truncation
+# never hides the scale — only the tail of the sample.
 _MAX_STRINGS_STORED = 500
 
 # Maximum file size to attempt raw string extraction (50 MiB).
+# A read bound rather than a refusal: past this point the file is truncated
+# and analysed anyway, since the strings that matter in a padded dropper are
+# rarely in the last gigabyte of zero fill.
 _MAX_RAW_EXTRACT_SIZE = 50 * 1024 * 1024
 
 
@@ -186,11 +231,22 @@ def run(file_path: Path, config: dict) -> dict:
 
     Args:
         file_path: Path to the file under analysis.
-        config:    Pipeline configuration dict.
+        config:    Pipeline configuration dict. Read for ``floss_binary``
+                   and ``module_timeout_seconds``.
 
     Returns:
-        Standard module result dict.
+        Standard module result dict. Always "success" — every failure below
+        degrades to the raw path, and a file with no suspicious strings is a
+        real result rather than a skip.
     """
+    # ------------------------------------------------------------------
+    # Phase 1: Extract. FLOSS first, raw strings as the fallback.
+    #
+    # _run_floss() returns None for every failure it can have — missing
+    # binary, timeout, non-zero exit, unparseable JSON — so the caller has
+    # one branch rather than five. Which path ran is recorded in the data,
+    # not inferred by the reporters.
+    # ------------------------------------------------------------------
     floss_path = Path(config.get("floss_binary", "./bin/floss"))
     timeout = config.get("module_timeout_seconds", 60)
 
@@ -206,12 +262,23 @@ def run(file_path: Path, config: dict) -> dict:
         source = "raw"
         floss_data = None
 
-    # Analyse extracted strings for suspicious patterns.
+    # ------------------------------------------------------------------
+    # Phase 2: Match every pattern against every string. Identical for both
+    # extraction paths — the analysis does not know or care where the
+    # strings came from, which is what keeps the two paths comparable.
+    # ------------------------------------------------------------------
     suspicious_hits, suspicious_details, severity_counts = _find_suspicious(
         all_strings
     )
 
-    # Build score — weighted by severity, capped to avoid runaway totals.
+    # ------------------------------------------------------------------
+    # Phase 3: Score. Per-tier caps first, then a total cap.
+    #
+    # The tier caps are what stop a single behaviour class from carrying
+    # the module: a sample matching eight critical categories scores the
+    # same 30 as one matching three, because past three the extra
+    # categories are describing the same malware in more words.
+    # ------------------------------------------------------------------
     score_delta = 0
     reasons: list[str] = []
 
@@ -224,9 +291,13 @@ def run(file_path: Path, config: dict) -> dict:
         score_delta = crit_score + high_score + med_score + low_score
 
         # Total cap so string analysis can never dominate.
+        # Applied here, before the FLOSS obfuscation bonus below, so a
+        # FLOSS-sourced result can finish above this number.
         score_delta = min(score_delta, 40)
 
         # Build reason — show critical/high categories first.
+        # Severity-ordered because the reason string is truncated at five:
+        # what survives truncation must be the categories that scored.
         ordered = _order_categories_by_severity(suspicious_hits)
         top = ordered[:5]
         suffix = f" (+{len(ordered) - 5} more)" if len(ordered) > 5 else ""
@@ -247,7 +318,12 @@ def run(file_path: Path, config: dict) -> dict:
         data["floss_decoded_strings"] = floss_data.get("decoded_count", 0)
         data["floss_stack_strings"] = floss_data.get("stack_count", 0)
 
-        # Decoded/stack strings are strong obfuscation indicators.
+        # Decoded and stack strings are scored on their *existence*, not
+        # their content — a binary that builds strings on the stack or
+        # decodes them at runtime has paid a real cost to hide them, and
+        # that fact is independent of whether any matched a pattern above.
+        # Only FLOSS can produce this signal, which is the whole argument
+        # for carrying the dependency.
         decoded = floss_data.get("decoded_count", 0)
         stack = floss_data.get("stack_count", 0)
         if decoded > 0 or stack > 0:
@@ -279,6 +355,19 @@ def _run_floss(
 
     Returns a dict with string lists and counts, or None if FLOSS
     is unavailable or fails.
+
+    Args:
+        file_path:  The sample. Passed to FLOSS unmodified.
+        floss_path: Path to the FLOSS binary. Absent on a fresh clone —
+                    install.sh downloads it — so that case logs at info.
+        timeout:    Wall-clock bound. FLOSS emulates code to recover
+                    decoded strings and is by far the slowest thing in a
+                    standard scan, so this bound is load-bearing.
+
+    Returns:
+        {"strings", "static_count", "decoded_count", "stack_count",
+        "tight_count"} or None. None is the single failure signal for every
+        failure mode, which is what lets run() have one fallback branch.
     """
     if not floss_path.is_file():
         logger.info("FLOSS binary not found at %s — falling back to raw strings", floss_path)
@@ -300,6 +389,9 @@ def _run_floss(
         logger.warning("FLOSS invocation failed: %s — falling back to raw strings", exc)
         return None
 
+    # Unlike capa, a non-zero FLOSS exit is treated as total failure: FLOSS
+    # writes its JSON document as a whole at the end of a successful run, so
+    # a failed run has no partial output worth salvaging.
     if proc.returncode != 0:
         stderr_snippet = proc.stderr[:500].decode("utf-8", errors="replace") if proc.stderr else ""
         logger.warning(
@@ -318,6 +410,11 @@ def _run_floss(
     # Extract strings from FLOSS JSON structure.
     # FLOSS v2+ JSON has: strings.static_strings, strings.decoded_strings,
     # strings.stack_strings, strings.tight_strings
+    #
+    # All four are concatenated for analysis but counted separately, because
+    # the counts are themselves the obfuscation signal scored in run().
+    # A missing section degrades to an empty list rather than a KeyError —
+    # FLOSS omits sections it could not compute for a given file type.
     strings_section = floss_json.get("strings", {})
 
     static = _extract_floss_strings(strings_section.get("static_strings", []))
@@ -340,6 +437,15 @@ def _extract_floss_strings(entries: list) -> list[str]:
     """Extract plain string values from FLOSS JSON string entries.
 
     FLOSS entries can be either plain strings or dicts with a "string" key.
+
+    Args:
+        entries: One section of the FLOSS JSON document.
+
+    Returns:
+        Plain string values. Both shapes are accepted because the sections
+        differ: static strings carry an offset and encoding alongside the
+        text, while stack strings are emitted bare in some versions.
+        ``value`` is checked as a fallback key for the same reason.
     """
     result: list[str] = []
     for entry in entries:
@@ -357,6 +463,14 @@ def _extract_raw_strings(file_path: Path) -> list[str]:
 
     This is the fallback when FLOSS is not available — equivalent to
     the Unix ``strings`` command.
+
+    Args:
+        file_path: File to read, bounded by _MAX_RAW_EXTRACT_SIZE.
+
+    Returns:
+        Deduplicated strings, ASCII runs first then UTF-16LE. Empty on any
+        read failure, which run() reports as a successful scan finding no
+        strings.
     """
     try:
         file_size = file_path.stat().st_size
@@ -378,7 +492,11 @@ def _extract_raw_strings(file_path: Path) -> list[str]:
     # ASCII strings.
     ascii_strings = [m.group().decode("ascii") for m in _ASCII_RE.finditer(data)]
 
-    # Wide-char (UTF-16LE) strings.
+    # Scanned as a separate pass rather than by decoding the file as
+    # UTF-16: a PE interleaves narrow and wide strings, so no whole-file
+    # decode is right for both. The decode guard is needed here and not in
+    # the ASCII pass because a matched byte pair can still form a lone
+    # surrogate.
     wide_strings = []
     for m in _WIDE_RE.finditer(data):
         try:
@@ -402,8 +520,18 @@ def _find_suspicious(
 ) -> tuple[set[str], list[dict], dict[str, int]]:
     """Scan strings for suspicious patterns.
 
+    Args:
+        strings: Every extracted string, from either extraction path.
+
     Returns:
         (categories_set, match_details_list, severity_counts_by_level)
+        where severity_counts holds the number of distinct *categories* at
+        each level, not the number of matching strings — that distinction
+        is what keeps a repeated string from inflating the score.
+
+    Every pattern is tried against every string even after one matches, so
+    a single line mentioning both a RAT name and an injection API records
+    both categories.
     """
     categories: set[str] = set()
     details: list[dict] = []
@@ -415,7 +543,10 @@ def _find_suspicious(
             if pattern.search(s):
                 categories.add(category)
                 seen_severity[category] = severity
-                # Only store first few examples per category to avoid bloat.
+                # Examples are capped at three per category. They exist to
+                # show the analyst *what* matched — the fourth example of
+                # the same category adds nothing but report length, and the
+                # cap also bounds this inner recount to a trivial size.
                 cat_count = sum(1 for d in details if d["category"] == category)
                 if cat_count < 3:
                     # Truncate very long strings.
@@ -426,7 +557,9 @@ def _find_suspicious(
                         "string": display,
                     })
 
-    # Count distinct categories per severity level
+    # seen_severity is keyed by category, so its size is the number of
+    # distinct categories and this loop counts categories per level — the
+    # unit the scoring in run() expects.
     severity_counts: dict[str, int] = {
         "critical": 0,
         "high": 0,
@@ -447,6 +580,19 @@ def _order_categories_by_severity(categories: set[str]) -> list[str]:
 
     The severity level is recovered by re-checking against the pattern
     table — categories without a known severity sort last.
+
+    Args:
+        categories: The category names that fired.
+
+    Returns:
+        Category names sorted by (severity rank, name). The name is the
+        tie-break so the reason string is stable across runs — a set has no
+        order, and an unstable reason would churn the golden snapshots.
+
+    The severity is re-derived rather than threaded through from
+    _find_suspicious() so this stays usable from the reporters, which have
+    only the category list. First entry wins where a category appears at
+    two severities in the table.
     """
     sev_lookup: dict[str, str] = {}
     for _, cat, sev in _SUSPICIOUS_PATTERNS:
