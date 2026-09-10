@@ -399,9 +399,13 @@ def _parse_capa_output(capa_json: dict) -> tuple[list[str], list[dict]]:
             if not isinstance(entry, dict):
                 continue
 
-            technique_id = entry.get("id", "").strip()
-            technique_name = entry.get("technique", "").strip()
-            tactic = entry.get("tactic", "").strip()
+            # `or ""` rather than a get() default on all four: a default
+            # only fires for a *missing* key, and capa emits JSON null for
+            # a field it has no value for. Without this an unmapped rule
+            # costs the module its entire result to an AttributeError.
+            technique_id = (entry.get("id") or "").strip()
+            technique_name = (entry.get("technique") or "").strip()
+            tactic = (entry.get("tactic") or "").strip()
             subtechnique_name = (entry.get("subtechnique") or "").strip()
 
             # capa puts the full ID (e.g. "T1055.012") in the 'id' field.
