@@ -16,7 +16,46 @@ Everything before it is a step toward that.
 
 ## Unreleased
 
-Nothing yet.
+- Applied the commenting standard to the five loose static modules —
+  `capa_analysis`, `ioc_extractor`, `pdf_analysis`, `string_analysis` and
+  `yara_scanner`. Fourth package of the pass; `bin/verify_comments.py` reports
+  SAME for all five, proving no executable code rode inside the diff.
+- Fixed `.ml` and `.py` domains being unreportable by `ioc_extractor`. Both
+  labels sat in `_SOURCE_PSEUDO_TLDS` *and* `_REAL_TLDS`, and the pseudo-TLD
+  check runs first, so their real-TLD entries were dead code — no domain on
+  either could ever be reported, silently. `.ml` now resolves as Mali (one of
+  the five free Freenom ccTLDs, and abused accordingly), `.py` as Python
+  (a PyInstaller sample carries hundreds of module filenames). A test asserts
+  the two sets stay disjoint, which turns this class of defect into a failure
+  rather than a silent loss.
+- Fixed `ioc_extractor`'s URL false-positive list matching against the whole
+  URL rather than its host. Appending `?ref=www.w3.org` to a C2 URL removed it
+  from the report entirely — a false-positive filter that doubled as an evasion
+  primitive. Entries are now hosts, matched exactly or as a parent, with
+  userinfo and port stripped first so `http://www.w3.org@evil.tld/` cannot
+  claim the allow-list.
+- Fixed `ioc_extractor` discarding every domain containing an uppercase
+  character. The rule exists to reject .NET and Go identifiers like `System.IO`
+  that the TLD allow-list cannot catch, but malware configuration data is
+  routinely stored shouted, so `EVIL-C2-PANEL.TOP` was dropped too. The test is
+  now for *mixed* case; an all-caps candidate is not an identifier.
+- Fixed `pdf_analysis` scoring `/EmbeddedFile` inside `/EmbeddedFiles`. Keyword
+  matching is raw byte containment, so a document carrying only the name tree
+  scored 15 + 5 for one construct and the report listed an attachment that did
+  not exist. Counts are now corrected for prefix containment, longest-first
+  over corrected counts so a chain of three cannot double-subtract.
+- Fixed `pdf_analysis` reporting `encrypted: false` beside its own
+  "PDF is encrypted" reason. The flag was written only by the peepdf pass,
+  which does not run when peepdf is absent or the header is not `%PDF` —
+  exactly the files where it matters. The raw sweep now sets it, and peepdf
+  can no longer downgrade it.
+- Fixed a JSON `null` in capa's ATT&CK metadata raising `AttributeError`.
+  A `get()` default only fires for a missing key, and capa emits null for a
+  field it has no value for, so one unmapped rule cost the module every
+  capability it had found.
+- Added `tests/test_pdf_analysis.py` (12 tests) and
+  `tests/test_capa_analysis.py` (14 tests), neither of which existed. **The
+  suite is now 644 tests, up from 605.**
 
 ## 0.5.0
 
