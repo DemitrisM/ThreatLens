@@ -484,14 +484,19 @@ def _filter_fps(ioc_type: str, matches: set[str]) -> set[str]:
     return matches
 
 
-# URL substrings that indicate the URL is a benign XML namespace, schema
-# reference, or version-info pointer rather than a real network endpoint.
+# Hosts whose URLs are benign XML namespace, schema, or version-info
+# pointers rather than real network endpoints.
 #
-# Matched as substrings of the whole URL, not of its host — which is why
-# "go.microsoft.com/fwlink" can appear here as a path-bearing entry. The
-# looseness is a known weakness: a benign substring anywhere in the URL,
-# including its query string, suppresses the match.
-_FP_URL_SUBSTRINGS = (
+# Each entry is a host, optionally followed by a path prefix that narrows it
+# ("go.microsoft.com/fwlink" — the rest of that host is not exempt). The host
+# is matched exactly or as a parent of the URL's host, so a subdomain the
+# real owner created is covered while "www.w3.org.evil.tld" is not: only the
+# owner of w3.org can put anything under .w3.org.
+#
+# Matching the whole URL instead, as this once did, made the list an evasion
+# primitive — appending ?ref=www.w3.org to a C2 URL removed it from the
+# report.
+_FP_URL_HOSTS = (
     "tempuri.org",
     "schemas.microsoft.com",
     "schemas.xmlsoap.org",
@@ -519,17 +524,80 @@ def _filter_url_fps(urls: set[str]) -> set[str]:
         urls: Candidate URLs from the regex sweep.
 
     Returns:
-        URLs with no known-benign substring. Case-folded for the test only;
-        the original casing is preserved in the output, since a URL path is
-        case-sensitive and the analyst may need it verbatim.
+        URLs whose host is not in (or under) the allow-list. Comparison is
+        case-folded; the original casing is preserved in the output, since
+        a URL path is case-sensitive and the analyst may need it verbatim.
     """
     result: set[str] = set()
     for url in urls:
-        lower = url.lower()
-        if any(fp in lower for fp in _FP_URL_SUBSTRINGS):
+        host, path = _url_host_and_path(url)
+        if _host_is_allow_listed(host, path):
             continue
         result.add(url)
     return result
+
+
+def _url_host_and_path(url: str) -> tuple[str, str]:
+    """Split a URL into its lowercased host and its remainder.
+
+    Args:
+        url: A URL as matched by the sweep — always scheme-prefixed, since
+             the pattern requires http:// or https://.
+
+    Returns:
+        (host, remainder) where remainder keeps its leading "/", "?" or "#".
+        Userinfo and port are stripped so neither can hide the host; an
+        IPv6 literal keeps its brackets. A URL this cannot make sense of
+        yields an empty host, which matches nothing and so is reported —
+        the safe direction for an indicator.
+    """
+    rest = url.split("://", 1)[-1]
+
+    # The authority ends at the first delimiter, whichever comes first. A
+    # URL with none of them is all authority.
+    cuts = [i for i in (rest.find(c) for c in "/?#") if i != -1]
+    cut = min(cuts) if cuts else len(rest)
+    authority, remainder = rest[:cut], rest[cut:]
+
+    # user:password@ precedes the host and is attacker-chosen, so it is
+    # removed before anything is compared.
+    if "@" in authority:
+        authority = authority.rsplit("@", 1)[1]
+
+    # An IPv6 literal is bracketed and contains colons of its own, so the
+    # port must be stripped after the closing bracket, not at the first ":".
+    if authority.startswith("["):
+        end = authority.find("]")
+        host = authority[: end + 1] if end != -1 else authority
+    else:
+        host = authority.split(":", 1)[0]
+
+    return host.lower(), remainder.lower()
+
+
+def _host_is_allow_listed(host: str, path: str) -> bool:
+    """Is this host one of the known-benign namespace or vendor hosts?
+
+    Args:
+        host: Lowercased host from _url_host_and_path().
+        path: Lowercased remainder, used only by path-scoped entries.
+
+    Returns:
+        True if the URL should be dropped. An entry matches the host itself
+        or any subdomain of it; a "/"-bearing entry additionally requires
+        the URL's path to start with that prefix.
+    """
+    if not host:
+        return False
+
+    for entry in _FP_URL_HOSTS:
+        entry_host, _, entry_path = entry.partition("/")
+        if host != entry_host and not host.endswith("." + entry_host):
+            continue
+        if entry_path and not path.startswith("/" + entry_path):
+            continue
+        return True
+    return False
 
 
 def _filter_ip_fps(ips: set[str]) -> set[str]:
