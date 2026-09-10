@@ -205,25 +205,50 @@ Score is per unique category fired at each tier. Total cap 40. FLOSS obfuscation
 
 ## doc_analysis (capped at 60 total)
 
-| Indicator | Score |
-|---|---|
-| VBA macros present | +10 |
-| VBA auto-exec trigger | +10 |
-| Suspicious VBA keyword set | +10 |
-| VBA IOC patterns | +5 |
-| MacroRaptor "suspicious" | +15 |
-| High-risk oleid indicator | +5 each |
-| OpenXML altChunk / aFChunk relation | +30 |
-| altChunk Target uses absolute path | +5 (exploit marker bonus) |
-| OpenXML external `attachedTemplate` / `subDocument` | +20 |
-| OpenXML other external `TargetMode` | +10 |
-| Dangerous embedded file ext (.exe / .dll / .rtf / .hta / …) | +10 to +25 |
-| OLE object streams inside container | +10 |
-| RTF `\objupdate` + `\objdata` combo | +10 |
-| RTF embeds Equation Editor class (CVE-2017-11882) | +25 |
-| RTF embeds Package / shell class | +15 to +20 |
-| Each embedded OLE in RTF | +5 (cap 20) |
-| RTF packaged file drop | +15 |
+Weighted **combo engine**, not an additive checklist — see
+`modules/static/doc_analysis/scoring.py`. Each pass emits indicator flags; a
+rule fires when its flag set is a subset of what fired. Rules are layered
+rather than partitioned, so a flag may appear in several and they all fire:
+`ole_package_exec_ext` scores 5 on its own and 9 again with `auto_exec`,
+because the base rule prices the artefact and the combination prices the
+delivery wrapped around it.
+
+| Flags required | Score | Meaning |
+|---|---|---|
+| `auto_exec` + `shell_keyword` | +10 | AutoExec + Shell call — macro launches an OS command on open |
+| `auto_exec` + `url_downloader_keyword` | +9 | AutoExec + URLDownloadToFile/XMLHTTP — drops remote payload on open |
+| `auto_exec` + `ole_package_exec_ext` | +9 | AutoExec + embedded executable in OLE Package |
+| `vba_stomping` | +8 | VBA stomping detected (source/p-code divergence) |
+| `xlm_exec_call` | +7 | XLM macro uses EXEC/CALL/FORMULA.FILL |
+| `template_inject_non_ms` | +7 | Template injection to non-Microsoft URL |
+| `template_inject_high` | +6 | External attachedTemplate / oleObject / frame / subDocument |
+| `altchunk` | +6 | altChunk relationship (template-injection vector) |
+| `heavy_vba_obfuscation` | +6 | Heavy VBA obfuscation (Chr/hex arithmetic) |
+| `equation_editor_ole` | +5 | Embedded Equation Editor OLE (CVE-2017-11882 / CVE-2018-0802 candidate) |
+| `ole_package_exec_ext` | +5 | OLE Package embeds executable file |
+| `packager_shell` | +5 | Packager Shell Object embedded — drops and launches a bundled file |
+| `shell_explorer` | +5 | Shell.Explorer / WebBrowser control embedded — loads remote content |
+| `htmlfile` | +4 | htmlfile ActiveX object embedded — script execution primitive |
+| `rtf_objupdate` | +4 | RTF uses \objupdate — forces object load on open |
+| `dangerous_embedded_file` | +4 | Dangerous file extension inside OOXML container |
+| `vba_present` | +3 | VBA macros present |
+| `xlm_url` | +3 | XLM deobfuscated cells contain HTTP URL |
+| `oleid_high_risk` | +3 | oleid reported HIGH-risk indicator |
+| `ole_object_in_container` | +2 | Embedded OLE object stream |
+| `ole_package` | +2 | OLE Package container embeds a file |
+| `altchunk_absolute_path` | +2 | altChunk target is an absolute or UNC path — resolves outside the container |
+| `encryption_only` | +2 | Password-protected document with no macros (evasion pattern) |
+| `decompression_bomb` | +2 | Decompression-bomb guard tripped on container |
+| `malformed_openxml` | +1 | OpenXML container failed clean parse |
+| `rtf_parse_failed` | +1 | RTF failed to parse cleanly (possible exploit attempt) |
+
+Classification thresholds are this module's own and are **not** the pipeline's
+risk bands: ≥7 MALICIOUS, 4–6 SUSPICIOUS, 1–3 INFORMATIONAL, 0 CLEAN, computed
+on the **uncapped** total. A document can read MALICIOUS here while the scan
+banner reads LOW, because 60 is a ceiling on a 100-point budget.
+
+Every flag any pass emits must appear in at least one rule above;
+`tests/test_doc_analysis.py::test_every_emitted_flag_is_scored` enforces it.
 
 ---
 
