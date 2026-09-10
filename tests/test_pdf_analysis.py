@@ -117,6 +117,18 @@ def test_prefix_correction_handles_a_chain_of_three(tmp_path, monkeypatch):
 # Encryption
 # ----------------------------------------------------------------------
 
+def test_raw_encrypt_marker_sets_the_encrypted_flag(tmp_path):
+    """The report must not contradict its own reason string.
+
+    The raw sweep scores +10 and says "PDF is encrypted", so data must say
+    so too — peepdf may be absent, may have been skipped, or may fail to
+    read the encryption dictionary of a hostile file.
+    """
+    path = _pdf(tmp_path, b"<< /Encrypt 9 0 R /Filter /Standard >>")
+    data = _analyse(path, path.stat().st_size)["data"]
+    assert data["encrypted"] is True
+
+
 def test_password_hint_in_filename_adds_to_the_encrypted_score(tmp_path):
     plain = _pdf(tmp_path, b"<< /Encrypt 9 0 R >>", name="invoice.pdf")
     hinted = _pdf(tmp_path, b"<< /Encrypt 9 0 R >>", name="invoice_pwd=1234.pdf")
