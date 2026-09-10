@@ -4,6 +4,35 @@ Applies regex patterns against extracted strings to identify IPv4 addresses,
 URLs, domains, Windows file paths, registry keys, email addresses, and other
 IOCs. Filters known false positives.
 Returns a standard module result dict with score_delta and reason.
+
+Design notes
+------------
+The regexes are the easy half. Extracting dotted quads and http:// URLs from
+a binary takes six patterns; making the result *usable* takes the six hundred
+lines of false-positive filtering below, because a compiled binary is full of
+strings that look exactly like indicators and are not. A Go executable leaks
+its symbol table as "runtime.link" and "chan.recv"; a .NET assembly embeds
+"http://tempuri.org/"; every PE names a dozen DLLs that parse as domains; and
+"6.0.0.0" is a version string in every second import descriptor. Reporting
+those as IOCs is worse than reporting nothing, because an analyst who pastes
+one into a threat feed and gets a shrug stops trusting the whole section.
+
+The filters are therefore allow-list shaped wherever an allow-list is
+possible. Requiring the final label to be a known public suffix drops every
+source filename (arena.go, lib.rs, fatal.nim) in one rule, without a deny
+list that grows by one entry per language the tool meets. The cost is that a
+domain on a TLD missing from ``_REAL_TLDS`` is silently lost, which is why
+that set is the first place to look when a real C2 fails to appear.
+
+Filter *order* inside _filter_domain_fps() is load-bearing: the cheap
+membership tests run before the character scans, and the pseudo-TLD check
+runs before the real-TLD check, so a label present in both sets resolves as a
+source filename rather than a host.
+
+String extraction is done here rather than reused from string_analysis. The
+duplication is deliberate — modules must stand alone under ``--modules``
+(a scan of ioc_extractor alone has no upstream to read from), and
+string_analysis may itself be skipped when FLOSS is absent.
 """
 
 import ipaddress
@@ -15,6 +44,18 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # IOC regex patterns (from the project specification)
+#
+# All six are applied to one newline-joined blob of every extracted string,
+# so a pattern must not rely on anchors: \b does the work instead. The IPv4
+# pattern validates octet range in the regex itself (25[0-5]|2[0-4]\d|…)
+# rather than post-hoc, which is what keeps 999.1.1.1 out of the match set
+# before any filter sees it — though _filter_ip_fps still re-parses through
+# the stdlib, since the regex cannot express "not a version number".
+#
+# The URL pattern excludes % deliberately: percent-encoded bytes are how a
+# long run of binary data ends up looking like one enormous URL. Truncating
+# at the first % costs the query string of a legitimate encoded URL and buys
+# immunity from multi-kilobyte garbage matches.
 # ---------------------------------------------------------------------------
 
 _IOC_PATTERNS: dict[str, re.Pattern] = {
@@ -45,6 +86,12 @@ _IOC_PATTERNS: dict[str, re.Pattern] = {
 # ---------------------------------------------------------------------------
 
 # IPs that are almost always false positives.
+#
+# These survive the ipaddress-module check in _filter_ip_fps because they are
+# genuinely routable-looking (1.0.0.1 is a real Cloudflare resolver), yet in a
+# PE they are overwhelmingly version numbers or subnet masks. Listed by exact
+# value rather than by range: the point is that these *specific* quads carry
+# no signal, not that their networks are uninteresting.
 _FP_IPS = {
     "0.0.0.0", "127.0.0.1", "255.255.255.255",
     "255.255.255.0", "255.255.0.0", "255.0.0.0",
@@ -53,6 +100,13 @@ _FP_IPS = {
 }
 
 # Common DLL and system file names that trigger domain/path FPs.
+#
+# A DLL name is a two-label dotted string, so "kernel32.dll" is structurally
+# indistinguishable from a domain. _filter_domain_fps() also rejects the .dll
+# suffix generically; this exact-match set exists for the cases the generic
+# rules cannot reach — real hostnames on real TLDs that are simply never
+# interesting (certificate OCSP responders, XML namespace hosts, Microsoft
+# update endpoints), which no structural rule could distinguish from C2.
 _FP_DOMAINS = {
     "kernel32.dll", "ntdll.dll", "user32.dll", "advapi32.dll",
     "ws2_32.dll", "wininet.dll", "msvcrt.dll", "shell32.dll",
@@ -118,6 +172,13 @@ _REAL_TLDS = {
 # binaries) — even if a label like "go" or "rs" matches a real TLD,
 # certain combinations are unmistakably source filenames, not hosts.
 # Filtered separately so they're never counted as IOCs.
+#
+# This set is checked BEFORE _REAL_TLDS, so any label appearing in both is
+# resolved as a source extension. That is the right trade for .go and .py —
+# a panic path from the Go runtime appears in every Go binary, while .py as
+# a hostname suffix does not exist — but it means an entry added to both
+# sets is unreachable in _REAL_TLDS, which is a silent loss rather than an
+# error. Check this set first when a domain on a short ccTLD goes missing.
 _SOURCE_PSEUDO_TLDS = {
     "go", "nim", "rs", "py", "rb", "lua", "swift", "kt", "ts", "tsx",
     "vb", "cs", "fs", "hs", "ml", "cpp", "cxx", "hpp", "hxx", "asm",
@@ -162,6 +223,10 @@ _GO_SYMBOL_TLDS = {
 }
 
 # Version-string patterns that look like IPs (e.g. "6.0.0.0", "14.0.0.0").
+#
+# Deliberately narrow: it requires the two middle octets to be exactly zero,
+# which is the shape of a PE version resource and not of a real address.
+# A looser "any four small numbers" rule would eat 10.20.30.40-style C2.
 _VERSION_LIKE_RE = re.compile(r"^\d{1,2}\.0\.0\.\d{1,2}$")
 
 # Common Windows system paths that are FPs.
@@ -187,6 +252,9 @@ _FP_TLDS = {
 }
 
 # Maximum number of IOCs to store per category.
+# Applied after sorting, so truncation is alphabetical rather than by
+# interest. Acceptable because a sample emitting more than fifty domains is
+# one where the analyst needs the raw strings anyway, not a longer table.
 _MAX_IOCS_PER_CATEGORY = 50
 
 
@@ -202,11 +270,25 @@ def run(file_path: Path, config: dict) -> dict:
 
     Args:
         file_path: Path to the file under analysis.
-        config:    Pipeline configuration dict.
+        config:    Pipeline configuration dict. Not read — the module has
+                   no tunables, which is why it behaves identically under
+                   every scan profile.
 
     Returns:
-        Standard module result dict.
+        Standard module result dict. ``data["iocs"]`` maps category name to
+        a sorted, capped list; categories with nothing left after filtering
+        are omitted entirely rather than carried as empty lists, so the
+        reporters can treat presence as significance.
     """
+    # ------------------------------------------------------------------
+    # Phase 1: Pull printable strings out of the file.
+    #
+    # An unreadable file and a file genuinely containing no printable runs
+    # are not distinguished here — both yield an empty list. file_intake
+    # has already errored on a path that cannot be opened, so a scan as a
+    # whole is not misled, but the status below is optimistic for the
+    # unreadable case. Tracked in CLAUDE.md under "Still open".
+    # ------------------------------------------------------------------
     strings = _extract_strings(file_path)
     if not strings:
         return {
@@ -217,7 +299,19 @@ def run(file_path: Path, config: dict) -> dict:
             "reason": "No strings extracted — no IOCs found",
         }
 
-    # Join all strings for regex scanning.
+    # ------------------------------------------------------------------
+    # Phase 2: Sweep every pattern over one joined blob, then filter.
+    #
+    # Joining with "\n" rather than "" matters: concatenating adjacent
+    # strings would manufacture indicators that never existed in the file,
+    # gluing a trailing "http://" onto whatever string followed it. The
+    # newline is also excluded from every pattern's character class, so it
+    # acts as a hard boundary rather than merely a separator.
+    #
+    # set() before filtering: a string table repeats the same domain
+    # hundreds of times, and dedup before the per-item filters is what
+    # keeps the character-level scans in _filter_domain_fps cheap.
+    # ------------------------------------------------------------------
     blob = "\n".join(strings)
 
     iocs: dict[str, list[str]] = {}
@@ -227,13 +321,29 @@ def run(file_path: Path, config: dict) -> dict:
         if filtered:
             iocs[ioc_type] = sorted(filtered)[:_MAX_IOCS_PER_CATEGORY]
 
+    # Counted after the cap, so total_iocs describes what is reported
+    # rather than what was found. The two differ only past fifty in a
+    # category, where the exact number has stopped being actionable.
     total = sum(len(v) for v in iocs.values())
 
-    # Score based on IOC findings.
+    # ------------------------------------------------------------------
+    # Phase 3: Score.
+    #
+    # The weights are deliberately small (10 + 5 + 5 + 5 = 25 maximum, and
+    # only for a sample tripping all four). IOCs are *context*, not a
+    # verdict: benign installers carry URLs, registry keys and support
+    # email addresses too. What earns the score here is the presence of
+    # network reachability at all, not any judgement about the endpoint —
+    # that judgement belongs to VirusTotal and the YARA rules.
+    # ------------------------------------------------------------------
     score_delta = 0
     reasons: list[str] = []
 
-    # Network IOCs (URLs, non-private IPs, domains) are significant.
+    # URLs and IPs share one flat contribution rather than scoring per
+    # item: a dropper with one hardcoded C2 is no less dangerous than one
+    # with forty, and per-item scoring would rank a chatty installer above
+    # a targeted implant. Domains are scored separately and lower because
+    # they survive a much weaker filter than the two above.
     network_iocs = len(iocs.get("url", [])) + len(iocs.get("ipv4", []))
     if network_iocs > 0:
         score_delta += 10
@@ -247,7 +357,10 @@ def run(file_path: Path, config: dict) -> dict:
         suffix = f" (+{len(suspicious_domains) - 3} more)" if len(suspicious_domains) > 3 else ""
         reasons.append(f"Domains: {', '.join(top)}{suffix}")
 
-    # Registry keys suggest persistence / system modification.
+    # A registry key in the string table is only ever a hint — the module
+    # cannot tell a Run-key write from a settings read, which is why this
+    # scores the same 5 as an email address and leaves the distinction to
+    # string_analysis, whose patterns are persistence-aware.
     reg_keys = iocs.get("registry_key", [])
     if reg_keys:
         score_delta += 5
@@ -283,7 +396,20 @@ _MAX_READ_SIZE = 50 * 1024 * 1024  # 50 MiB
 
 
 def _extract_strings(file_path: Path) -> list[str]:
-    """Extract printable ASCII and UTF-16LE strings from the file."""
+    """Extract printable ASCII and UTF-16LE strings from the file.
+
+    Args:
+        file_path: File to read. Only the first ``_MAX_READ_SIZE`` bytes
+                   are examined.
+
+    Returns:
+        Deduplicated strings in encounter order — ASCII runs first, then
+        UTF-16LE. Empty on any read error, which the caller reports as a
+        successful scan with no IOCs.
+    """
+    # A bounded read, not a stream: 50 MiB of a sample is far past the point
+    # where more strings add information, and an unbounded read on a padded
+    # 4 GiB installer would hold the whole file in memory for the regexes.
     try:
         with file_path.open("rb") as fh:
             data = fh.read(_MAX_READ_SIZE)
@@ -291,8 +417,14 @@ def _extract_strings(file_path: Path) -> list[str]:
         logger.warning("Could not read file for IOC extraction: %s", exc)
         return []
 
+    # decode("ascii") is safe without a guard because _ASCII_RE only ever
+    # matches bytes in the printable range, unlike the UTF-16 pass below
+    # where a lone surrogate can still make the decode fail.
     ascii_strings = [m.group().decode("ascii") for m in _ASCII_RE.finditer(data)]
 
+    # UTF-16LE is scanned separately rather than by decoding the whole file:
+    # a PE interleaves wide and narrow strings, so any whole-file decode is
+    # wrong for half of it.
     wide_strings = []
     for m in _WIDE_RE.finditer(data):
         try:
@@ -300,7 +432,9 @@ def _extract_strings(file_path: Path) -> list[str]:
         except UnicodeDecodeError:
             continue
 
-    # Deduplicate while preserving order.
+    # Order-preserving dedup rather than a set, so the blob the regexes see
+    # keeps the file's own layout. It costs nothing here and makes the
+    # extraction reproducible, which the snapshot tests depend on.
     seen: set[str] = set()
     result: list[str] = []
     for s in ascii_strings + wide_strings:
@@ -312,7 +446,17 @@ def _extract_strings(file_path: Path) -> list[str]:
 
 
 def _filter_fps(ioc_type: str, matches: set[str]) -> set[str]:
-    """Remove known false positives from a set of IOC matches."""
+    """Remove known false positives from a set of IOC matches.
+
+    Args:
+        ioc_type: Category key from ``_IOC_PATTERNS``.
+        matches:  Raw regex hits for that category.
+
+    Returns:
+        The surviving matches. Categories with no dedicated filter —
+        currently only ``registry_key``, which the pattern already
+        constrains to an HKEY_ prefix — pass through untouched.
+    """
     if ioc_type == "ipv4":
         return _filter_ip_fps(matches)
     if ioc_type == "domain":
@@ -328,6 +472,11 @@ def _filter_fps(ioc_type: str, matches: set[str]) -> set[str]:
 
 # URL substrings that indicate the URL is a benign XML namespace, schema
 # reference, or version-info pointer rather than a real network endpoint.
+#
+# Matched as substrings of the whole URL, not of its host — which is why
+# "go.microsoft.com/fwlink" can appear here as a path-bearing entry. The
+# looseness is a known weakness: a benign substring anywhere in the URL,
+# including its query string, suppresses the match.
 _FP_URL_SUBSTRINGS = (
     "tempuri.org",
     "schemas.microsoft.com",
@@ -351,6 +500,14 @@ def _filter_url_fps(urls: set[str]) -> set[str]:
     Many .NET binaries embed http://tempuri.org/* and similar URLs as
     XML namespaces — they are not C2 endpoints and should not inflate
     the network IOC count.
+
+    Args:
+        urls: Candidate URLs from the regex sweep.
+
+    Returns:
+        URLs with no known-benign substring. Case-folded for the test only;
+        the original casing is preserved in the output, since a URL path is
+        case-sensitive and the analyst may need it verbatim.
     """
     result: set[str] = set()
     for url in urls:
@@ -407,6 +564,21 @@ def _filter_domain_fps(domains: set[str]) -> set[str]:
     public-suffix TLDs. This drops the bulk of source-filename and
     code-identifier matches that plague Go / Nim / Rust / .NET binaries
     while still catching real C2 domains.
+
+    Args:
+        domains: Candidate dotted names from the regex sweep, in their
+                 original casing.
+
+    Returns:
+        The survivors, original casing preserved.
+
+    The checks below are ordered cheapest-first — set membership, then
+    length and suffix tests, then the per-character scans — because this
+    runs once per unique candidate and a Go binary can offer thousands.
+    Each check is a separate early ``continue`` rather than one compound
+    condition so that a rule can be removed or reordered on its own; the
+    only ordering that carries meaning is _SOURCE_PSEUDO_TLDS before
+    _REAL_TLDS, described at the pseudo-TLD set above.
     """
     result: set[str] = set()
     for domain in domains:
@@ -428,9 +600,15 @@ def _filter_domain_fps(domains: set[str]) -> set[str]:
                            ".office365.com", ".apple.com", ".icloud.com")):
             continue
         # Filter version-like strings (e.g., "v2.0.50727").
+        # Keyed on the first label starting with a digit, which is what
+        # separates "2.0.50727.4927" from a hostname. The cost is that a
+        # real domain beginning with a digit is lost with it.
         if any(c.isdigit() for c in labels[0]) and labels[0][0].isdigit():
             continue
         # Filter domains that are too short overall (e.g., "C.dE", "B.SE").
+        # Six characters is the shortest a plausible host reaches once a
+        # two-letter TLD and a dot are accounted for; below that the match
+        # is nearly always an abbreviation pair from a symbol table.
         if len(lower) < 6:
             continue
         # Filter camelCase / PascalCase identifiers (code, not domains).
@@ -449,11 +627,16 @@ def _filter_domain_fps(domains: set[str]) -> set[str]:
         # The decisive check: TLD must look like a real public suffix.
         if tld not in _REAL_TLDS:
             continue
-        # Filter random-looking domains: any label with no vowels is suspicious.
+        # Any label longer than two characters with no vowel at all reads
+        # as an identifier or a hash fragment rather than a name. Note this
+        # also rejects genuinely random DGA domains, which is a deliberate
+        # trade: DGA output belongs to string_analysis and the YARA rules,
+        # while an IOC list is only useful when its entries are pastable.
         vowels = set("aeiou")
         if any(len(lab) > 2 and not (set(lab) & vowels) for lab in labels):
             continue
-        # Require at least one label (excluding TLD) to be >= 3 chars.
+        # A hostname whose every non-TLD label is one or two characters is
+        # far more often an initialism from code ("a.b.com") than a host.
         non_tld_labels = labels[:-1]
         if all(len(lab) < 3 for lab in non_tld_labels):
             continue
@@ -473,10 +656,24 @@ def _filter_domain_fps(domains: set[str]) -> set[str]:
 
 
 def _filter_path_fps(paths: set[str]) -> set[str]:
-    """Filter false-positive Windows file paths."""
+    """Filter false-positive Windows file paths.
+
+    Args:
+        paths: Candidate ``X:\\...`` paths from the regex sweep.
+
+    Returns:
+        Paths outside the standard system locations.
+
+    Only the well-known system roots are dropped. A path under AppData,
+    ProgramData, Temp or a user profile is kept even though benign software
+    writes there constantly, because those are exactly the directories
+    droppers stage payloads in — the false positives are worth the recall.
+    """
     result: set[str] = set()
     for path in paths:
-        # Skip standard system paths.
+        # Prefix match, and case-sensitive: a lowercased "c:\\windows" in a
+        # sample is worth seeing, since the system itself always emits the
+        # canonical casing.
         if any(path.startswith(prefix) for prefix in _FP_PATH_PREFIXES):
             continue
         # Very short paths are usually FPs (e.g., "C:\\").
@@ -487,7 +684,19 @@ def _filter_path_fps(paths: set[str]) -> set[str]:
 
 
 def _filter_email_fps(emails: set[str]) -> set[str]:
-    """Filter false-positive email addresses."""
+    """Filter false-positive email addresses.
+
+    Args:
+        emails: Candidate addresses from the regex sweep.
+
+    Returns:
+        Addresses that are neither placeholders nor Microsoft's own.
+
+    Kept short on purpose. An email address in a binary is rare enough to
+    be worth reporting even when it turns out to be a developer's, so this
+    filter only removes the two categories that are never informative:
+    documentation placeholders and vendor contact addresses.
+    """
     result: set[str] = set()
     for email in emails:
         lower = email.lower()
