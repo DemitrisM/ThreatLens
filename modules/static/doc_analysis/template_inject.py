@@ -90,7 +90,16 @@ _RTF_TEMPLATE_RE = re.compile(
     rb"\{\s*\\\*\\template\s+([^}]+)\}", re.IGNORECASE
 )
 _REL_TAG_RE = re.compile(r"<Relationship[^>]+>")
-_ATTR_RE = re.compile(r'{name}="([^"]*)"')
+
+# One compiled pattern per attribute name, built on first use. XML permits
+# either quote style around a value, and Word accepts both, so both are
+# matched — a .rels written with single quotes used to parse as no
+# relationships at all while Word still resolved its targets.
+#
+# This replaces a constant that read re.compile(r'{name}="([^"]*)"') — a
+# plain string, not an f-string, so it matched a literal "{name}=" and was
+# never referenced by anything.
+_ATTR_PATTERNS: dict[str, re.Pattern] = {}
 
 
 def analyse_openxml_rels(file_path: Path) -> dict:
@@ -234,7 +243,7 @@ def _scan_rels_content(content: str, out: dict) -> None:
         # TargetMode="External" is the whole tell: an internal target
         # points inside the container, an external one reaches the network
         # or a UNC path when the document opens.
-        if 'targetmode="external"' in rel_lower:
+        if _extract_attr(rel, "TargetMode").lower() == "external":
             severity = "MEDIUM"
             rtype_lower = (rtype or "").lower()
             if any(k in rtype_lower for k in _HIGH_REL_KEYWORDS):
@@ -268,10 +277,31 @@ def _extract_attr(xml_tag: str, name: str) -> str:
         The attribute value, or "" when absent. An absent Target is normal
         for a malformed or truncated part, and the callers treat "" as
         "nothing to report" rather than as an error.
+
+    Either quote style is accepted, since XML allows both and a document
+    that uses the less common one is not thereby exempt from inspection.
+    The name is matched case-insensitively: XML says these names are
+    case-sensitive and Word's parser agrees, but a scanner should read at
+    least as permissively as the application it is protecting, and being
+    strict here would be a free evasion if that assumption were ever
+    wrong for one Office version.
     """
-    pat = re.compile(rf'{name}="([^"]*)"')
+    pat = _ATTR_PATTERNS.get(name)
+    if pat is None:
+        # Two guards, doing different jobs: \b stops "Target" matching the
+        # tail of a longer name like "MyTarget", and \s*= stops it matching
+        # the head of "TargetMode", whose next character is neither space
+        # nor equals.
+        pat = re.compile(
+            rf'\b{re.escape(name)}\s*=\s*(?:"([^"]*)"|\'([^\']*)\')',
+            re.IGNORECASE,
+        )
+        _ATTR_PATTERNS[name] = pat
     m = pat.search(xml_tag)
-    return m.group(1) if m else ""
+    if not m:
+        return ""
+    # Exactly one of the two alternatives matched.
+    return m.group(1) if m.group(1) is not None else m.group(2)
 
 
 def _is_non_microsoft(target: str) -> bool:
