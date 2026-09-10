@@ -70,6 +70,13 @@ SCORE_CAP = 60
 # severity in the abstract: AutoExec + Shell is 10 because it needs no
 # user action beyond opening the file, while an embedded Equation Editor
 # object is 5 because it still depends on an unpatched Office install.
+#
+# Every flag any pass emits must appear in at least one rule here. A flag
+# with no rule is a detection that scores nothing, silently — five of them
+# accumulated that way before a test pinned the invariant. The three
+# class-name flags below (packager_shell, shell_explorer, htmlfile) come
+# from ole_objects._HIGH_RISK_CLASS_SUBSTRINGS, so adding an entry there
+# means adding a rule here too.
 COMBO_RULES: list[tuple[frozenset[str], int, str]] = [
     (frozenset({"auto_exec", "shell_keyword"}), 10,
      "AutoExec + Shell call — macro launches an OS command on open"),
@@ -93,10 +100,18 @@ COMBO_RULES: list[tuple[frozenset[str], int, str]] = [
      "Embedded Equation Editor OLE (CVE-2017-11882 / CVE-2018-0802 candidate)"),
     (frozenset({"ole_package_exec_ext"}), 5,
      "OLE Package embeds executable file"),
+    (frozenset({"packager_shell"}), 5,
+     "Packager Shell Object embedded — drops and launches a bundled file"),
+    (frozenset({"shell_explorer"}), 5,
+     "Shell.Explorer / WebBrowser control embedded — loads remote content"),
+    (frozenset({"htmlfile"}), 4,
+     "htmlfile ActiveX object embedded — script execution primitive"),
     (frozenset({"rtf_objupdate"}), 4,
      "RTF uses \\objupdate — forces object load on open"),
     (frozenset({"dangerous_embedded_file"}), 4,
      "Dangerous file extension inside OOXML container"),
+    (frozenset({"altchunk_absolute_path"}), 2,
+     "altChunk target is an absolute or UNC path — resolves outside the container"),
     (frozenset({"vba_present"}), 3,
      "VBA macros present"),
     (frozenset({"xlm_url"}), 3,
@@ -105,6 +120,8 @@ COMBO_RULES: list[tuple[frozenset[str], int, str]] = [
      "oleid reported HIGH-risk indicator"),
     (frozenset({"ole_object_in_container"}), 2,
      "Embedded OLE object stream"),
+    (frozenset({"ole_package"}), 2,
+     "OLE Package container embeds a file"),
     (frozenset({"encryption_only"}), 2,
      "Password-protected document with no macros (evasion pattern)"),
     (frozenset({"decompression_bomb"}), 2,

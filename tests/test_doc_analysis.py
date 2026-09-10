@@ -8,6 +8,8 @@ the flags, because the flags are the only thing that reaches the score.
 
 import zipfile
 
+import pytest
+
 from modules.static.doc_analysis.routing import detect_format
 from modules.static.doc_analysis.scoring import COMBO_RULES, score_document
 from modules.static.doc_analysis.template_inject import (
@@ -162,6 +164,135 @@ def test_classification_bands():
 
 def test_unknown_flags_are_ignored():
     assert score_document({"not_a_real_flag"}) == (0, [], "CLEAN")
+
+
+def _flags_emitted_by_the_package() -> set[str]:
+    """Every indicator flag any pass can add, read off the AST.
+
+    Parsed rather than grepped: a regex over source text matches
+    commented-out lines, misses whichever quote style it was not written
+    for, and silently ignores anything it does not recognise — which is
+    the exact failure mode the test below exists to prevent.
+
+    Literal ``out["indicator_flags"].add("x")`` and ``.update({...})``
+    calls come from the AST. The one dynamic site — ole_objects looping
+    over _HIGH_RISK_CLASS_SUBSTRINGS and adding its values — is unioned in
+    from the table itself, since no static walk can resolve it, and the
+    walk asserts that it remains the *only* such site.
+
+    Known limits, since a test that quietly stops checking is worse than
+    no test: a flag added through a differently-named alias (the set
+    passed into a helper as a parameter) or built by string arithmetic
+    would be invisible here. Both are outside how this package is
+    written, and the assertion on dynamic sites below is what would catch
+    the drift.
+    """
+    import ast
+    import pathlib
+
+    from modules.static.doc_analysis.ole_objects import _HIGH_RISK_CLASS_SUBSTRINGS
+
+    def _targets_indicator_flags(node: ast.AST) -> bool:
+        """True if *node* is the indicator_flags set, however it is reached."""
+        if isinstance(node, ast.Subscript):
+            key = node.slice
+            return isinstance(key, ast.Constant) and key.value == "indicator_flags"
+        if isinstance(node, ast.Name):
+            return node.id == "indicator_flags"
+        if isinstance(node, ast.Attribute):
+            return node.attr == "indicator_flags"
+        return False
+
+    def _literals(arg: ast.AST) -> list[str] | None:
+        """String literals in *arg*, or None if it is not statically known."""
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return [arg.value]
+        # .update() takes an iterable, so a literal collection is readable.
+        if isinstance(arg, (ast.Set, ast.List, ast.Tuple)):
+            out: list[str] = []
+            for element in arg.elts:
+                if not (isinstance(element, ast.Constant)
+                        and isinstance(element.value, str)):
+                    return None
+                out.append(element.value)
+            return out
+        return None
+
+    emitted: set[str] = set(_HIGH_RISK_CLASS_SUBSTRINGS.values())
+    dynamic: set[str] = set()
+    for module in pathlib.Path("modules/static/doc_analysis").glob("*.py"):
+        tree = ast.parse(module.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            # Both mutating set methods, not just add — .update({...}) would
+            # otherwise sail past this walk with its flags uncounted.
+            if not isinstance(func, ast.Attribute) or func.attr not in ("add", "update"):
+                continue
+            if not _targets_indicator_flags(func.value):
+                continue
+            for arg in node.args:
+                found = _literals(arg)
+                if found is None:
+                    # Name it, so the assertion below says which site drifted.
+                    dynamic.add(getattr(arg, "id", type(arg).__name__))
+                else:
+                    emitted.update(found)
+
+    # The single dynamic site is ole_objects looping over
+    # _HIGH_RISK_CLASS_SUBSTRINGS and adding its `flag` values, already
+    # unioned in above. Any other one is unaccounted for and this fails.
+    assert dynamic == {"flag"}, (
+        f"unaccounted dynamic indicator_flags sites: {sorted(dynamic)}"
+    )
+    return emitted
+
+
+def test_every_emitted_flag_is_scored():
+    """A flag no rule mentions is a detection that goes nowhere.
+
+    Five flags were emitted and never scored — packager_shell,
+    shell_explorer, htmlfile, ole_package and altchunk_absolute_path — so
+    a Packager Shell object or a Shell.Explorer control embedded in a
+    document contributed exactly zero. Nothing errors in that situation
+    and nothing logs, which is why it needs a test rather than a review.
+    """
+    emitted = _flags_emitted_by_the_package()
+    scored = set().union(*(rule[0] for rule in COMBO_RULES))
+    assert emitted - scored == set(), (
+        f"flags emitted but never scored: {sorted(emitted - scored)}"
+    )
+
+
+def test_the_flag_walk_finds_the_known_flags():
+    """Guards the walker itself — an empty result would pass the test above."""
+    emitted = _flags_emitted_by_the_package()
+    assert {"auto_exec", "vba_stomping", "altchunk", "template_inject_non_ms",
+            "shell_explorer"} <= emitted
+    assert len(emitted) >= 20
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["packager_shell", "shell_explorer", "htmlfile", "ole_package",
+     "altchunk_absolute_path"],
+)
+def test_previously_unscored_flags_now_contribute(flag):
+    assert score_document({flag})[0] > 0
+
+
+def test_absolute_path_altchunk_outscores_a_plain_one():
+    """An altChunk resolving outside the container is the weaponised form."""
+    plain, _, _ = score_document({"altchunk"})
+    absolute, _, _ = score_document({"altchunk", "altchunk_absolute_path"})
+    assert absolute > plain
+
+
+def test_package_with_an_executable_outscores_a_bare_package():
+    bare, _, _ = score_document({"ole_package"})
+    with_exe, _, _ = score_document({"ole_package", "ole_package_exec_ext"})
+    assert with_exe > bare
 
 
 def test_score_is_capped_but_classification_is_not():
