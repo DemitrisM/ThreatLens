@@ -95,8 +95,11 @@ _PDF_SCORE_CAP = 60
 # document-level action entry, /JS is the generic value key it also appears
 # under in annotations.
 #
-# Matching is plain byte containment, so a keyword that is a prefix of
-# another is counted inside it as well.
+# Matching is plain byte containment with no PDF tokenisation, so a keyword
+# that is a prefix of another ("/EmbeddedFile" inside "/EmbeddedFiles") would
+# be counted inside it. _raw_keyword_scan corrects for that generically —
+# including for chains of three — so a new prefix-related keyword can be
+# added here without further change.
 _KEYWORD_WEIGHTS = {
     b"/OpenAction": (15, 1),          # auto-run on open
     b"/AA": (10, 1),                  # Additional-Actions (triggered on events)
@@ -351,11 +354,32 @@ def _raw_keyword_scan(file_path: Path, file_size: int) -> tuple[int, list[str], 
         logger.debug("Could not read PDF bytes: %s", exc)
         return 0, [], {}
 
+    # Counted once per keyword up front, so the prefix correction below
+    # costs no extra passes over what may be 100 MiB of file.
+    raw_counts = {kw: raw.count(kw) for kw in _KEYWORD_WEIGHTS}
+
+    # Every occurrence of a longer keyword contains one occurrence of any
+    # keyword that prefixes it, so a document carrying only the
+    # /EmbeddedFiles name tree would also be scored for an /EmbeddedFile
+    # attachment it does not have.
+    #
+    # Longest first, subtracting *corrected* counts rather than raw ones.
+    # That distinction matters for a chain of three (A, AB, ABC), where
+    # subtracting raw counts removes the same bytes twice and can drive a
+    # genuine standalone match to zero. Processing longest first guarantees
+    # every extension of a keyword is already corrected when it is used.
+    adjusted: dict[bytes, int] = {}
+    for kw in sorted(_KEYWORD_WEIGHTS, key=len, reverse=True):
+        adjusted[kw] = raw_counts[kw] - sum(
+            n for other, n in adjusted.items()
+            if other != kw and other.startswith(kw)
+        )
+
     # Occurrence counts are recorded in full even though scoring caps them,
     # because "/OpenAction x1" and "/OpenAction x40" mean different things
     # to a human reading the report even when they score identically.
     for kw, (weight, cap) in _KEYWORD_WEIGHTS.items():
-        count = raw.count(kw)
+        count = adjusted[kw]
         if count > 0:
             hits[kw.decode()] = count
             effective = min(count, cap)
