@@ -179,10 +179,14 @@ sum of per-category maxima, capped at 60.
 
 ---
 
-## string_analysis (severity-weighted, capped at 40 total)
+## string_analysis (severity-weighted, cap 40 + a post-cap bonus)
 
-Score is per unique category fired at each tier. Total cap 40. FLOSS obfuscation bonus
-+10 when decoded or stack strings are present.
+Score is per unique category fired at each tier, capped at 40 — but the cap is
+applied **before** the FLOSS obfuscation bonus, so a FLOSS-sourced result can
+return up to **50**. That ordering is deliberate: the tier caps bound what
+pattern matching can claim, while the bonus is evidence of a different kind
+(the sample built or decoded strings at runtime, which only emulation reveals)
+and is not competing for the same budget.
 
 | Tier | Examples | Score per unique category |
 |---|---|---|
@@ -251,6 +255,78 @@ banner reads LOW, because 60 is a ceiling on a 100-point budget.
 
 Every flag any pass emits must appear in at least one rule above;
 `tests/test_doc_analysis.py::test_every_emitted_flag_is_scored` enforces it.
+
+---
+
+## html_analysis (capped at 60 total)
+
+Additive, with one clamp at the end. Weights encode *how far the delivery
+chain got*: a decoded payload outscores the mechanism that would have
+delivered it, and clipboard poisoning with a LOLBin — ClickFix — is the
+single highest-scoring indicator in the module, because the victim is being
+told to run the command themselves.
+
+| Indicator | Score |
+|---|---|
+| Clipboard poisoning containing a LOLBin (ClickFix) | +35 |
+| Embedded PE payload in a base64 blob | +30 |
+| `eval(atob(…))` — inline base64-encoded JS execution | +30 |
+| Embedded ZIP / OLE2 / CAB in a base64 blob | +20 |
+| Blob delivery chain (`new Blob` + `URL.createObjectURL`) | +20 |
+| Embedded RAR / 7-Zip / gzip in a base64 blob | +15 |
+| Clipboard write without a LOLBin | +15 |
+| Social-engineering lure text | +15 |
+| Suspicious external domain (known-bad TLD / pattern) | +15 |
+| Large undecodable blob (≥10 KiB) | +10 |
+| Dangerous download extension | +10 |
+| `navigator.msSaveOrOpenBlob` — auto-save to disk | +10 |
+| Auto-trigger on load (`onload` + download mechanism) | +10 |
+| `eval()` alone (not already counted as `eval(atob())`) | +10 |
+| `String.fromCharCode()` obfuscation | +10 |
+| Junk-comment camouflage | +10 |
+| `new Function()` constructor | +10 |
+| XHR / Fetch beacon to an external domain | +10 |
+| WebSocket connection (live C2 channel) | +10 |
+| Other suspicious domains | +10 each, max +20 |
+| Double extension in a download filename (`.pdf.exe`) | +5 |
+| Obfuscated variable names alongside junk comments | +5 |
+| `unescape()` percent-encoding obfuscation | +5 |
+| External iframe | +5 |
+| Meta-refresh redirect to an external URL | +5 |
+| **html_analysis total cap** | **60 max** |
+
+Note the two mutually exclusive pairs: `eval(atob())` suppresses the bare
+`eval()` row, and a LOLBin-bearing clipboard write suppresses the plain
+clipboard row. Blob-type scoring is a single if/elif ladder, so only the
+highest-value payload type found is counted, not one row per type.
+
+---
+
+## onenote_analysis (capped at 60 total)
+
+Weighted combo engine (frozensets of flag strings, same pattern as
+doc_analysis and archive_analysis). Flags come from the ONESTORE walker's
+typed-blob classification in `embedded.py` and `indicators.py`.
+
+| Flags required | Score | Meaning |
+|---|---|---|
+| `contains_embedded_lnk` + `contains_embedded_script` | +30 | LNK + script chain — the classic IcedID / Qakbot OneNote TTP |
+| `contains_embedded_pe` | +25 | Embedded PE executable |
+| `contains_embedded_hta` | +25 | Embedded HTA dropper |
+| `contains_embedded_msi` | +22 | Embedded MSI installer |
+| `contains_embedded_chm` | +20 | Embedded CHM |
+| `contains_embedded_lnk` | +15 | Embedded Windows shortcut |
+| `contains_embedded_script` | +15 | Embedded script |
+| `multiple_dangerous_blobs` | +10 | Several dangerous payloads stacked in one file |
+| `encrypted_section` | +8 | Encrypted section — content hidden from static analysis |
+| `large_embedded_payload` | +5 | Embedded payload over 100 KiB |
+| `blob_count_anomaly` | +5 | Unusual number of FileDataStoreObjects |
+| **onenote_analysis total cap** | **60 max** |
+
+Bands are this module's own, as with doc_analysis and archive_analysis:
+≥25 MALICIOUS, 10–24 SUSPICIOUS, 1–9 INFORMATIONAL, 0 CLEAN — and the rules
+are layered, so the LNK+script combination fires
+alongside both single-flag rules it contains (30 + 15 + 15).
 
 ---
 
