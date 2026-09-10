@@ -298,6 +298,12 @@ def _analyse(file_path: Path, file_size: int) -> dict:
     # ------------------------------------------------------------------
     raw_delta, raw_reasons, raw_hits = _raw_keyword_scan(file_path, file_size)
     data["raw_keyword_hits"] = raw_hits
+
+    # The sweep scores +10 and states the file is encrypted, so the payload
+    # has to agree — peepdf may be absent, skipped for a header mismatch, or
+    # unable to read the encryption dictionary of a deliberately broken file.
+    if "/Encrypt" in raw_hits:
+        data["encrypted"] = True
     score_delta += raw_delta
     reasons.extend(raw_reasons)
 
@@ -417,9 +423,11 @@ def _raw_keyword_scan(file_path: Path, file_size: int) -> tuple[int, list[str], 
         reasons.append(f"High action density ({action_count} /Action markers)")
 
     # Encryption via raw tag — the /Encrypt dictionary is present even when peepdf fails.
-    # Scored, but note this pass does not touch data["encrypted"]: that field
-    # is peepdf's, and stays False when peepdf did not run.
+    # Recorded as a hit, not only scored: _analyse() reads it back to set
+    # data["encrypted"], so the payload cannot contradict the reason string
+    # on a file peepdf never parsed.
     if b"/Encrypt" in raw:
+        hits["/Encrypt"] = raw.count(b"/Encrypt")
         score_delta += 10
         reasons.append("PDF is encrypted — content hidden from static scanners")
         # Password hinted in filename ("pwd=", "password") strongly suggests
@@ -475,7 +483,9 @@ def _peepdf_parse(file_path: Path, data: dict) -> tuple[int, list[str]]:
     data["parsed"] = True
     try:
         data["version"] = pdf_file.getVersion()
-        data["encrypted"] = bool(pdf_file.isEncrypted())
+        # Never downgrades: the raw sweep may already have found an
+        # /Encrypt dictionary that peepdf failed to reach.
+        data["encrypted"] = data["encrypted"] or bool(pdf_file.isEncrypted())
     except Exception:  # noqa: BLE001
         pass
 
