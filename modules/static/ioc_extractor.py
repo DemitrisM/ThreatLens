@@ -158,7 +158,7 @@ _REAL_TLDS = {
     "cn", "jp", "kr", "tw", "hk", "mo", "sg", "my", "th", "vn",
     "id", "ph", "in", "pk", "bd", "lk", "np",
     "il", "tr", "ae", "sa", "qa", "kw", "bh", "om", "lb", "jo",
-    "mx", "br", "ar", "cl", "co", "pe", "ve", "uy", "py", "bo",
+    "mx", "br", "ar", "cl", "co", "pe", "ve", "uy", "bo",
     "eg", "ma", "tn", "dz", "ng", "ke", "gh", "et", "tz", "ug",
     # Country TLDs commonly abused for malicious infrastructure
     "tk", "ml", "ga", "cf", "gq", "su", "pw", "nu",
@@ -173,15 +173,29 @@ _REAL_TLDS = {
 # certain combinations are unmistakably source filenames, not hosts.
 # Filtered separately so they're never counted as IOCs.
 #
-# This set is checked BEFORE _REAL_TLDS, so any label appearing in both is
-# resolved as a source extension. That is the right trade for .go and .py —
-# a panic path from the Go runtime appears in every Go binary, while .py as
-# a hostname suffix does not exist — but it means an entry added to both
-# sets is unreachable in _REAL_TLDS, which is a silent loss rather than an
-# error. Check this set first when a domain on a short ccTLD goes missing.
+# This set is checked BEFORE _REAL_TLDS, so a label appearing in both would
+# be unreachable in _REAL_TLDS — a silent loss rather than an error. The two
+# sets are therefore kept disjoint, enforced by a test. Every label carried
+# in both roles is resolved here, once:
+#
+#   .py  — resolved as Python. Paraguay's ccTLD loses because a PyInstaller
+#          or py2exe sample carries hundreds of module filenames, and a .py
+#          C2 domain is rare enough to be worth that trade.
+#   .ml  — resolved as Mali. OCaml loses because .ml was one of the five
+#          free Freenom ccTLDs and is correspondingly abused, while OCaml
+#          binaries are close to absent from a Windows malware corpus.
+#          The cost is that an OCaml source filename now reads as a domain.
+#   .rs  — resolved as Rust, and additionally absent from _REAL_TLDS, so
+#          Serbia's ccTLD is not reportable at all. Rust wins because a
+#          Rust binary embeds its panic paths (src/libcore/*.rs) in every
+#          build, and Rust ransomware is now common. Recorded here rather
+#          than left to be rediscovered from an empty result.
+#
+# Anything added here in future needs the same one-line judgement. A label
+# that belongs in neither role belongs in neither set.
 _SOURCE_PSEUDO_TLDS = {
     "go", "nim", "rs", "py", "rb", "lua", "swift", "kt", "ts", "tsx",
-    "vb", "cs", "fs", "hs", "ml", "cpp", "cxx", "hpp", "hxx", "asm",
+    "vb", "cs", "fs", "hs", "cpp", "cxx", "hpp", "hxx", "asm",
     "s", "S", "def", "exp", "pyx", "pyi", "pxd",
 }
 

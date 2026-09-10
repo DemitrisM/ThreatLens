@@ -10,6 +10,8 @@ import pytest
 
 from modules.static.ioc_extractor import (
     _MAX_IOCS_PER_CATEGORY,
+    _REAL_TLDS,
+    _SOURCE_PSEUDO_TLDS,
     _filter_domain_fps,
     _filter_ip_fps,
     _filter_url_fps,
@@ -140,6 +142,27 @@ def test_unknown_tld_is_rejected():
 def test_camelcase_pseudo_domain_is_rejected():
     """Source-language identifiers, not hostnames."""
     assert _filter_domain_fps({"System.Reflection.Assembly"}) == set()
+
+
+def test_pseudo_tld_and_real_tld_sets_are_disjoint():
+    """A label in both sets is unreachable in whichever is checked second.
+
+    _filter_domain_fps consults _SOURCE_PSEUDO_TLDS first, so anything
+    listed in both never reaches the _REAL_TLDS test — the entry there is
+    dead, and the loss is silent. Each label has to be resolved one way or
+    the other, in one set only.
+    """
+    assert _SOURCE_PSEUDO_TLDS & _REAL_TLDS == set()
+
+
+def test_freenom_ccTLD_domain_is_reported():
+    """.ml is a heavily abused free ccTLD; it also names OCaml sources."""
+    assert "malicious-panel.ml" in _filter_domain_fps({"malicious-panel.ml"})
+
+
+def test_python_source_filename_is_not_a_domain():
+    """.py resolves the other way — PyInstaller samples carry hundreds."""
+    assert _filter_domain_fps({"threading.py"}) == set()
 
 
 def test_common_benign_domain_is_whitelisted():
