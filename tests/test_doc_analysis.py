@@ -295,6 +295,17 @@ def test_package_with_an_executable_outscores_a_bare_package():
     assert with_exe > bare
 
 
+def test_rules_are_ordered_by_descending_weight():
+    """The module documents this order and the reason strings rely on it.
+
+    A truncated report shows the first few reasons, so the list has to run
+    highest-weight first for the ones it keeps to be the ones that carried
+    the score. Nothing enforces that when a rule is inserted by hand.
+    """
+    weights = [rule[1] for rule in COMBO_RULES]
+    assert weights == sorted(weights, reverse=True)
+
+
 def test_score_is_capped_but_classification_is_not():
     everything = set().union(*(rule[0] for rule in COMBO_RULES))
     delta, _, classification = score_document(everything)
