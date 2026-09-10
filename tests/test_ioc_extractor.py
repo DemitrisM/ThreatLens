@@ -185,6 +185,40 @@ def test_c2_url_survives_filtering():
     assert url in _filter_url_fps({url})
 
 
+def test_benign_substring_in_query_does_not_suppress_a_url():
+    """The allow-list describes hosts, so a query parameter cannot claim it.
+
+    Matching the benign list against the whole URL made the filter an
+    evasion primitive: appending ?ref=www.w3.org to a C2 URL removed it
+    from the IOC list entirely.
+    """
+    url = "http://evil-c2-domain.top/gate.php?ref=www.w3.org"
+    assert url in _filter_url_fps({url})
+
+
+def test_lookalike_host_suffix_does_not_claim_the_allow_list():
+    """www.w3.org.evil.tld is attacker-controlled, not W3C."""
+    url = "http://www.w3.org.evil.tld/beacon"
+    assert url in _filter_url_fps({url})
+
+
+def test_subdomain_of_a_benign_host_is_still_rejected():
+    """Only the real owner can create a subdomain of their own host."""
+    assert _filter_url_fps({"http://svc.tempuri.org/x"}) == set()
+
+
+def test_path_scoped_entry_only_matches_that_path():
+    """go.microsoft.com/fwlink is benign; the rest of the host is not."""
+    assert _filter_url_fps({"https://go.microsoft.com/fwlink/?LinkId=99"}) == set()
+    live = "https://go.microsoft.com/download/payload.exe"
+    assert live in _filter_url_fps({live})
+
+
+def test_url_with_port_and_credentials_still_resolves_its_host():
+    """Userinfo and port must not hide the host from the allow-list."""
+    assert _filter_url_fps({"http://user:pw@tempuri.org:8080/x"}) == set()
+
+
 # ----------------------------------------------------------------------
 # Caps
 # ----------------------------------------------------------------------
