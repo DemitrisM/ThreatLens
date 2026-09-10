@@ -7,14 +7,15 @@ Everything before it is a step toward that.
 
 | Version | What it takes |
 |---|---|
-| 0.5.0 | *(current)* Defect sweep, full test coverage, commenting standard |
+| 0.5.0 | Defect sweep, full test coverage, commenting standard |
+| 0.5.1 | *(current)* Comment passes 4 and 5, eleven defects fixed, three document evasion paths closed |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
 
-## Unreleased
+## 0.5.1 — 2026-09-10
 
 - Applied the commenting standard to the five loose static modules —
   `capa_analysis`, `ioc_extractor`, `pdf_analysis`, `string_analysis` and
