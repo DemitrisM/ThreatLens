@@ -694,9 +694,29 @@ def _filter_domain_fps(domains: set[str]) -> set[str]:
         if len(lower) < 6:
             continue
         # Filter camelCase / PascalCase identifiers (code, not domains).
-        # Real domains are lowercase; .NET names like "BCrypt.BCryptGetProperty"
-        # and Go names like "byteOrder.Uint64" have mixed case.
-        if any(c.isupper() for c in domain):
+        # .NET names like "BCrypt.BCryptGetProperty" and Go names like
+        # "byteOrder.Uint64" have mixed case; the allow-list of real TLDs
+        # does not catch them, because "System.IO" and "System.Net" end in
+        # labels that genuinely are TLDs.
+        #
+        # The test is for *mixed* case, not for any uppercase. A candidate
+        # with no lowercase at all is not an identifier — it is a shouted
+        # string, which is how malware configuration data is routinely
+        # stored, and DNS is case-insensitive so "EVIL.COM" is a real name.
+        # Rejecting on any uppercase discarded those outright.
+        #
+        # A merely capitalised domain ("Evil.com") is still lost, because
+        # nothing separates it from "System.Net" without knowing which
+        # side of the dot is a namespace. That is the remaining cost, and
+        # it is smaller than the one it replaced: shouted configuration
+        # strings are common, sentence-cased ones are not.
+        #
+        # An all-caps *filename* on a real TLD ("SCRIPT.SH", "SYSTEM.IO")
+        # now reaches the report. That is not a new class — the lowercase
+        # forms have always been reported, since _FP_TLDS covers document
+        # and image extensions but not ones that collide with live TLDs.
+        # This makes the treatment case-consistent, which is the point.
+        if any(c.isupper() for c in domain) and any(c.islower() for c in domain):
             continue
         tld = labels[-1]
         # Source-filename pseudo-TLDs (.go, .nim, .rs, .py, …) — never
