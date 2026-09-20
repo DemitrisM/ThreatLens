@@ -176,156 +176,199 @@ def _analyse_archive(file_path: Path, config: dict, depth: int) -> dict:
     except OSError:
         container_size = 0
 
-    entries, meta = _dispatch_enumerate(file_path, fmt)
-    data = _empty_data()
-    data["detected_format"] = fmt
-    data["entry_count"] = len(entries)
-    data["total_uncompressed_size"] = sum(e.size_uncompressed for e in entries)
-    data["zip_header_mismatch"] = list(meta.zip_header_mismatches)
-    data["encryption"]["header_encrypted"] = bool(meta.header_encrypted)
-    data["errors"] = list(meta.handler_errors)
-
-    bomb = evaluate_bomb_guard(
-        entries=entries,
-        container_size=container_size,
-        ratio_threshold=ratio_threshold,
-        size_threshold_bytes=extract_budget,
-        count_threshold=count_threshold,
-    )
-    data["bomb_guard"] = bomb
-
+    # The scratch directory is created here, before enumeration, because
+    # the single-stream formats have no member listing to read: gz/bz2/xz
+    # must decompress the inner payload to disk before there is anything
+    # to describe. Every other format fills it later, after the bomb guard
+    # has cleared extraction. One owner, one cleanup, in the finally below
+    # — the extracted bytes are live malware and must not outlive the scan.
     tmp_dir: Path | None = None
-    extracted = False
-    if entries and not bomb["triggered"] and fmt != "ace":
-        tmp_dir = Path(tempfile.mkdtemp(prefix="archive_extract_"))
-        try:
-            _dispatch_extract(file_path, fmt, entries, tmp_dir, extract_budget)
-            extracted = True
-        except Exception as exc:  # noqa: BLE001
-            meta.handler_errors.append({"stage": "extract", "error": str(exc)})
+    if fmt in _SINGLE_STREAM_FORMATS:
+        tmp_dir = Path(tempfile.mkdtemp(prefix="single_stream_"))
 
-    # Cross-format indicators (always run, even without extraction)
-    flags: set[str] = set()
-    data["path_traversal"] = detect_path_traversal(entries)
-    if data["path_traversal"]:
-        flags.add("path_traversal")
+    try:
+        entries, meta = _dispatch_enumerate(file_path, fmt, tmp_dir)
+        data = _empty_data()
+        data["detected_format"] = fmt
+        data["entry_count"] = len(entries)
+        data["total_uncompressed_size"] = sum(e.size_uncompressed for e in entries)
+        data["zip_header_mismatch"] = list(meta.zip_header_mismatches)
+        data["encryption"]["header_encrypted"] = bool(meta.header_encrypted)
 
-    data["symlink_attack"] = detect_symlink_attacks(entries)
-    if data["symlink_attack"]:
-        flags.add("symlink_attack")
-
-    data["dangerous_members"] = detect_dangerous_members(entries)
-    if data["dangerous_members"]:
-        flags.add("dangerous_member")
-
-    data["double_extension"] = detect_double_extension(entries)
-    if data["double_extension"]:
-        flags.add("double_extension")
-
-    data["rtlo_filenames"] = detect_rtlo_filenames(entries)
-    if data["rtlo_filenames"]:
-        flags.add("rtlo_filename")
-
-    data["null_byte_filenames"] = detect_null_byte_filenames(entries)
-    if data["null_byte_filenames"]:
-        flags.add("null_byte_filename")
-
-    data["high_entropy_filenames"] = detect_high_entropy_filenames(entries)
-    if data["high_entropy_filenames"]:
-        flags.add("high_entropy_filename")
-
-    data["persistence_paths"] = detect_persistence_paths(entries)
-    if data["persistence_paths"]:
-        flags.add("persistence_path")
-
-    autorun, desktop_ini = detect_autorun_desktop(entries)
-    data["autorun_inf"] = autorun
-    data["desktop_ini"] = desktop_ini
-    if autorun:
-        flags.add("autorun_inf")
-    if desktop_ini:
-        flags.add("desktop_ini")
-
-    data["timestamp_anomaly"] = detect_timestamp_anomaly(entries)
-    if data["timestamp_anomaly"]["triggered"]:
-        flags.add("timestamp_anomaly")
-
-    if extracted:
-        data["mime_mismatches"] = detect_mime_mismatches(entries, mime_check_max)
-        if data["mime_mismatches"]:
-            flags.add("mime_mismatch")
-
-        data["embedded_executables"] = hash_embedded_executables(entries)
-        if data["embedded_executables"]:
-            flags.add("embedded_pe")
-
-    if data["zip_header_mismatch"]:
-        flags.add("zip_header_mismatch")
-    if meta.header_encrypted:
-        flags.add("header_encrypted")
-    if any(e.is_encrypted for e in entries):
-        data["encryption"]["is_encrypted"] = True
-        flags.add("is_encrypted")
-    if bomb["triggered"]:
-        flags.add("bomb_guard")
-    if fmt == "ace":
-        flags.add("ace_detected")
-        data["ace_detected"] = True
-
-    comment_iocs = scan_comments_for_iocs([meta.comment]) if meta.comment else []
-    data["archive_comment_iocs"] = comment_iocs
-    if comment_iocs:
-        flags.add("comment_ioc")
-
-    # Persist normalised entry list for reporters
-    data["entries"] = [entry_to_dict(e) for e in entries]
-
-    # ── Recursion ──────────────────────────────────────────────────────────
-    nested_results: list[dict] = []
-    if depth + 1 <= max_depth and extracted:
-        nested_results = _recurse_into_inner_archives(
+        bomb = evaluate_bomb_guard(
             entries=entries,
-            config=config,
-            depth=depth + 1,
+            container_size=container_size,
+            ratio_threshold=ratio_threshold,
+            size_threshold_bytes=extract_budget,
+            count_threshold=count_threshold,
         )
-        if nested_results:
-            flags.add("nested_archive")
-            for child in nested_results:
-                child_data = (child.get("data") or {})
-                for f in child_data.get("indicator_flags", []) or []:
-                    flags.add(f)
-    data["nested"] = nested_results
-    data["recursion_depth_reached"] = depth >= max_depth
+        data["bomb_guard"] = bomb
 
-    # ── Score ──────────────────────────────────────────────────────────────
-    score_delta, reason, fired, classification = score_archive(flags)
-    data["indicator_flags"] = sorted(flags)
-    data["classification"] = classification
-    data["fired_rules"] = fired
+        # Single-stream formats already wrote their payload during
+        # enumeration and own a directory; reassigning here would orphan it.
+        #
+        # `not bomb["triggered"]` is load-bearing. gz/bz2/xz have no member
+        # listing, so the payload necessarily lands on disk before the guard
+        # can run — but once the guard trips, nothing downstream may touch
+        # it. `extracted` gates the MIME check, the embedded-PE hashing and,
+        # above all, the recursion, so treating a bomb as extracted would
+        # hand a decompression bomb straight to the recursive descent.
+        extracted = (
+            fmt in _SINGLE_STREAM_FORMATS
+            and bool(entries)
+            and not bomb["triggered"]
+        )
+        if entries and not bomb["triggered"] and fmt != "ace":
+            if tmp_dir is None:
+                tmp_dir = Path(tempfile.mkdtemp(prefix="archive_extract_"))
+            try:
+                _dispatch_extract(file_path, fmt, entries, tmp_dir, extract_budget)
+                extracted = True
+            except Exception as exc:  # noqa: BLE001
+                meta.handler_errors.append({"stage": "extract", "error": str(exc)})
 
-    # Tempdir cleanup
-    if tmp_dir is not None:
-        try:
+        # Snapshot handler errors only now. list() copies, so taking it
+        # before extraction detached it from meta.handler_errors and every
+        # failure appended by the extract block above was dropped before the
+        # caller saw it — extraction failures reported as a clean scan.
+        data["errors"] = list(meta.handler_errors)
+
+        # Cross-format indicators (always run, even without extraction)
+        flags: set[str] = set()
+        data["path_traversal"] = detect_path_traversal(entries)
+        if data["path_traversal"]:
+            flags.add("path_traversal")
+
+        data["symlink_attack"] = detect_symlink_attacks(entries)
+        if data["symlink_attack"]:
+            flags.add("symlink_attack")
+
+        data["dangerous_members"] = detect_dangerous_members(entries)
+        if data["dangerous_members"]:
+            flags.add("dangerous_member")
+
+        data["double_extension"] = detect_double_extension(entries)
+        if data["double_extension"]:
+            flags.add("double_extension")
+
+        data["rtlo_filenames"] = detect_rtlo_filenames(entries)
+        if data["rtlo_filenames"]:
+            flags.add("rtlo_filename")
+
+        data["null_byte_filenames"] = detect_null_byte_filenames(entries)
+        if data["null_byte_filenames"]:
+            flags.add("null_byte_filename")
+
+        data["high_entropy_filenames"] = detect_high_entropy_filenames(entries)
+        if data["high_entropy_filenames"]:
+            flags.add("high_entropy_filename")
+
+        data["persistence_paths"] = detect_persistence_paths(entries)
+        if data["persistence_paths"]:
+            flags.add("persistence_path")
+
+        autorun, desktop_ini = detect_autorun_desktop(entries)
+        data["autorun_inf"] = autorun
+        data["desktop_ini"] = desktop_ini
+        if autorun:
+            flags.add("autorun_inf")
+        if desktop_ini:
+            flags.add("desktop_ini")
+
+        data["timestamp_anomaly"] = detect_timestamp_anomaly(entries)
+        if data["timestamp_anomaly"]["triggered"]:
+            flags.add("timestamp_anomaly")
+
+        if extracted:
+            data["mime_mismatches"] = detect_mime_mismatches(entries, mime_check_max)
+            if data["mime_mismatches"]:
+                flags.add("mime_mismatch")
+
+            data["embedded_executables"] = hash_embedded_executables(entries)
+            if data["embedded_executables"]:
+                flags.add("embedded_pe")
+
+        if data["zip_header_mismatch"]:
+            flags.add("zip_header_mismatch")
+        if meta.header_encrypted:
+            flags.add("header_encrypted")
+        if any(e.is_encrypted for e in entries):
+            data["encryption"]["is_encrypted"] = True
+            flags.add("is_encrypted")
+        if bomb["triggered"]:
+            flags.add("bomb_guard")
+        if fmt == "ace":
+            flags.add("ace_detected")
+            data["ace_detected"] = True
+
+        comment_iocs = scan_comments_for_iocs([meta.comment]) if meta.comment else []
+        data["archive_comment_iocs"] = comment_iocs
+        if comment_iocs:
+            flags.add("comment_ioc")
+
+        # Persist normalised entry list for reporters
+        data["entries"] = [entry_to_dict(e) for e in entries]
+
+        # ── Recursion ──────────────────────────────────────────────────────────
+        nested_results: list[dict] = []
+        if depth + 1 <= max_depth and extracted:
+            nested_results = _recurse_into_inner_archives(
+                entries=entries,
+                config=config,
+                depth=depth + 1,
+            )
+            if nested_results:
+                flags.add("nested_archive")
+                for child in nested_results:
+                    child_data = (child.get("data") or {})
+                    for f in child_data.get("indicator_flags", []) or []:
+                        flags.add(f)
+        data["nested"] = nested_results
+        data["recursion_depth_reached"] = depth >= max_depth
+
+        # ── Score ──────────────────────────────────────────────────────────────
+        score_delta, reason, fired, classification = score_archive(flags)
+        data["indicator_flags"] = sorted(flags)
+        data["classification"] = classification
+        data["fired_rules"] = fired
+
+        return {
+            "module": "archive_analysis",
+            "status": "success",
+            "data": data,
+            "score_delta": score_delta,
+            "reason": reason,
+        }
+    finally:
+        if tmp_dir is not None:
             shutil.rmtree(tmp_dir, ignore_errors=True)
-        except OSError:
-            pass
-
-    return {
-        "module": "archive_analysis",
-        "status": "success",
-        "data": data,
-        "score_delta": score_delta,
-        "reason": reason,
-    }
 
 
 # ---------------------------------------------------------------------------
 # Dispatch helpers
 # ---------------------------------------------------------------------------
 
+_SINGLE_STREAM_FORMATS = ("gz", "bz2", "xz")
+
+
 def _dispatch_enumerate(
-    file_path: Path, fmt: str | None,
+    file_path: Path, fmt: str | None, tmp_dir: Path | None = None,
 ) -> tuple[list[ArchiveEntry], ContainerMeta]:
+    """Route to the format's enumerator and return its normalised listing.
+
+    Args:
+        file_path: The container to enumerate.
+        fmt:       Detected format key, or None when detection failed.
+        tmp_dir:   Scratch directory owned by the caller. Only the
+                   single-stream formats use it — they have no member
+                   listing to read, so the inner payload must be
+                   decompressed to disk before there is anything to
+                   describe.
+
+    Returns:
+        ``(entries, meta)``. An unrecognised format yields an empty listing
+        rather than raising, so the caller's scoring path is uniform.
+    """
     if fmt == "zip":
         return enumerate_zip(file_path)
     if fmt == "rar":
@@ -334,10 +377,12 @@ def _dispatch_enumerate(
         return enumerate_7z(file_path)
     if fmt == "tar":
         return enumerate_tar(file_path)
-    if fmt in ("gz", "bz2", "xz"):
-        # Single-stream — we need a tmp_dir for the inner payload
-        tmp = Path(tempfile.mkdtemp(prefix="single_stream_"))
-        return enumerate_single_stream(file_path, fmt, tmp)
+    if fmt in _SINGLE_STREAM_FORMATS:
+        # The scratch directory is the caller's: this function used to mint
+        # its own with mkdtemp and return only the entries, so the path was
+        # unreachable and nothing ever removed it. Every .gz/.bz2/.xz scan
+        # left the decompressed payload — live malware — in /tmp.
+        return enumerate_single_stream(file_path, fmt, tmp_dir)
     if fmt == "cab":
         return enumerate_cab(file_path)
     if fmt == "iso":
