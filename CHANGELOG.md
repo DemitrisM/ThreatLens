@@ -8,12 +8,155 @@ Everything before it is a step toward that.
 | Version | What it takes |
 |---|---|
 | 0.5.0 | Defect sweep, full test coverage, commenting standard |
-| 0.5.1 | *(current)* Comment passes 4 and 5, eleven defects fixed, three document evasion paths closed |
+| 0.5.1 | Comment passes 4 and 5, eleven defects fixed, three document evasion paths closed |
+| 0.5.2 | *(current)* The archive_analysis defect sweep — twelve fixes, four archive evasion paths closed, the 227s intake stall |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.2 — 2026-09-20
+
+Reading `archive_analysis` for the commenting pass surfaced twelve defects
+before a line of documentation was written. Several were exploitable. Each was
+fixed test-first in its own commit and cleared the Gemini review gate.
+
+### Fixed — `file_intake`
+
+- **A 30 MB archive spent 227.4s in `file_intake`** while every analysis module
+  in the same scan finished in 0.3s. Profiling put 226.8s of that (99.7%) in
+  `ppdeep._spamsum` across 345M `next()` calls. The pure-Python ssdeep fallback
+  — the one that lets ThreatLens install without a compiler — had no size guard
+  at all. Measured across the 27-sample RAR corpus it costs a flat 0.78 s/MB,
+  rising to 4.4 s/MB on input that makes ssdeep halve its blocksize and rescan,
+  so cost was unbounded in file size.
+
+  Now capped at 8 MiB (`max_ppdeep_size_mb`) for the pure-Python backend only;
+  the C extension is roughly two orders of magnitude faster and stays uncapped.
+  Past the ceiling the fuzzy hash is `null` and a warning names the file, its
+  size and the remedy — MD5, SHA256 and TLSH are untouched. **227.4s → 0.53s.**
+
+  This corrects the known issue recorded as a suspected loop in the RAR5
+  raw-header walker. That walker is sound: it does the same sample in 0.296s
+  and is bounded by an iteration guard. The stall reproduced on any
+  sufficiently large file regardless of format, so `Gh0stRAT.rar` and
+  `LummaStealer.rar` at ~20 MB were paying it too.
+
+- An explicit `max_ppdeep_size_mb: null` crashed on `float(None)` and took the
+  pipeline with it. Unusable values now fall back with a warning.
+- The uncapped C path still read whole files via `read_bytes()`. Nothing bounds
+  its input and an OOM `SIGKILL` cannot be caught, so it prefers
+  `hash_from_file` where the backend provides it.
+
+### Fixed — `archive_analysis` detection
+
+- **Seven of seventeen persistence-path markers could never match.** Every
+  Windows form was written as a raw string ending in `\\` — two literal
+  backslash characters — while `detect_persistence_paths` collapsed doubled
+  separators to single, so a real member path never contained one. The
+  indicator was blind to `appdata\roaming`, `appdata\local`, `startup`,
+  `start menu\programs\startup`, `system32`, `syswow64` and `temp` — the
+  normal shape for a Windows-authored archive, and the exact shape of the
+  CVE-2025-8088 Startup drop, whose entire payload is
+  `..\..\AppData\Roaming\...\Startup\Updater.exe` hidden in an NTFS ADS
+  suffix. That sample now reports its Startup path for the first time.
+
+  The matcher canonicalises separator runs rather than replacing them, which
+  closed a second hole: `appdata//roaming/x.exe` survived a sequential replace
+  and failed the substring match, while Windows canonicalises the redundant
+  separator away and drops the file exactly where the marker says. Padding a
+  separator was a one-character evasion primitive.
+
+- **Archive comments bypassed every false-positive filter.**
+  `scan_comments_for_iocs` ran `ioc_extractor`'s regexes without
+  `_filter_fps`, so the 210-entry TLD allow-list and the non-routable-address
+  filter never applied. A benign comment reading "see readme.txt and setup.exe"
+  produced two "domains", set `comment_ioc` and scored +3; private, loopback
+  and RFC 5737 documentation addresses were reported as external IOCs.
+
+- **Duplicate member names hid payloads from extraction.** A member's name is
+  attacker-controlled and is not unique, and every archive library resolves a
+  name to exactly one record — so extracting by name read that record once per
+  duplicate and never opened its siblings. A ZIP with two `payload.bin` records
+  yielded the same bytes twice; so did a tar. Members are now addressed by
+  `ArchiveEntry.member_index` in ZIP, RAR and TAR.
+
+  7z, CAB and ISO cannot work that way: the first two are unpacked wholesale
+  by an external tool that writes one duplicate over the other before
+  ThreatLens sees the disk, and ISO's `pycdlib` exposes no index-based read,
+  so a repeated path resolves to one record and its sibling is unreachable.
+  The ISO extractor instead claims each source path once, leaving the
+  shadowed member unmapped rather than extracting the same record twice. Those bytes are
+  genuinely unrecoverable, so they are now reported —
+  `duplicate_member_name` (+3) and `shadowed_member_unrecoverable` (+5) — and
+  the mapper refuses to let two entries claim one file, so an overwritten
+  member is never counted as analysed.
+
+  Collisions are counted over every spelling a member could be written under,
+  not the raw string: `a.exe`, `./a.exe`, `C:\a.exe` and `nested/../a.exe` are
+  one destination. A shared *basename* across two directories is deliberately
+  not a collision — measured, `py7zr.extractall` preserves the directory tree,
+  so `dir1/style.css` and `dir2/style.css` both survive and counting that would
+  score +8 MALICIOUS across a large benign population.
+
+### Fixed — `archive_analysis` safety
+
+- **Every `.gz`/`.bz2`/`.xz` scan leaked its decompressed payload.**
+  `_dispatch_enumerate` created its own `mkdtemp` and returned only the
+  entries, so the path was unreachable and nothing ever removed it — live
+  malware accumulating in `/tmp` across a triage run. The orchestrator now owns
+  the scratch directory outright and cleans it in a `finally`.
+
+- **A `tar.gz` bomb was inflated in full before the guard saw it.** The
+  documented guarantee "the bomb guard runs before extraction" holds only for
+  formats with a central directory. TAR has no index, so `getmembers()`
+  discovers members by walking the stream — for a compressed tarball, by
+  decompressing all of it. A 597 KiB file expanding to 600 MiB took 2.65s to
+  enumerate, all of it spent on a payload nothing had approved.
+  `enumerate_tar` now iterates, so a member declaring more than the whole-tree
+  budget is rejected on its declared size and its payload is never inflated.
+  **2.65s → 0.00s.**
+
+- Refusing a traversing member name outright orphaned the payload the extractor
+  had safely written — prefixing `../` was a way to skip 7z and CAB analysis
+  entirely.
+- The path mapper attributed surviving bytes to the record they overwrote, and
+  a fallback spelling could outrank another member's primary one. Claiming now
+  runs in two passes, reverse order within each.
+- Drive letters defeated collision detection: `C:\malware.exe` and
+  `malware.exe` land on one file but never matched. The mapper and the
+  indicator now share one canonicalisation, `entries.member_destinations` —
+  they were separate implementations and drifted four times during review, and
+  every drift was a hole.
+- `extract_tar_members_to_temp` walked the stream to the end, re-inflating the
+  bomb the enumeration guard had just refused; and `list(tf)` discarded every
+  member recovered before a truncation.
+- `rarfile` handle leaked whenever `infolist()` failed before the `with` block.
+- `RuntimeError` from `Path.resolve()` on a planted symlink loop went uncaught.
+- Extraction errors never reached the report: `data["errors"]` snapshotted
+  `meta.handler_errors` before extraction ran, and `list()` copies.
+
+### Changed
+
+- Five `len(list(tmp_dir.iterdir()))` counters replaced with a monotonic index.
+  The temp directory was relisted once per member, making naming O(n²).
+- New config key `max_ppdeep_size_mb` (default 8), documented in
+  `docs/usage.md`.
+- New scoring rules `duplicate_member_name` and
+  `shadowed_member_unrecoverable`, documented in `docs/scoring.md`.
+
+### Known
+
+- Nested damping is documented in CLAUDE.md and prepared for in
+  `core/scoring.py` — `_clamp` accepts a float precisely for it — but nothing
+  produces a damped value. `_analyse_archive` merges a nested child's flags and
+  discards its `score_delta`. Deferred to the end-of-project calibration sweep,
+  since wiring it moves every nested archive's score.
+
+### Tests
+
+698 → 811. Four new archive files plus `test_file_intake.py`.
 
 ## 0.5.1 — 2026-09-10
 
