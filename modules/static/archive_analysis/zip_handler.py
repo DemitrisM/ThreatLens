@@ -41,8 +41,10 @@ def enumerate_zip(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
                 comment = ""
             meta.comment = comment
 
-            for info in zf.infolist():
-                entries.append(_to_entry(info))
+            for idx, info in enumerate(zf.infolist()):
+                entry = _to_entry(info)
+                entry.member_index = idx
+                entries.append(entry)
     except zipfile.BadZipFile as exc:
         meta.handler_errors.append({"stage": "enumerate_zip", "error": f"BadZipFile: {exc}"})
     except OSError as exc:
@@ -190,6 +192,26 @@ def _parse_lfh_at(data: bytes, offset: int) -> dict | None:
     }
 
 
+def _locate(entry: ArchiveEntry, infos: list) -> object | None:
+    """Return the library record this entry describes, or None.
+
+    Args:
+        entry: The normalised member, carrying ``member_index``.
+        infos: The container's record list, in its own order.
+
+    Returns:
+        The record at ``entry.member_index``, or None when the index is
+        absent or out of range. Falling back to a name lookup here would
+        reintroduce exactly the duplicate-name confusion the index exists
+        to prevent, so an unusable index skips the member instead.
+    """
+    idx = entry.member_index
+    if idx is None or not (0 <= idx < len(infos)):
+        logger.debug("no usable member_index for %s — skipping", entry.name)
+        return None
+    return infos[idx]
+
+
 # ---------------------------------------------------------------------------
 # Bounded extraction
 # ---------------------------------------------------------------------------
@@ -212,20 +234,44 @@ def extract_members_to_temp(
         return
 
     with zf:
+        # Members are addressed by ZipInfo, not by name. A name is not
+        # unique — zipfile maps one to the *last* matching record — so
+        # zf.open(e.name) read that record once per duplicate and never
+        # opened the others. A pair of members sharing a name meant the
+        # first was never examined at all: a free way to hide a payload
+        # from a scanner that extracts by name.
+        #
+        # _locate resolves the record from the index the enumerator stored
+        # on the entry. Pairing positionally with zip() instead would
+        # misalign silently the moment `entries` is filtered or reordered,
+        # because zip() pairs entries[0] with infos[0] whether or not they
+        # describe the same member — one dropped record shifts every
+        # mapping after it, and the scanner then reads the wrong bytes
+        # under the right name. Raised by Gemini.
+        infos = zf.infolist()
+
+        # Monotonic counter rather than len(list(tmp_dir.iterdir())): the
+        # directory listing was re-read once per member, making naming
+        # O(n^2) in member count for no benefit.
+        index = 0
         for e in entries:
             if e.is_encrypted or e.is_symlink:
+                continue
+            info = _locate(e, infos)
+            if info is None:
                 continue
             if e.size_uncompressed <= 0 or e.size_uncompressed > 50 * 1024 * 1024:
                 continue
             if written + e.size_uncompressed > max_total_bytes:
                 break
-            safe_name = f"m_{len(list(tmp_dir.iterdir())):04d}_{Path(e.name).name[:80]}"
+            safe_name = f"m_{index:04d}_{Path(e.name).name[:80]}"
             out_path = tmp_dir / safe_name
             try:
-                with zf.open(e.name) as src, out_path.open("wb") as dst:
+                with zf.open(info) as src, out_path.open("wb") as dst:
                     dst.write(src.read())
             except (RuntimeError, zipfile.BadZipFile, OSError, NotImplementedError) as exc:
                 logger.debug("zip extract skipped for %s: %s", e.name, exc)
                 continue
             e.extracted_path = str(out_path)
             written += e.size_uncompressed
+            index += 1
