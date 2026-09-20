@@ -57,26 +57,35 @@ _RTLO_CHARS = {
     "\u2067",  # RIGHT-TO-LEFT ISOLATE
 }
 
-# Persistence-path substrings (case-insensitive).
+# Persistence-path substrings, matched case-insensitively against a member
+# name whose separators have been normalised to forward slashes.
+#
+# They are written in POSIX form on purpose. Archive members use either
+# separator — a RAR built on Windows stores backslashes, a tar stores forward
+# slashes, and the CVE-2025-8088 ADS suffix stores backslashes — so the
+# matcher normalises once and the table is written one way. The previous
+# table carried both forms and the backslash half was unreachable: those
+# entries were raw strings ending in `\\`, which is two literal backslash
+# characters, while a real member path has one. Every Windows form was
+# therefore dead. `test_every_persistence_marker_is_reachable` now proves
+# each entry can fire.
 _PERSISTENCE_PATH_MARKERS: tuple[str, ...] = (
-    r"\appdata\roaming\\",
-    r"\appdata\local\\",
-    r"\startup\\",
-    r"\start menu\programs\startup\\",
-    r"\system32\\",
-    r"\syswow64\\",
-    r"\temp\\",
-    r"%appdata%",
-    r"%temp%",
-    r"%systemroot%",
-    r"appdata/roaming/",
-    r"appdata/local/",
-    r"/startup/",
-    r"start menu/programs/startup/",
-    r"system32/",
-    r"syswow64/",
-    r"/temp/",
+    "appdata/roaming/",
+    "appdata/local/",
+    "/startup/",
+    "start menu/programs/startup/",
+    "system32/",
+    "syswow64/",
+    "/temp/",
+    "%appdata%",
+    "%temp%",
+    "%systemroot%",
 )
+
+
+# Any run of one or more separators, of either kind. Used to canonicalise a
+# member name before marker matching — see detect_persistence_paths.
+_SEPARATOR_RUN_RE = re.compile(r"[\\/]+")
 
 
 # ---------------------------------------------------------------------------
@@ -165,12 +174,32 @@ def detect_null_byte_filenames(entries: list[ArchiveEntry]) -> list[str]:
 
 
 def detect_persistence_paths(entries: list[ArchiveEntry]) -> list[str]:
+    """Return members whose path targets a known persistence location.
+
+    Both the sanitised ``name`` and the handler-recovered ``raw_name`` are
+    inspected, because the CVE-2025-8088 Startup drop lives entirely in the
+    NTFS ADS suffix that ``rarfile`` strips from ``name``.
+
+    Args:
+        entries: Normalised archive members.
+
+    Returns:
+        The matching path strings, at most one per entry — whichever of the
+        two candidates matched first. Empty when nothing matches.
+    """
     out: list[str] = []
     for e in entries:
         for candidate in (e.name, e.raw_name):
             if not candidate:
                 continue
-            normalised = candidate.lower().replace("\\\\", "\\")
+            # Collapse every run of separators, of either kind, to a
+            # single forward slash. Sequential replaces are not enough:
+            # `appdata//roaming/x.exe` and `appdata\\\\\\roaming\\x.exe`
+            # both survive them and then fail the substring match, while
+            # Windows canonicalises the redundant separators away and drops
+            # the file exactly where the marker says. That made padding a
+            # separator a one-character evasion primitive.
+            normalised = _SEPARATOR_RUN_RE.sub("/", candidate.lower())
             if any(marker in normalised for marker in _PERSISTENCE_PATH_MARKERS):
                 out.append(candidate)
                 break
@@ -339,17 +368,45 @@ def detect_mime_mismatches(entries: list[ArchiveEntry], max_bytes: int) -> list[
 # ---------------------------------------------------------------------------
 
 def scan_comments_for_iocs(comment_blobs: list[str]) -> list[str]:
-    """Feed archive-comment text into ioc_extractor's regex set."""
+    """Feed archive-comment text through ioc_extractor's full pipeline.
+
+    Both halves of that pipeline are needed, not just the regexes. The raw
+    domain pattern matches anything shaped ``word.word``, so a comment
+    reading "see readme.txt and setup.exe" yields two "domains" and sets the
+    ``comment_ioc`` flag for +3 — a benign WinRAR comment scoring as an
+    indicator. ``_filter_fps`` is what knows ``.txt`` is not a TLD and that
+    192.168.0.0/16 is not a C2, so it is applied here exactly as
+    ``ioc_extractor.run()`` applies it.
+
+    Args:
+        comment_blobs: Container comment strings; empty entries are ignored.
+
+    Returns:
+        Sorted surviving IOC strings across the reported categories. Empty
+        when nothing survives, or when ``ioc_extractor`` cannot be imported.
+    """
     if not comment_blobs:
         return []
     try:
-        from modules.static.ioc_extractor import _IOC_PATTERNS  # noqa: PLC0415
+        from modules.static import ioc_extractor  # noqa: PLC0415
     except ImportError:
+        # A genuinely absent module is a graceful skip (design rule 2).
+        logger.debug("ioc_extractor unavailable — comment IOC scan skipped")
         return []
+
+    # Resolved by attribute rather than by `from ... import name`, so a
+    # renamed or deleted helper raises AttributeError here instead of being
+    # swallowed by the ImportError arm above. Every negative test in this
+    # area asserts an empty list, so a silently-empty result would look
+    # exactly like correct filtering — the failure has to be loud.
+    patterns = ioc_extractor._IOC_PATTERNS
+    filter_fps = ioc_extractor._filter_fps
 
     found: set[str] = set()
     blob = "\n".join(b for b in comment_blobs if b)
-    for ioc_type, pattern in _IOC_PATTERNS.items():
+    for ioc_type, pattern in patterns.items():
+        # windows_path is deliberately absent: an archive comment naming a
+        # local build path is noise, not an indicator.
         if ioc_type in ("ipv4", "url", "domain", "email", "registry_key"):
-            found.update(pattern.findall(blob))
+            found.update(filter_fps(ioc_type, set(pattern.findall(blob))))
     return sorted(found)
