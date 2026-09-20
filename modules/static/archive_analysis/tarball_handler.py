@@ -24,13 +24,85 @@ logger = logging.getLogger(__name__)
 _INNER_STREAM_CAP = 64 * 1024 * 1024  # 64 MiB peek for single-stream gz/bz2/xz
 
 
-def enumerate_tar(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
+_DEFAULT_EXTRACT_BUDGET_MB = 500
+_DEFAULT_MEMBER_COUNT_THRESHOLD = 1000
+
+
+def enumerate_tar(
+    file_path: Path, config: dict | None = None,
+) -> tuple[list[ArchiveEntry], ContainerMeta]:
+    """List a tarball's members, abandoning the walk if it turns hostile.
+
+    Args:
+        file_path: The tarball, compressed or not.
+        config:    Pipeline configuration. Reads
+                   ``max_archive_extracted_size_mb`` and
+                   ``archive_bomb_member_count_threshold``; ``None`` uses
+                   the same defaults as the orchestrator.
+
+    Returns:
+        ``(entries, meta)``. A walk cut short still returns everything read
+        up to that point, with the reason recorded in
+        ``meta.handler_errors`` so the orchestrator can flag it.
+
+    Design notes:
+        The module-level guarantee "the bomb guard runs before extraction"
+        does not hold for TAR, and cannot. Formats with a central directory
+        publish their member list as metadata, so the guard reads it for
+        free. A tarball has no such index: the members are discovered by
+        walking the stream, and for a compressed tarball that means
+        inflating it. ``getmembers()`` therefore inflated the *entire*
+        archive before the guard had seen a single number — a tar.gz of
+        zeroes costs kilobytes on disk and gigabytes to enumerate.
+
+        Iterating instead of calling ``getmembers()`` is what makes the
+        bound possible: each header arrives before the payload behind it,
+        so a member that declares more than the whole-tree budget is
+        rejected on its declared size without that payload ever being
+        inflated. The declared size is attacker-controlled, but it is
+        controlled in the safe direction here — understating it only
+        shrinks what the attacker gets past the guard, and the cumulative
+        counter still closes over the sum.
+    """
+    cfg = config or {}
+    budget = int(cfg.get(
+        "max_archive_extracted_size_mb", _DEFAULT_EXTRACT_BUDGET_MB,
+    )) * 1024 * 1024
+    max_members = int(cfg.get(
+        "archive_bomb_member_count_threshold", _DEFAULT_MEMBER_COUNT_THRESHOLD,
+    ))
+
     meta = ContainerMeta(detected_format="tar")
     entries: list[ArchiveEntry] = []
+    declared_total = 0
+
     try:
         with tarfile.open(file_path, mode="r:*") as tf:
-            for member in tf.getmembers():
+            for member in tf:
                 entries.append(_to_entry(member))
+                declared_total += max(0, member.size or 0)
+
+                if declared_total > budget:
+                    meta.handler_errors.append({
+                        "stage": "enumerate_tar",
+                        "error": (
+                            f"BOMB_BUDGET: declared member sizes reached "
+                            f"{declared_total} bytes, over the "
+                            f"{budget} byte whole-tree budget — walk abandoned "
+                            f"after {len(entries)} members"
+                        ),
+                    })
+                    break
+
+                if len(entries) > max_members:
+                    meta.handler_errors.append({
+                        "stage": "enumerate_tar",
+                        "error": (
+                            f"BOMB_COUNT: member count passed the "
+                            f"{max_members} threshold — walk abandoned"
+                        ),
+                    })
+                    break
     except (tarfile.TarError, OSError, EOFError) as exc:
         meta.handler_errors.append({"stage": "enumerate_tar", "error": f"{type(exc).__name__}: {exc}"})
     return entries, meta

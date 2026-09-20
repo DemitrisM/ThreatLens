@@ -187,7 +187,7 @@ def _analyse_archive(file_path: Path, config: dict, depth: int) -> dict:
         tmp_dir = Path(tempfile.mkdtemp(prefix="single_stream_"))
 
     try:
-        entries, meta = _dispatch_enumerate(file_path, fmt, tmp_dir)
+        entries, meta = _dispatch_enumerate(file_path, fmt, tmp_dir, config)
         data = _empty_data()
         data["detected_format"] = fmt
         data["entry_count"] = len(entries)
@@ -352,7 +352,10 @@ _SINGLE_STREAM_FORMATS = ("gz", "bz2", "xz")
 
 
 def _dispatch_enumerate(
-    file_path: Path, fmt: str | None, tmp_dir: Path | None = None,
+    file_path: Path,
+    fmt: str | None,
+    tmp_dir: Path | None = None,
+    config: dict | None = None,
 ) -> tuple[list[ArchiveEntry], ContainerMeta]:
     """Route to the format's enumerator and return its normalised listing.
 
@@ -364,6 +367,8 @@ def _dispatch_enumerate(
                    listing to read, so the inner payload must be
                    decompressed to disk before there is anything to
                    describe.
+        config:    Pipeline configuration. Only the TAR walker reads it,
+                   to bound enumeration on an archive with no index.
 
     Returns:
         ``(entries, meta)``. An unrecognised format yields an empty listing
@@ -376,7 +381,7 @@ def _dispatch_enumerate(
     if fmt == "7z":
         return enumerate_7z(file_path)
     if fmt == "tar":
-        return enumerate_tar(file_path)
+        return enumerate_tar(file_path, config)
     if fmt in _SINGLE_STREAM_FORMATS:
         # The scratch directory is the caller's: this function used to mint
         # its own with mkdtemp and return only the entries, so the path was
