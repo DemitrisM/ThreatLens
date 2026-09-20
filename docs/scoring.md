@@ -366,6 +366,20 @@ flag strings, weights, one row per rule). Flag strings are produced by
 `rar_raw_headers`. The weights below are initial calibration values;
 finalised at end of project.
 
+`duplicate_member_name` fires when two members resolve to the same
+destination on disk — counted over every spelling an extractor might write
+(`a.exe`, `./a.exe`, `C:\a.exe`, `nested/../a.exe` are one destination), not
+over the raw strings. A shared *basename* across two directories is
+deliberately not a collision: `py7zr.extractall` preserves the directory
+tree, so `dir1/style.css` and `dir2/style.css` both survive, and counting
+that would fire across a large benign population.
+
+`shadowed_member_unrecoverable` adds to it for 7z, CAB and ISO. Those are
+unpacked wholesale by an external tool — or, for ISO, addressed by path with
+no index-based read — so the shadowed member's bytes are gone before
+ThreatLens looks. ZIP, RAR and TAR address members by index and recover both,
+which is why they score the lower rule alone.
+
 | Required flags (frozenset) | Weight | Reason |
 |---|---|---|
 | `zip_header_mismatch` | +10 | LFH/CD disagree — AV evasion trick |
@@ -380,9 +394,11 @@ finalised at end of project.
 | `persistence_path` + `dangerous_member` | +5 | Startup-folder drop |
 | `double_extension` | +5 | `photo.jpg.exe` class |
 | `mime_mismatch` | +5 | Declared-type / libmagic-type disagreement |
+| `shadowed_member_unrecoverable` | +5 | Member hidden behind a duplicate name, bytes unrecoverable |
 | `is_encrypted` + `dangerous_member` | +4 | Password-protected with risky name |
 | `bomb_guard` | +4 | Ratio / size / count threshold tripped |
 | `ace_detected` | +4 | ACE archive (CVE-2018-20250 class) |
+| `duplicate_member_name` | +3 | One member's name shadows another's |
 | `comment_ioc` | +3 | IP / URL in archive comment |
 | `high_entropy_filename` + `dangerous_member` | +3 | High-entropy name + risky ext |
 | `dangerous_member` (alone) | +3 | `.exe` / `.lnk` / `.hta` etc. inside archive |
