@@ -109,6 +109,12 @@ DEFAULTS = {
     "max_onenote_blobs": 200,
     "onenote_full_recursion": False,
     "max_onenote_recursion_depth": 2,
+    # file_intake tuning. Ceiling for the pure-Python ppdeep fallback
+    # only; the C ssdeep extension is ~100x faster and stays uncapped.
+    # Past this size the fuzzy hash is skipped with a warning rather than
+    # stalling the scan — ppdeep costs 0.78-4.4 s/MB depending on how
+    # often ssdeep has to halve its blocksize and rescan.
+    "max_ppdeep_size_mb": 8,
     # lnk_analysis tuning. The size cap is deliberately tight — a shell
     # link past a few hundred KiB is carrying a payload, and the overlay
     # carve records it without parsing megabytes.

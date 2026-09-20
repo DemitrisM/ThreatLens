@@ -53,16 +53,24 @@ try:
     import ssdeep
 
     _HAS_SSDEEP = True
+    _SSDEEP_IS_PURE_PYTHON = False
 except ImportError:
     # ppdeep is a pure-Python reimplementation with the same hash() API.
     # It is slower but needs no C extension, which is what makes the tool
     # installable on a locked-down lab machine.
+    #
+    # Which backend loaded is not a detail: the C extension hashes a 30 MB
+    # sample in well under a second, while ppdeep took a measured 131 s on
+    # the same bytes. The size cap in _compute_hashes therefore applies to
+    # this branch only, so a machine with the C extension loses nothing.
     try:
         import ppdeep as ssdeep  # Pure-python fallback
 
         _HAS_SSDEEP = True
+        _SSDEEP_IS_PURE_PYTHON = True
     except ImportError:
         _HAS_SSDEEP = False
+        _SSDEEP_IS_PURE_PYTHON = False
         logger.warning("ssdeep/ppdeep not available — ssdeep fuzzy hashing disabled")
 
 
@@ -70,13 +78,24 @@ except ImportError:
 # small enough that a multi-gigabyte sample never lands in memory.
 _BUF_SIZE = 65536  # 64 KiB read chunks for hashing
 
+# Size ceiling for the pure-Python ssdeep fallback, in MiB. Measured on the
+# RAR corpus, ppdeep costs a flat 0.78 s/MB, rising to 4.4 s/MB on input
+# that makes ssdeep halve its blocksize and rescan. At that worst rate 8 MiB
+# is roughly 35 s, which fits inside the project's own 60 s
+# module_timeout_seconds budget with room to spare; 16 MiB would not.
+# Mirrored in config_loader.DEFAULTS so the no-config path matches.
+_DEFAULT_MAX_PPDEEP_MB = 8
 
-def _compute_hashes(file_path: Path) -> dict:
+
+def _compute_hashes(file_path: Path, config: dict | None = None) -> dict:
     """Compute MD5, SHA256, and (optionally) TLSH and ssdeep hashes.
 
     Args:
         file_path: Path to the file to hash. Must exist and be readable;
                    the caller is responsible for that check.
+        config:    Pipeline configuration. Only ``max_ppdeep_size_mb`` is
+                   read, and only when the pure-Python ssdeep fallback is
+                   the loaded backend. ``None`` means "use the default".
 
     Returns:
         A dict with keys ``md5``, ``sha256``, ``tlsh`` and ``ssdeep``.
@@ -139,16 +158,63 @@ def _compute_hashes(file_path: Path) -> dict:
     # needs the whole file in memory. It is deliberately last and
     # separately guarded: a MemoryError or backend quirk on a huge sample
     # costs only the fuzzy hash, not the MD5/SHA256 already computed.
+    #
+    # The size ceiling applies to the pure-Python fallback only. ppdeep is
+    # linear in file size with a large constant, and unbounded time here
+    # is what made a 30 MB archive take 227 s in a scan whose analysis
+    # modules finished in 0.3 s. The C extension is fast enough that
+    # capping it would discard a usable hash for no gain, so it is exempt.
+    # Skipping is announced at WARNING: an absent fuzzy hash that nobody
+    # explained looks like a file property rather than a budget decision.
     # ------------------------------------------------------------------
     ssdeep_digest = None
     if _HAS_SSDEEP:
+        # .get() returns the stored value whenever the key is present, so an
+        # explicit `max_ppdeep_size_mb: null` in config.yaml arrives here as
+        # None rather than as the default. Anything not coercible to a number
+        # falls back instead of raising: design rule 2 says a config quirk
+        # must not take the pipeline down with it.
+        max_mb = (config or {}).get("max_ppdeep_size_mb", _DEFAULT_MAX_PPDEEP_MB)
         try:
-            # Read file again for ssdeep — avoids holding entire file in
-            # memory during the hash loop above.
-            raw_bytes = file_path.read_bytes()
-            ssdeep_digest = ssdeep.hash(raw_bytes)
-        except Exception:  # noqa: BLE001
-            logger.debug("ssdeep hashing failed")
+            max_bytes = float(max_mb) * 1024 * 1024
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring unusable max_ppdeep_size_mb=%r — falling back to %s MiB",
+                max_mb, _DEFAULT_MAX_PPDEEP_MB,
+            )
+            max_mb = _DEFAULT_MAX_PPDEEP_MB
+            max_bytes = float(_DEFAULT_MAX_PPDEEP_MB) * 1024 * 1024
+
+        over_cap = (
+            _SSDEEP_IS_PURE_PYTHON
+            and file_path.stat().st_size > max_bytes
+        )
+        if over_cap:
+            logger.warning(
+                "ssdeep fuzzy hash skipped for %s — %s exceeds the %s MiB "
+                "pure-Python ppdeep limit. Install the C ssdeep extension "
+                "to hash files this large.",
+                file_path.name,
+                _human_size(file_path.stat().st_size),
+                max_mb,
+            )
+        else:
+            try:
+                # Prefer the backend's own file reader where it has one.
+                # The C extension is exempt from the size cap, so nothing
+                # bounds what it may be handed, and read_bytes() on a
+                # multi-gigabyte sample invites the OOM killer — a SIGKILL
+                # is not catchable, so it would take the pipeline down in
+                # a way design rule 2 cannot defend against. python-ssdeep
+                # exposes hash_from_file; ppdeep does not, and stays on the
+                # in-memory path where the cap already bounds the read.
+                if hasattr(ssdeep, "hash_from_file"):
+                    ssdeep_digest = ssdeep.hash_from_file(str(file_path))
+                else:
+                    raw_bytes = file_path.read_bytes()
+                    ssdeep_digest = ssdeep.hash(raw_bytes)
+            except Exception:  # noqa: BLE001
+                logger.debug("ssdeep hashing failed")
 
     return {
         "md5": md5.hexdigest(),
@@ -213,7 +279,7 @@ def _detect_file_type(file_path: Path) -> dict:
     return {"mime_type": mime_type, "description": description}
 
 
-def run(file_path: Path, _config: dict) -> dict:
+def run(file_path: Path, config: dict) -> dict:
     """Analyse the target file and return intake metadata.
 
     This is the first module in the pipeline. It produces no score_delta
@@ -222,8 +288,8 @@ def run(file_path: Path, _config: dict) -> dict:
 
     Args:
         file_path: Path to the file under analysis.
-        _config:   Pipeline configuration dict (unused by this module,
-                   accepted for interface consistency).
+        config:    Pipeline configuration dict. Only consulted for
+                   ``max_ppdeep_size_mb``, the pure-Python ssdeep ceiling.
 
     Returns:
         Standard module result dict.
@@ -256,7 +322,7 @@ def run(file_path: Path, _config: dict) -> dict:
         # the user scanned via a relative path or a symlink.
         # --------------------------------------------------------------
         file_size = file_path.stat().st_size
-        hashes = _compute_hashes(file_path)
+        hashes = _compute_hashes(file_path, config)
         file_type = _detect_file_type(file_path)
 
         data = {
