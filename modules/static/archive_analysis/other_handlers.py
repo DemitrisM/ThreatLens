@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from .entries import ArchiveEntry, ContainerMeta
+from .sevenzip_handler import _map_extracted_paths
 
 logger = logging.getLogger(__name__)
 
@@ -96,10 +97,10 @@ def extract_cab_members_to_temp(
     except (subprocess.TimeoutExpired, OSError) as exc:
         logger.debug("cabextract extract failed: %s", exc)
         return
-    for e in entries:
-        candidate = tmp_dir / e.name
-        if candidate.is_file() and candidate.stat().st_size <= 50 * 1024 * 1024:
-            e.extracted_path = str(candidate)
+    # Same containment rule as the 7z extractor: cabextract sanitises
+    # traversal on write, so rebuilding the path from the raw member name
+    # would point at something other than the extracted member.
+    _map_extracted_paths(entries, tmp_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -180,15 +181,30 @@ def extract_iso_members_to_temp(
     use_rr = iso.has_rock_ridge()
     written = 0
 
+    # Monotonic counter rather than a directory listing per member — the
+    # old form re-read tmp_dir once per entry, making naming O(n^2).
+    index = 0
+    claimed_sources: set[str] = set()
     try:
         for e in entries:
             if e.size_uncompressed <= 0 or e.size_uncompressed > 50 * 1024 * 1024:
                 continue
             if written + e.size_uncompressed > max_total_bytes:
                 break
-            safe_name = f"m_{len(list(tmp_dir.iterdir())):04d}_{Path(e.name).name[:80]}"
+            safe_name = f"m_{index:04d}_{Path(e.name).name[:80]}"
             out_path = tmp_dir / safe_name
+            # pycdlib addresses records by path — it exposes no index-based
+            # read — so a repeated path resolves to one record and its
+            # sibling is unreachable. That is recorded by the duplicate-name
+            # indicator (iso is in _OVERWRITING_FORMATS) rather than silently
+            # extracting the same record twice under two entries. Raised by
+            # Gemini. Claim each source path once so the shadowed member is
+            # left unmapped instead of being reported as analysed.
             src_path = "/" + e.name.lstrip("/")
+            if src_path in claimed_sources:
+                logger.debug("iso source path already extracted: %s", src_path)
+                continue
+            claimed_sources.add(src_path)
             try:
                 kwargs = {"local_path": str(out_path)}
                 if use_joliet:
@@ -203,6 +219,7 @@ def extract_iso_members_to_temp(
                 continue
             e.extracted_path = str(out_path)
             written += e.size_uncompressed
+            index += 1
     finally:
         try:
             iso.close()

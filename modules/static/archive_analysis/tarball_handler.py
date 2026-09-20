@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from .entries import ArchiveEntry, ContainerMeta
+from .zip_handler import _locate
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,9 @@ def enumerate_tar(
     try:
         with tarfile.open(file_path, mode="r:*") as tf:
             for member in tf:
-                entries.append(_to_entry(member))
+                entry = _to_entry(member)
+                entry.member_index = len(entries)
+                entries.append(entry)
                 declared_total += max(0, member.size or 0)
 
                 if declared_total > budget:
@@ -132,22 +135,66 @@ def extract_tar_members_to_temp(
         tf = tarfile.open(file_path, mode="r:*")
     except (tarfile.TarError, OSError):
         return
+
+    # Members are addressed by TarInfo, not by name. tar permits repeated
+    # names outright — it is an append-only format, so shadowing an earlier
+    # member is the documented way to "replace" a file — and extractfile(name)
+    # resolves to just one of them. Extracting by name therefore read that
+    # member once per duplicate and never opened the rest, so a payload could
+    # hide behind a second record with the same name. Walking the archive in
+    # order and looking each record up by the index the enumerator stored
+    # addresses each exactly once. A positional zip() would misalign
+    # silently if `entries` were ever filtered before reaching here.
+    index = 0
     with tf:
+        # A truncated tarball raises ReadError partway through this walk —
+        # the same corruption enumerate_tar already survives. Two things
+        # matter here, both raised by Gemini: the walk must be guarded at
+        # all (unguarded it escaped and killed the pipeline, which design
+        # rule 2 forbids), and the error must not discard the members found
+        # before the corruption. Returning on the exception abandoned every
+        # recoverable member, while the old per-name code extracted them.
+        # Keeping what was read preserves index alignment too, since
+        # enumerate_tar stops at exactly the same point.
+        # Bounded by the highest index actually requested. Walking to the
+        # end would re-inflate the whole stream and undo the enumeration
+        # guard entirely: enumerate_tar abandons a hostile archive partway
+        # and returns the members it had, so `entries` is short — but the
+        # orchestrator's bomb guard then sees only those few members and
+        # may not trip, letting extraction run. An unbounded walk here
+        # would decompress everything the enumerator refused to.
+        # Raised by Gemini.
+        wanted = [e.member_index for e in entries if e.member_index is not None]
+        last_index = max(wanted) if wanted else -1
+
+        members = []
+        try:
+            for idx, member in enumerate(tf):
+                members.append(member)
+                if idx >= last_index:
+                    break
+        except (tarfile.TarError, OSError) as exc:
+            logger.debug("tar member walk truncated during extract: %s", exc)
         for e in entries:
             if e.is_symlink:
+                continue
+            member = _locate(e, members)
+            if member is None:
                 continue
             if e.size_uncompressed <= 0 or e.size_uncompressed > 50 * 1024 * 1024:
                 continue
             if written + e.size_uncompressed > max_total_bytes:
                 break
             try:
-                src = tf.extractfile(e.name)
+                src = tf.extractfile(member)
                 if src is None:
                     continue
                 data = src.read(e.size_uncompressed)
             except (tarfile.TarError, OSError):
                 continue
-            safe_name = f"m_{len(list(tmp_dir.iterdir())):04d}_{Path(e.name).name[:80]}"
+            # Monotonic counter, not a directory listing per member: the
+            # old form re-read tmp_dir once per entry, making this O(n^2).
+            safe_name = f"m_{index:04d}_{Path(e.name).name[:80]}"
             out_path = tmp_dir / safe_name
             try:
                 out_path.write_bytes(data)
@@ -155,6 +202,7 @@ def extract_tar_members_to_temp(
                 continue
             e.extracted_path = str(out_path)
             written += e.size_uncompressed
+            index += 1
 
 
 # ---------------------------------------------------------------------------
