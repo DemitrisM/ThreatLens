@@ -13,7 +13,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from .entries import ArchiveEntry
+from .entries import ArchiveEntry, member_destinations
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +204,89 @@ def detect_persistence_paths(entries: list[ArchiveEntry]) -> list[str]:
                 out.append(candidate)
                 break
     return out
+
+
+# Container formats where a shadowed member cannot be recovered.
+#
+# 7z and CAB are unpacked wholesale by an external tool, which writes one
+# duplicate-named member over the other before ThreatLens ever sees the disk.
+# ISO is read member-by-member, but pycdlib addresses records by path with no
+# index-based API, so a repeated path resolves to one record and its sibling
+# is unreachable just the same.
+_OVERWRITING_FORMATS: frozenset[str] = frozenset({"7z", "cab", "iso"})
+
+
+def detect_duplicate_member_names(
+    entries: list[ArchiveEntry], fmt: str | None = None,
+) -> list[dict]:
+    """Return members whose name is shared by another record.
+
+    Args:
+        entries: Normalised archive members.
+        fmt:     Detected container format. Decides ``recoverable``: the
+                 formats read member-by-member here recover both records,
+                 the ones unpacked by an external tool do not.
+
+    Returns:
+        One dict per repeated name — ``{"name", "count", "recoverable"}`` —
+        sorted by name. Empty when every name is unique.
+
+    Design notes:
+        A repeated name is not a formatting quirk. Every archive library
+        resolves a name to exactly one record, so a duplicate is a way to
+        show a scanner one file while a different one occupies the same
+        name. ZIP, RAR and TAR are read member-by-member here and address
+        records by index, so both are recovered and ``recoverable`` is True.
+
+        7z and CAB are not. Those formats are unpacked wholesale by an
+        external tool (``py7zr.extractall``, ``cabextract``) which writes
+        one member over the other on disk, so by the time ThreatLens looks
+        only the survivor exists. The hidden bytes are genuinely gone —
+        which is exactly why this has to be reported rather than passed
+        over: a crafted 7z would otherwise come back as fully analysed.
+    """
+    recoverable = fmt not in _OVERWRITING_FORMATS
+
+    # Collisions are counted over every spelling a member could be written
+    # under, not over the raw name. "a.exe", "./a.exe" and "nested/../a.exe"
+    # are three distinct strings that resolve onto the same file, so counting
+    # raw names reported no duplicates at all while one member still
+    # overwrote another — the indicator missed the very case it exists for.
+    # The spellings mirror sevenzip_handler._candidate_paths so the indicator
+    # and the mapper agree on what "the same file" means. Raised by Gemini.
+    by_target: dict[str, set[int]] = {}
+    for i, e in enumerate(entries):
+        # include_basename=False: a shared basename across directories
+        # is ordinary and extractors preserve the tree, so counting it
+        # as a collision would fire across a large benign population.
+        for spelling in member_destinations(e.name):
+            by_target.setdefault(spelling, set()).add(i)
+
+    # One row per colliding group, not per shared spelling. Two members both
+    # named "nested/../a.exe" agree on all three of their spellings, which
+    # would otherwise render as three identical findings in the report. The
+    # group is keyed by the members involved; the shortest spelling is the
+    # canonical destination and the one worth showing. Raised by Gemini.
+    groups: dict[frozenset[int], str] = {}
+    for target, owners in sorted(by_target.items()):
+        if len(owners) < 2:
+            continue
+        key = frozenset(owners)
+        current = groups.get(key)
+        if current is None or (len(target), target) < (len(current), current):
+            groups[key] = target
+
+    return sorted(
+        (
+            {
+                "name": target,
+                "count": len(owners),
+                "recoverable": recoverable,
+            }
+            for owners, target in groups.items()
+        ),
+        key=lambda d: d["name"],
+    )
 
 
 def detect_autorun_desktop(entries: list[ArchiveEntry]) -> tuple[dict | None, bool]:

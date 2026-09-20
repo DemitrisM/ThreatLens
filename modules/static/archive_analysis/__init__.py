@@ -35,6 +35,7 @@ from .indicators import (
     detect_autorun_desktop,
     detect_dangerous_members,
     detect_double_extension,
+    detect_duplicate_member_names,
     detect_high_entropy_filenames,
     detect_mime_mismatches,
     detect_null_byte_filenames,
@@ -250,6 +251,16 @@ def _analyse_archive(file_path: Path, config: dict, depth: int) -> dict:
         data["double_extension"] = detect_double_extension(entries)
         if data["double_extension"]:
             flags.add("double_extension")
+
+        # A repeated member name hides one record behind another. For 7z
+        # and CAB the hidden bytes are unrecoverable — the external
+        # extractor overwrote them — so the report has to say a member
+        # could not be examined rather than imply a clean result.
+        data["duplicate_member_names"] = detect_duplicate_member_names(entries, fmt)
+        if data["duplicate_member_names"]:
+            flags.add("duplicate_member_name")
+            if any(not d["recoverable"] for d in data["duplicate_member_names"]):
+                flags.add("shadowed_member_unrecoverable")
 
         data["rtlo_filenames"] = detect_rtlo_filenames(entries)
         if data["rtlo_filenames"]:
@@ -497,6 +508,7 @@ def _empty_data() -> dict:
         "dangerous_members": [],
         "double_extension": [],
         "rtlo_filenames": [],
+        "duplicate_member_names": [],
         "null_byte_filenames": [],
         "high_entropy_filenames": [],
         "persistence_paths": [],

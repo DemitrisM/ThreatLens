@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .entries import ArchiveEntry, ContainerMeta
 from .rar_raw_headers import parse_rar_filenames
+from .zip_handler import _locate
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +63,10 @@ def enumerate_rar(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
         meta.handler_errors.append({"stage": "enumerate_rar", "error": f"infolist failed: {exc}"})
         return entries, meta
 
-    for info in infos:
-        entries.append(_to_entry(info))
+    for idx, info in enumerate(infos):
+        entry = _to_entry(info)
+        entry.member_index = idx
+        entries.append(entry)
 
     # CVE-2025-8088 recovery: ``rarfile`` strips NTFS ADS suffixes from
     # member names. Walk the raw headers and re-attach the unsanitised
@@ -136,21 +139,45 @@ def extract_members_to_temp(
         return
 
     written = 0
+
+    # Addressed by RarInfo rather than by name, for the same reason as the
+    # ZIP and TAR extractors: a name resolves to one record, so duplicates
+    # were read repeatedly while their siblings were never opened. The
+    # record is found via the index the enumerator stored, not by position
+    # in this loop — a filtered entries list would misalign a positional
+    # pairing without any error.
+    # Monotonic counter, not a directory listing per member: the old form
+    # re-read tmp_dir once per entry, making naming O(n^2) in member count.
+    index = 0
     with rf:
+        # Inside the with-block: returning from a failed infolist() before
+        # entering it skipped rf.close() and leaked the handle, which over a
+        # triage run across malformed archives exhausts the descriptor limit.
+        # Raised by Gemini.
+        try:
+            infos = rf.infolist()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("rar infolist failed during extract: %s", exc)
+            return
+
         for e in entries:
             if e.is_encrypted or e.is_symlink:
+                continue
+            info = _locate(e, infos)
+            if info is None:
                 continue
             if e.size_uncompressed <= 0 or e.size_uncompressed > 50 * 1024 * 1024:
                 continue
             if written + e.size_uncompressed > max_total_bytes:
                 break
-            safe_name = f"m_{len(list(tmp_dir.iterdir())):04d}_{Path(e.name).name[:80]}"
+            safe_name = f"m_{index:04d}_{Path(e.name).name[:80]}"
             out_path = tmp_dir / safe_name
             try:
-                with rf.open(e.name) as src, out_path.open("wb") as dst:
+                with rf.open(info) as src, out_path.open("wb") as dst:
                     dst.write(src.read())
             except Exception as exc:  # noqa: BLE001
                 logger.debug("rar extract skipped for %s: %s", e.name, exc)
                 continue
             e.extracted_path = str(out_path)
             written += e.size_uncompressed
+            index += 1
