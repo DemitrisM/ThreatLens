@@ -5,6 +5,33 @@ Every handler (`zip_handler`, `rar_handler`, `sevenzip_handler`,
 plus a container-level metadata dict. The cross-format indicators in
 ``indicators.py`` operate purely on ``ArchiveEntry`` so they don't need
 to know which format produced the listing.
+
+Design notes
+------------
+This module is the package's only leaf: it imports nothing from
+``archive_analysis`` and everything else imports it. That is deliberate —
+it is the vocabulary the handlers and the indicators agree on, so it must
+not acquire a dependency on either side.
+
+A member's **identity is its index, not its name**. ``name`` is
+attacker-controlled and is not unique within a container, and every
+archive library resolves a duplicate name to exactly one record. Code
+that addresses a member by name therefore reads that one record once per
+duplicate and never opens its siblings, which is how a payload hides
+behind a decoy. ``member_index`` exists so that cannot happen.
+
+Canonicalisation lives here rather than at the two call sites that need
+it. The extractor's path mapper has to find the file a member produced;
+the duplicate-name indicator has to know when two members produce the
+same one. They are the same question asked twice, and while the two
+carried separate copies they drifted four times during review — every
+drift a hole, because a destination the mapper could not resolve was
+also a collision the indicator failed to report.
+
+``member_destinations`` returns *candidates*, not an answer. Extractors
+disagree about what they do with a traversing or absolute name, so the
+list is ordered by likelihood and the caller takes the first one that
+exists on disk. Its ordering is load-bearing; see that function.
 """
 
 from __future__ import annotations
@@ -62,7 +89,27 @@ class ContainerMeta:
 
 
 def entry_to_dict(entry: ArchiveEntry) -> dict:
-    """Serialise an entry to the plain dict that lands in module data."""
+    """Serialise an entry to the plain dict that lands in module data.
+
+    Three fields are deliberately withheld from the report.
+    ``extracted_path`` points into a tempdir that is removed before the
+    scan returns, so it would be a dead path that also discloses the
+    analyst's filesystem layout. ``crc`` and ``member_index`` are
+    internal plumbing — the index is how extraction addresses a record,
+    which is meaningless to a reader of the report.
+
+    ``raw_name`` is conditional rather than always present: it is only
+    set when the sanitised ``name`` is not the full story (currently the
+    RAR handler recovering NTFS ADS suffixes), so emitting it
+    unconditionally would put a null beside every member of every other
+    format.
+
+    Args:
+        entry: The normalised member to serialise.
+
+    Returns:
+        A JSON-safe dict of the member's reportable fields.
+    """
     out = {
         "name": entry.name,
         "size_compressed": entry.size_compressed,
@@ -100,6 +147,22 @@ def normalise_member_name(name: str) -> str:
     Leaving the drive letter on meant those never matched a plain
     ``evil.exe``, so a payload could occupy the same destination as a decoy
     without the collision being noticed.
+
+    Backslashes are unified to forward slashes first, and unconditionally:
+    a ZIP written by a Windows packer uses them as separators even though
+    the format specifies forward slashes, and a backslash is a legal
+    character in a POSIX filename. Treating it as a separator either way
+    is the safe direction — it can merge two names that a POSIX extractor
+    would keep apart, which over-reports a collision, whereas the reverse
+    lets a Windows-style path escape the check entirely.
+
+    Args:
+        name: The raw in-archive member name.
+
+    Returns:
+        The name with separators unified and any drive letter or leading
+        root stripped. Traversal segments are left intact — that is
+        :func:`strip_traversal` and :func:`collapse_traversal`.
     """
     unified = name.replace("\\", "/")
     return _DRIVE_LETTER_PREFIX.sub("", unified).lstrip("/")
@@ -109,7 +172,17 @@ def strip_traversal(normalised: str) -> str:
     """Drop ``.`` and ``..`` segments, keeping the rest of the tree.
 
     What a sanitising extractor writes: ``nested/../evil.exe`` becomes
-    ``nested/evil.exe``, not ``evil.exe``.
+    ``nested/evil.exe``, not ``evil.exe``. The ``..`` is deleted rather
+    than applied, so the surrounding directory survives. That is the
+    difference from :func:`collapse_traversal`, and it is why both exist
+    — the two disagree on exactly the names an attacker chooses, so
+    :func:`member_destinations` offers both and lets the disk decide.
+
+    Args:
+        normalised: A name already through :func:`normalise_member_name`.
+
+    Returns:
+        The name with every empty, ``.`` and ``..`` segment removed.
     """
     return "/".join(
         seg for seg in normalised.split("/") if seg not in ("", ".", "..")
@@ -117,7 +190,19 @@ def strip_traversal(normalised: str) -> str:
 
 
 def collapse_traversal(normalised: str) -> str:
-    """Resolve ``..`` lexically, as ``Path.resolve()`` would on disk."""
+    """Resolve ``..`` lexically, as ``Path.resolve()`` would on disk.
+
+    ``nested/../evil.exe`` becomes ``evil.exe``: the ``..`` consumes the
+    segment before it. A ``..`` with nothing left to pop is discarded
+    rather than allowed to walk above the root, which is what keeps the
+    result inside the destination tree.
+
+    Args:
+        normalised: A name already through :func:`normalise_member_name`.
+
+    Returns:
+        The lexically resolved path, never escaping its own root.
+    """
     out: list[str] = []
     for seg in normalised.split("/"):
         if seg in ("", "."):
@@ -146,6 +231,13 @@ def member_destinations(name: str, include_basename: bool = False) -> list[str]:
         Candidates ordered by how likely an extractor produced them, most
         likely first, with duplicates removed and order preserved.
     """
+    # ---- Candidate order is the contract -----------------------------
+    # The caller takes the first candidate that exists on disk, so this
+    # ordering decides which file a member is credited with. Sanitising
+    # extractors are the common case and they delete traversal segments,
+    # so that spelling leads. The raw `name` comes last of the four
+    # because trusting it is what a traversal attack wants; by the time
+    # it is reached the three safe spellings have already missed.
     normalised = normalise_member_name(name)
     ordered = [
         strip_traversal(normalised),
@@ -156,6 +248,10 @@ def member_destinations(name: str, include_basename: bool = False) -> list[str]:
     if include_basename:
         ordered.append(PurePosixPath(normalised).name)
 
+    # ---- De-duplicate without reordering -----------------------------
+    # A name with no separators and no traversal produces the same string
+    # four times over. Order must survive de-duplication, so this cannot
+    # be a set comprehension.
     seen: set[str] = set()
     out: list[str] = []
     for candidate in ordered:
