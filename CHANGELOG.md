@@ -9,12 +9,110 @@ Everything before it is a step toward that.
 |---|---|
 | 0.5.0 | Defect sweep, full test coverage, commenting standard |
 | 0.5.1 | Comment passes 4 and 5, eleven defects fixed, three document evasion paths closed |
-| 0.5.2 | *(current)* The archive_analysis defect sweep — twelve fixes, four archive evasion paths closed, the 227s intake stall |
+| 0.5.2 | The archive_analysis defect sweep — twelve fixes, four archive evasion paths closed, the 227s intake stall |
+| 0.5.3 | *(current)* The archive_analysis comment pass — four more fixes, five ZIP header-differential evasions closed |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.3 — 2026-09-24
+
+The `archive_analysis` commenting pass. Writing down why each check is shaped
+the way it is turned up four more defects, three of them evasion paths, in
+code the 0.5.2 sweep had already read. Each was fixed test-first in its own
+commit and cleared the review gate before any comment describing it was
+committed.
+
+### Fixed — `sfx_detect`
+
+- **A failed SFX payload dump left the carved bytes in `/tmp`.**
+  `_dump_payload` opens with `delete=False` because the payload has to outlive
+  the call for the orchestrator to re-enter the pipeline on it, so the file
+  exists from the moment it is created and nothing else removes it. Four paths
+  leaked it: a refused write returned `None` from an `except OSError` that did
+  not unlink; a flush failing at `close` did the same; and `MemoryError` and
+  `KeyboardInterrupt` bypassed the handler entirely — an overlay can be
+  hundreds of megabytes, and a triage run is where someone presses Ctrl-C.
+
+  Fixed structurally rather than by stacking guards. Ownership transfers at
+  exactly one point, and the outer `finally` holds the unlink and nothing
+  else, so no statement can precede it and be interrupted before it runs.
+  `close()` stays inside the `try`, because a write that never reaches disk
+  must fail the dump — handing the orchestrator a truncated payload to recurse
+  into and score is a wrong answer, which is worse than the missing one.
+
+### Fixed — `zip_handler`
+
+- **The header-mismatch detector missed the sizes that matter.** A ZIP carries
+  every member's size twice and nothing makes the two agree; Explorer and
+  7-Zip extract from the local header while `zipfile` — and therefore the
+  decompression-bomb guard — reads the central directory. Detecting that
+  divergence is the only reason the raw parser exists. It had five blind
+  spots:
+
+  `uncompressed_size` was parsed from both headers and never compared, so the
+  one field every bomb threshold is measured against was the one field not
+  checked. The comparison required *both* headers to declare a non-zero
+  compressed size, so a central directory of 0 made a member vanish from every
+  size check here while the local header still declared the real size —
+  verified against a hand-built archive where `zipfile` reported `file_size 0`
+  and the detector reported nothing. Excusing a zero field by field granted
+  the streaming exemption per field rather than per member. Taking the
+  streaming flag from the local header alone allowed the same bypass more
+  cleanly. And any field holding the Zip64 sentinel was skipped outright.
+
+  The exemption is now an entry-level decision read from general-purpose bit 3
+  in *both* headers, and the headers disagreeing about that bit is itself
+  reported. A genuinely streamed member sets it in both — confirmed by writing
+  one through a non-seekable stream. Zip64 sentinels are resolved through the
+  extended-information field rather than skipped, respecting that a local
+  header writes both sizes while a central directory writes only the
+  sentinelled ones; a sentinel with no backing field is now a finding in its
+  own right. `compression_method` comparison was dropped while the block
+  around it was rewritten and had no test to notice — restored, with one.
+
+- **A duplicate member name hid a header mismatch.** Records were
+  deduplicated by filename, so only the first record under a name was ever
+  compared against its own local header. Repeated names are distinct records
+  pointing at distinct local headers, which made a benign record placed first
+  a way to hide whatever the second declared — in the one shape this package
+  already treats as payload-hiding. Every record is compared now; identical
+  findings are collapsed afterwards.
+
+### Fixed — `embedded_exec`
+
+- **A modern Linux executable was not recognised as one.** The MIME table
+  mapped `application/x-executable` but not `application/x-pie-executable`,
+  and distributions have built executables position-independent by default for
+  years — `/usr/bin/ls` and `/bin/bash` on the development machine both report
+  the PIE type. An ELF payload inside an archive was typed as "not an
+  executable" and never hashed or forwarded to VirusTotal. ELF is a deliberate
+  *analysis* exclusion; hashing is not, since a hash lookup needs no platform
+  support and a Linux payload in a Windows-delivered archive is worth
+  reporting.
+
+### Measured
+
+False positives were measured rather than assumed: the reworked ZIP header
+comparison produces **zero findings across 91 real ZIP-shaped files** — the
+whole sample corpus plus packaged wheels. The Zip64 path is exercised by a
+real sample: `APT36.docm` carries sentinels with a proper `0x0001` field for
+three of its sixteen members, which is what first showed that skipping them
+was wrong.
+
+### Documented
+
+Comment passes over the `archive_analysis` foundation (`entries`, `scoring`,
+`bomb_guard`, `routing`, `sfx_detect`) and its ZIP/TAR handlers
+(`zip_handler`, `tarball_handler`, `embedded_exec`). Both verified with
+`bin/verify_comments.py` — identical ASTs, so no executable code rode along.
+
+### Tests
+
+**811 → 832.** The new ones build ZIPs byte by byte, because an archive that
+lies cannot be produced by a library that writes correct ones.
 
 ## 0.5.2 — 2026-09-20
 
