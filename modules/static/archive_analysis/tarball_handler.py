@@ -5,6 +5,32 @@
 streams: we decompress a bounded prefix and emit one pseudo-entry so
 that downstream indicators (MIME check, dangerous extension) still
 fire on the inner payload.
+
+Design notes
+------------
+TAR is the format where this package's ordering guarantee breaks, and
+the reason is structural rather than an oversight. Every other format
+publishes a member index as metadata, so the bomb guard can read the
+declared sizes for free before anything is decompressed. A tarball has
+no index at all: members are discovered by walking the stream, and for a
+compressed tarball walking the stream *is* decompressing it. Both
+functions that walk here are therefore bounded internally, because the
+orchestrator's guard cannot protect a walk that has to happen before the
+guard has numbers to look at.
+
+TAR also permits repeated member names outright — it is an append-only
+format and shadowing an earlier record is the documented way to replace
+a file — so addressing a member by name is not merely risky here, it is
+wrong by specification. Everything goes through ``member_index``.
+
+The single-stream path (a bare ``.gz``/``.bz2``/``.xz``) is a different
+shape wearing the same extension family. There is no member list to
+enumerate, so one pseudo-entry is synthesised to describe the
+decompressed payload. That is what lets the ordinary member indicators
+run against the inner file rather than the module having to special-case
+it — but it also means the payload is already on disk by the time the
+bomb guard sees it, which the orchestrator handles by refusing to treat
+a tripped guard as extracted.
 """
 
 from __future__ import annotations
@@ -22,7 +48,10 @@ from .zip_handler import _locate
 
 logger = logging.getLogger(__name__)
 
-_INNER_STREAM_CAP = 64 * 1024 * 1024  # 64 MiB peek for single-stream gz/bz2/xz
+# 64 MiB peek for single-stream gz/bz2/xz. Read as CAP + 1 rather than
+# CAP so a payload that exactly fills the window is distinguishable from
+# one that overflows it, and only the first CAP bytes are written.
+_INNER_STREAM_CAP = 64 * 1024 * 1024
 
 
 _DEFAULT_EXTRACT_BUDGET_MB = 500
@@ -112,6 +141,25 @@ def enumerate_tar(
 
 
 def _to_entry(member: tarfile.TarInfo) -> ArchiveEntry:
+    """Normalise one ``TarInfo`` into an :class:`ArchiveEntry`.
+
+    Args:
+        member: The record as ``tarfile`` parsed it.
+
+    Returns:
+        The normalised entry, with ``member_index`` left for the caller.
+
+    ``size_compressed`` is set to the same value as ``size_uncompressed``
+    because TAR has no per-member compression — compression, when there
+    is any, wraps the whole stream. That makes the bomb guard's ratio
+    test read 1:1 for every tarball and therefore never fire, which is
+    correct: the ratio it wants to measure is not observable per member
+    here. The size and count thresholds carry the guard for this format.
+
+    Hard links are reported as symlinks. They are not the same thing, but
+    both are a member whose content is another path rather than bytes,
+    and every consumer of the flag cares about exactly that.
+    """
     return ArchiveEntry(
         name=member.name,
         size_compressed=member.size,        # tar has no per-entry compression
@@ -130,6 +178,28 @@ def extract_tar_members_to_temp(
     tmp_dir: Path,
     max_total_bytes: int,
 ) -> None:
+    """Extract bounded, non-symlink members into ``tmp_dir``.
+
+    Args:
+        file_path:       The tarball, compressed or not.
+        entries:         Members to consider, carrying ``member_index``.
+        tmp_dir:         Destination, owned and removed by the caller.
+        max_total_bytes: Cumulative ceiling for this call.
+
+    Returns:
+        None. ``entry.extracted_path`` is populated in place.
+
+    The walk is bounded twice over, and both bounds are load-bearing —
+    see the comments inside. Stopping at the highest index actually
+    requested is what stops this function re-inflating the archive that
+    :func:`enumerate_tar` refused to finish reading; keeping the members
+    recovered before a truncation is what stops one corrupt header
+    discarding every member behind it.
+
+    Members are read with an explicit length rather than to EOF, so a
+    header understating its size cannot be used to pull more bytes than
+    the budget accounted for.
+    """
     written = 0
     try:
         tf = tarfile.open(file_path, mode="r:*")
@@ -214,8 +284,30 @@ def enumerate_single_stream(
 ) -> tuple[list[ArchiveEntry], ContainerMeta]:
     """Emit a single pseudo-entry representing the decompressed payload.
 
-    Writes the decompressed bytes into ``tmp_dir`` (when provided) so
-    downstream MIME / embedded-PE checks can run.
+    Args:
+        file_path: The compressed stream.
+        fmt:       One of ``"gz"``, ``"bz2"``, ``"xz"``. Anything else
+                   returns empty rather than raising.
+        tmp_dir:   Destination for the decompressed bytes, or None to
+                   describe the payload without materialising it. Owned
+                   and removed by the caller — these are malware bytes.
+
+    Returns:
+        ``(entries, meta)`` with exactly one entry, or zero entries when
+        the stream could not be opened or decompressed.
+
+    The entry is synthetic: these formats carry no member list, so the
+    name is derived from the file's own stem and the timestamp from its
+    mtime. That is enough for the member indicators — MIME check,
+    dangerous extension, embedded-PE hashing — to run against the inner
+    payload, which is the whole reason for inventing an entry at all.
+
+    Note the bound is a truncation, not a rejection. A payload larger
+    than the cap is described and written up to the cap, so the
+    indicators see a prefix rather than nothing. ``size_uncompressed``
+    then reports the bytes read, which is the cap plus one, and not the
+    payload's real size — that size is unknown without decompressing all
+    of it, which is what the cap exists to avoid.
     """
     meta = ContainerMeta(detected_format=fmt)
     entries: list[ArchiveEntry] = []
@@ -227,6 +319,9 @@ def enumerate_single_stream(
     inner_name = file_path.stem or f"inner.{fmt}"
     extracted_path: str | None = None
 
+    # Bounded read, not `src.read()`. The decompressed size of a gz/bz2/xz
+    # stream is not knowable without decompressing it, so an unbounded
+    # read here is the bomb the guard has not had a chance to refuse yet.
     try:
         with opener(file_path, "rb") as src:
             payload = src.read(_INNER_STREAM_CAP + 1)

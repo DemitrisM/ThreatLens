@@ -9,6 +9,40 @@ detection. Malware packs have been observed where the Local File Header
 compression method — AV engines that trust only the CD miss the real
 payload, while Windows Explorer / 7-Zip extract using the LFH. We walk
 both independently and flag any mismatch.
+
+Design notes
+------------
+Two readers of the same file, on purpose. ``zipfile`` produces the
+member list because it handles decryption, the compression methods and
+the filename encodings, and reimplementing that would be a worse parser.
+The raw walker exists only to answer a question ``zipfile`` cannot be
+asked: it resolves each name to one record and hands back a single
+consistent view, which is precisely the view an attacker constructs. A
+disagreement between the two headers is only visible to code that reads
+both.
+
+The raw walker is best-effort by design. It is wrapped at the call site
+and a failure records a handler error rather than losing the
+enumeration, because a ZIP that defeats the mismatch check is still a
+ZIP whose members must be listed.
+
+Known limits of the raw walker, both silent:
+
+* **The Zip64 end-of-central-directory locator is not parsed.** The
+  directory offsets come from the 32-bit EOCD fields, so a true Zip64
+  archive — one whose directory itself sits past 4 GiB — yields no
+  records and therefore no mismatch detection. It fails closed: no
+  false positives, just no coverage. The Zip64 *extra field* on
+  individual members is parsed, since that is how a member's own sizes
+  are resolved.
+* **A genuinely streamed member is exempted rather than verified.**
+  Where both headers set general-purpose bit 3, the sizes an extractor
+  uses live in a data descriptor after the payload, which this parser
+  does not walk. The exemption is taken only when both headers agree,
+  so claiming it in one is itself reported.
+
+It also reads the whole file into memory to do it. That is bounded by
+nothing in this module — see the size guards at the orchestrator.
 """
 
 from __future__ import annotations
@@ -29,7 +63,26 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def enumerate_zip(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
-    """Read a ZIP and return normalised entries + container metadata."""
+    """Read a ZIP and return normalised entries + container metadata.
+
+    Args:
+        file_path: The archive. Opened read-only; nothing is extracted.
+
+    Returns:
+        ``(entries, meta)``. ``meta.zip_header_mismatches`` carries the
+        raw-parser findings, and ``meta.handler_errors`` any stage that
+        failed.
+
+    Nothing raises. A malformed ZIP produces an empty entry list and a
+    recorded error, which the orchestrator turns into a report saying so
+    — design rule 2. The three ``except`` clauses are ordered specific to
+    general so the recorded message names the real failure rather than
+    flattening everything to ``Exception``.
+
+    The mismatch pass runs even when enumeration failed, because a ZIP
+    broken enough to defeat ``zipfile`` is exactly where a header
+    discrepancy is worth looking for.
+    """
     meta = ContainerMeta(detected_format="zip")
     entries: list[ArchiveEntry] = []
 
@@ -62,6 +115,22 @@ def enumerate_zip(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
 
 
 def _to_entry(info: zipfile.ZipInfo) -> ArchiveEntry:
+    """Normalise one ``ZipInfo`` into an :class:`ArchiveEntry`.
+
+    Args:
+        info: The record as ``zipfile`` parsed it.
+
+    Returns:
+        The normalised entry. ``member_index`` is left unset — the caller
+        assigns it from enumeration order, because only the caller knows
+        the position.
+
+    A timestamp that ``mktime`` rejects becomes None rather than a
+    fallback value. ZIP stores DOS date-times, which cannot represent a
+    year before 1980, and malware routinely writes out-of-range or
+    all-zero fields; inventing a plausible date would feed the
+    timestamp-anomaly indicator a number nobody wrote.
+    """
     is_encrypted = bool(info.flag_bits & 0x1)
     # Unix symlinks: external_attr high 16 bits = stat mode; mask == S_IFLNK (0o120000 == 0xA000)
     # (Python's ZipInfo stores the mode in (external_attr >> 16).)
@@ -72,6 +141,9 @@ def _to_entry(info: zipfile.ZipInfo) -> ArchiveEntry:
     except (ValueError, OverflowError):
         ts = None
 
+    # Named for the report rather than the spec. An unknown method is
+    # rendered as its raw number rather than dropped, since a method the
+    # host's zipfile cannot decompress is itself worth seeing.
     compression_map = {
         0: "stored", 8: "deflate", 9: "deflate64",
         12: "bzip2", 14: "lzma", 93: "zstd", 98: "ppmd",
@@ -115,7 +187,24 @@ _MAX_EOCD_LOOKBACK = 65536 + 22  # EOCD comment field is ≤ 64 KiB
 
 
 def _find_header_mismatches(file_path: Path) -> list[dict]:
-    """Return mismatches between per-entry LFH and CD records."""
+    """Return mismatches between per-entry LFH and CD records.
+
+    Args:
+        file_path: The archive to walk twice.
+
+    Returns:
+        One dict per disagreeing member, ``{"name": ..., <field>:
+        {"lfh": ..., "cd": ...}}``, listing only the fields that differ.
+
+    Filename, compressed size and compression method are compared
+    because those are the three an extractor acts on: they decide what
+    the file is called, how many bytes are read, and how they are
+    decoded. A CRC or flag difference would be a curiosity; these three
+    are what make two readers produce different files.
+    """
+    # Whole file in memory. The raw walker needs random access to both
+    # the central directory at the end and each local header scattered
+    # through the file, so a streaming read would seek constantly.
     try:
         data = file_path.read_bytes()
     except OSError:
@@ -230,7 +319,27 @@ def _find_header_mismatches(file_path: Path) -> list[dict]:
 
 
 def _walk_central_directory(data: bytes) -> list[dict]:
-    """Locate EOCD and walk every Central Directory entry."""
+    """Locate EOCD and walk every Central Directory entry.
+
+    Args:
+        data: The whole archive in memory.
+
+    Returns:
+        One dict per central-directory record, in file order. Empty when
+        no EOCD was found, when the archive is Zip64, or when the first
+        record does not carry the expected signature.
+
+    The walk stops at the first record that does not begin with the CD
+    signature rather than trying to resynchronise. Past that point the
+    offsets are no longer trustworthy, and a resynchronising parser
+    would produce records an actual extractor never sees — inventing
+    mismatches rather than finding them.
+    """
+    # `rfind` within the last 64 KiB + 22: the EOCD is the final
+    # structure except for its comment, which the format caps at 64 KiB,
+    # so this window is exhaustive rather than a heuristic. Searching
+    # backwards matters because the signature can occur inside
+    # compressed data and the real record is the last one.
     eocd_offset = data.rfind(_EOCD_SIG, max(0, len(data) - _MAX_EOCD_LOOKBACK))
     if eocd_offset < 0:
         return []
@@ -241,6 +350,10 @@ def _walk_central_directory(data: bytes) -> list[dict]:
 
     records: list[dict] = []
     pos = cd_offset
+    # Clamped to the file length. `cd_size` and `cd_offset` are
+    # attacker-controlled fields in a structure this parser found by
+    # scanning, so an overlong declared directory must bound to the data
+    # that exists rather than walk off the end.
     end = min(cd_offset + cd_size, len(data))
     while pos + 46 <= end:
         if data[pos:pos + 4] != _CD_SIG:
@@ -349,6 +462,22 @@ def _resolve_sizes(record: dict, central: bool) -> tuple[int, int] | None:
 
 
 def _parse_lfh_at(data: bytes, offset: int) -> dict | None:
+    """Parse the local file header at ``offset``, if one is there.
+
+    Args:
+        data:   The whole archive in memory.
+        offset: The local-header offset the central directory claimed.
+
+    Returns:
+        The header's fields, or None when the offset is out of range or
+        does not carry the LFH signature.
+
+    The offset comes from the central directory, which is the record
+    under suspicion, so it is treated as untrusted input: a bad offset
+    means this member cannot be compared, not that the file is corrupt.
+    Returning None skips the member and leaves the rest of the walk
+    intact.
+    """
     if offset < 0 or offset + 30 > len(data):
         return None
     if data[offset:offset + 4] != _LFH_SIG:
@@ -401,8 +530,31 @@ def extract_members_to_temp(
 ) -> None:
     """Extract small, non-encrypted members into ``tmp_dir``.
 
-    Populates ``entry.extracted_path`` in place. Skips encrypted,
-    oversize, or symlink members. Enforces a cumulative byte cap.
+    Args:
+        file_path:       The archive.
+        entries:         Members to consider, carrying ``member_index``.
+        tmp_dir:         Destination, owned and removed by the caller.
+        max_total_bytes: Cumulative ceiling across this call. Reaching it
+                         stops the loop rather than skipping the member,
+                         since everything after it would be refused too.
+
+    Returns:
+        None. ``entry.extracted_path`` is populated in place for each
+        member written, which is how the MIME check and embedded-PE
+        hashing later find the bytes.
+
+    Encrypted members are skipped because there is no password; symlinks
+    because writing one would let a member point outside ``tmp_dir``,
+    turning extraction into the traversal the indicators exist to
+    report.
+
+    Names are rewritten to ``m_NNNN_<basename>`` rather than preserved.
+    The member name is attacker-controlled, and this is what stops it
+    being a path at all — no traversal, no absolute root, no drive
+    letter, nothing but a leaf under ``tmp_dir``. The index keeps two
+    members with the same basename apart, which is why the mapper in
+    ``entries.member_destinations`` has to work by candidate rather than
+    by exact name.
     """
     written = 0
     try:
