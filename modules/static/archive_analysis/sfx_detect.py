@@ -12,6 +12,38 @@ in the overlay window.
 
 On a hit we dump the overlay (or the bytes from the EOCD-derived offset)
 to a tempfile so the orchestrator can recurse on it.
+
+Design notes
+------------
+**The caller owns the dumped file, not this module.** :func:`_dump_payload`
+mints a ``delete=False`` tempfile and returns its path; deleting it is
+``_analyse_pe_for_sfx``'s job, in a ``finally`` so a failed recursion
+still cleans up. Those bytes are live malware, so an early return that
+forgets them leaves a payload in the system temp directory after the
+scan ends — which is exactly the defect that was fixed for gz/bz2/xz in
+0.5.2. Any new caller inherits that obligation.
+
+**Two detectors, because one shape is invisible to the other.** The
+overlay scan searches the bytes after the last section for a
+local-file-header magic. That misses a ZIP appended to a PE, because
+Python's ``zipfile`` indexes from the End-Of-Central-Directory record at
+the *end* of the file and will happily open such a file as a valid
+archive even when no ``PK\x03\x04`` appears in the window we computed
+— a real SFX shape that the structural scan alone reports as clean. The
+EOCD sweep covers it, and runs second because the overlay scan is the
+cheaper and more specific test.
+
+**Detection is deliberately shallow.** Finding archive magic is all this
+module does; whether the payload is a real archive, and what is in it,
+is settled by re-entering the pipeline on the dumped file. That keeps
+one implementation of archive parsing rather than a second weaker one
+here, and it means an SFX dropper's payload gets the full indicator set.
+
+A failure anywhere degrades to "not an SFX" rather than raising. Missing
+`pefile`, an unparseable binary, an unreadable overlay and a failed
+tempfile write all return the same negative result, per design rule 2.
+The cost is a false negative on a damaged PE, which is the right trade
+against taking down a triage run.
 """
 
 from __future__ import annotations
@@ -24,7 +56,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-# (format_name, magic_bytes)
+# (format_name, magic_bytes), searched in order and anywhere within the
+# overlay rather than at a fixed offset — an SFX stub writes its own
+# header and padding first, so the payload's start is not predictable.
+#
+# The two installer entries earn their place: NSIS and Inno Setup are
+# not archive formats the handlers can enumerate, but finding one still
+# answers the question this module asks, which is whether an executable
+# is carrying a packaged payload.
 _OVERLAY_MAGICS: list[tuple[str, bytes]] = [
     ("zip",        b"PK\x03\x04"),
     ("rar",        b"Rar!\x1a\x07\x00"),
@@ -42,11 +81,20 @@ _MAX_EOCD_LOOKBACK = 65536 + 22  # comment field is ≤ 64 KiB
 def scan_pe_overlay(file_path: Path) -> dict:
     """Return overlay-scan result.
 
-    Result shape:
-        {"is_sfx": bool,
-         "embedded_format": str|None,
-         "offset": int|None,
-         "payload_path": str|None}
+    Args:
+        file_path: A file already known to start with ``MZ``.
+
+    Returns:
+        ``{"is_sfx": bool, "embedded_format": str|None,
+        "offset": int|None, "payload_path": str|None}``.
+
+        ``payload_path`` names a tempfile **the caller must delete** —
+        see the module docstring. It can be ``None`` on a positive hit
+        if the dump failed, so a caller must test it rather than assume
+        ``is_sfx`` implies a path.
+
+    ``offset`` is absolute within the file, not relative to the overlay,
+    so it can be quoted straight into a report or a hex editor.
     """
     result: dict = {
         "is_sfx": False,
@@ -57,6 +105,11 @@ def scan_pe_overlay(file_path: Path) -> dict:
 
     overlay_offset, overlay_bytes = _read_overlay(file_path)
 
+    # ---- Pass 1: archive magic inside the overlay ---------------------
+    # Returns on the first hit. A dropper carrying two payloads is not a
+    # shape worth the extra dumps — the recursion on the first one
+    # reaches the same verdict, and every dump is malware written to
+    # disk.
     if overlay_bytes:
         for fmt, magic in _OVERLAY_MAGICS:
             idx = overlay_bytes.find(magic)
@@ -67,9 +120,13 @@ def scan_pe_overlay(file_path: Path) -> dict:
                 result["payload_path"] = _dump_payload(overlay_bytes[idx:])
                 return result
 
-    # Whole-file ZIP-EOCD sweep — covers the case where the overlay
-    # region we computed is empty/short but a valid ZIP is still
-    # appended to the binary.
+    # ---- Pass 2: whole-file ZIP EOCD sweep ----------------------------
+    # Covers the case pass 1 cannot see: the overlay region came back
+    # empty or short — because `pefile` is absent, the binary is
+    # malformed, or the section table lies about where data ends — yet a
+    # valid ZIP is still appended. `zipfile` finds it from the EOCD
+    # regardless, so an analyst's tooling would open it even though the
+    # structural scan reported nothing.
     eocd_hit = _find_eocd_payload(file_path, overlay_offset)
     if eocd_hit is not None:
         offset, payload = eocd_hit
@@ -84,7 +141,23 @@ def scan_pe_overlay(file_path: Path) -> dict:
 def _read_overlay(file_path: Path) -> tuple[int, bytes]:
     """Compute the overlay offset via pefile and return (offset, bytes).
 
-    Returns ``(0, b"")`` on any failure.
+    Args:
+        file_path: The PE to read.
+
+    Returns:
+        ``(offset, bytes)`` where offset is the absolute start of the
+        overlay, or ``(0, b"")`` on any failure.
+
+    ``(0, b"")`` conflates "no overlay" with "could not tell", and the
+    caller relies on that: an offset of 0 disables the
+    ``cd_offset < overlay_offset`` sanity test in
+    :func:`_find_eocd_payload`, so a PE we could not parse still gets
+    the EOCD sweep instead of being silently skipped. The two cases do
+    not need distinguishing because the response to both is the same.
+
+    ``pefile`` is imported inside the function, not at module scope, so
+    that a missing optional dependency degrades this one check rather
+    than failing the whole package's import.
     """
     try:
         import pefile  # noqa: PLC0415
@@ -98,6 +171,9 @@ def _read_overlay(file_path: Path) -> tuple[int, bytes]:
         logger.debug("pefile parse failed for %s: %s", file_path, exc)
         return 0, b""
 
+    # The PE object holds a mapped file, so it is closed in `finally`
+    # whether or not the offset lookup worked — a leaked handle per
+    # sample exhausts the descriptor limit across a triage run.
     try:
         offset = pe.get_overlay_data_start_offset()
     except Exception:  # noqa: BLE001
@@ -125,7 +201,22 @@ def _find_eocd_payload(
 ) -> tuple[int, bytes] | None:
     """Locate a ZIP EOCD anywhere in the file and return (offset, payload).
 
-    The payload is the slice from the central-directory offset to EOF.
+    Args:
+        file_path:      The PE being scanned.
+        overlay_offset: Absolute overlay start, or 0 when unknown.
+
+    Returns:
+        ``(cd_offset, payload)`` where payload is the slice from the
+        central-directory offset to EOF, or ``None`` when no appended
+        ZIP was found.
+
+    Only the tail is read. The EOCD is the last structure in a ZIP
+    except for its optional comment, which the format caps at 64 KiB, so
+    a fixed lookback of 64 KiB + the 22-byte record is exhaustive rather
+    than a heuristic — and it keeps the check O(1) on a large binary.
+
+    ``rfind`` rather than ``find``: the EOCD byte sequence can occur
+    inside compressed data, and the real record is the last one.
     """
     try:
         with file_path.open("rb") as fh:
@@ -147,9 +238,13 @@ def _find_eocd_payload(
     except struct.error:
         return None
 
-    # If the central directory sits inside the PE structural region the
-    # ZIP is the whole file (no SFX); only flag it when the CD lives
-    # past the overlay boundary.
+    # ---- Reject the ZIP that is the whole file -------------------------
+    # A plain `.zip` renamed to `.exe` is not an SFX dropper, and neither
+    # is a PE whose central directory sits inside its structural region.
+    # Requiring the CD to live past the overlay boundary is what makes
+    # this "a PE carrying an archive" rather than "a file that is an
+    # archive". When `overlay_offset` is 0 the test is skipped rather
+    # than failed — see `_read_overlay` on why unknown must not mean no.
     if cd_offset == 0 or (overlay_offset and cd_offset < overlay_offset):
         return None
 
@@ -166,7 +261,20 @@ def _find_eocd_payload(
 
 
 def _dump_payload(payload: bytes) -> str | None:
-    """Write payload bytes to a tempfile; return its path."""
+    """Write payload bytes to a tempfile; return its path.
+
+    Args:
+        payload: The carved bytes.
+
+    Returns:
+        The tempfile path, or ``None`` if it could not be written.
+
+    ``delete=False`` because the file has to outlive this function for
+    the orchestrator to re-enter the pipeline on it. **The caller owns
+    the deletion** — these are live malware bytes and nothing else will
+    remove them. The ``sfx_overlay_`` prefix exists so a leak is
+    identifiable if one ever escapes.
+    """
     try:
         tmp = tempfile.NamedTemporaryFile(
             prefix="sfx_overlay_", delete=False,
