@@ -7,6 +7,35 @@
 * **ACE** — detection only. No extraction attempted because the format
   (WinACE) is effectively abandoned and the only surviving unace port
   has a history of memory-corruption CVEs (CVE-2018-20250).
+
+Design notes
+------------
+Three formats with three different dependency models, which is why they
+share a file: each is too small to justify its own module and none of
+them shares code with the others beyond that shape.
+
+* CAB depends on an **external binary** and is driven by parsing its
+  stdout. That makes the parser brittle by nature — it is reading a
+  human-readable table, not an API — so every line that does not look
+  like a record is skipped rather than treated as an error.
+* ISO depends on an **optional library** and is the only format here
+  addressed by path rather than by index, which has consequences for
+  duplicates noted at the extractor.
+* ACE depends on **nothing, deliberately.** It is detected and never
+  opened.
+
+**Not extracting ACE is a security decision, not a missing feature.**
+The only public parsers have a history of memory-corruption CVEs, and
+CVE-2018-20250 is a path traversal in the extraction path itself. A
+malware analysis tool that ran an abandoned parser over hostile input
+to satisfy a completeness goal would be creating the vulnerability it
+exists to find. Detection alone scores the archive, which is the
+outcome that matters.
+
+Both shell-outs are timeout-bounded per design rule 5. That is the only
+timeout enforcement available at this layer, since the orchestrator's
+``module_timeout_seconds`` is still unread — so a hung subprocess here
+would hang the whole scan with nothing above it to intervene.
 """
 
 from __future__ import annotations
@@ -30,6 +59,30 @@ _CABEXTRACT_TIMEOUT = 10  # seconds — list + extract each capped here
 # ---------------------------------------------------------------------------
 
 def enumerate_cab(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
+    """List a CAB's members by parsing ``cabextract --list`` output.
+
+    Args:
+        file_path: The cabinet file.
+
+    Returns:
+        ``(entries, meta)``. An absent ``cabextract`` binary is a
+        recorded handler error and an empty list, not a raise — the
+        scan continues and the report says why the cabinet was not
+        listed.
+
+    This parses a human-readable table, so it is tolerant by design: a
+    line that does not split into at least three pipe-separated fields,
+    or whose first field is not an integer, is skipped rather than
+    treated as corruption. The alternative — failing on the first
+    unexpected line — would make a future change to cabextract's
+    banner, or a member whose name contains a pipe, silently empty the
+    listing.
+
+    Sizes are recorded as equal for compressed and uncompressed because
+    ``--list`` reports only one figure. The bomb guard's ratio test
+    therefore reads 1:1 for every CAB and cannot fire; its size and
+    count thresholds still apply.
+    """
     meta = ContainerMeta(detected_format="cab")
     entries: list[ArchiveEntry] = []
 
@@ -84,6 +137,29 @@ def extract_cab_members_to_temp(
     tmp_dir: Path,
     max_total_bytes: int,
 ) -> None:
+    """Extract a cabinet into ``tmp_dir``, or not at all.
+
+    Args:
+        file_path:       The cabinet.
+        entries:         Members, used for the pre-flight sum and then
+                         mapped to their extracted files.
+        tmp_dir:         Destination, owned and removed by the caller.
+        max_total_bytes: Ceiling for the total uncompressed size.
+
+    Returns:
+        None. ``entry.extracted_path`` is populated by
+        :func:`_map_extracted_paths` afterwards.
+
+    Same all-or-nothing shape as the 7z extractor and for the same
+    reason: ``cabextract`` takes a cabinet and a destination, not a
+    member, so the budget is a single decision made before the call.
+
+    The return code is deliberately not checked. cabextract reports a
+    non-zero status when *any* member fails, including a partial
+    extraction that still wrote most of the cabinet, and those files are
+    worth analysing. What actually landed is settled by looking at the
+    directory rather than by trusting the exit status.
+    """
     if shutil.which("cabextract") is None:
         return
     total = sum(e.size_uncompressed for e in entries)
@@ -108,6 +184,29 @@ def extract_cab_members_to_temp(
 # ---------------------------------------------------------------------------
 
 def enumerate_iso(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
+    """Walk an ISO 9660 image and list its files.
+
+    Args:
+        file_path: The image. ``.iso`` or ``.img``.
+
+    Returns:
+        ``(entries, meta)``. A missing ``pycdlib`` is a recorded handler
+        error and an empty list.
+
+    One extension is chosen for the whole walk and it has to be the same
+    one the extractor uses later, because pycdlib addresses records by
+    path and the three namespaces spell the same file differently.
+    Joliet is preferred because it carries the long filenames a user
+    actually sees — an ISO delivering malware names its payload for the
+    victim, and the ISO 9660 8.3 form would report a truncated,
+    upper-cased name that matches neither the dangerous-extension list
+    nor anything an analyst could search for.
+
+    A record whose size cannot be read contributes 0 rather than being
+    dropped. The member's *name* is the part the indicators need, and a
+    zero size only excludes it from extraction, which is the safe
+    direction for a record the library could not describe.
+    """
     meta = ContainerMeta(detected_format="iso")
     entries: list[ArchiveEntry] = []
 
@@ -166,6 +265,32 @@ def extract_iso_members_to_temp(
     tmp_dir: Path,
     max_total_bytes: int,
 ) -> None:
+    """Extract bounded members from an ISO into ``tmp_dir``.
+
+    Args:
+        file_path:       The image.
+        entries:         Members to consider.
+        tmp_dir:         Destination, owned and removed by the caller.
+        max_total_bytes: Cumulative ceiling for this call.
+
+    Returns:
+        None. ``entry.extracted_path`` is populated in place.
+
+    Unlike 7z and CAB this extracts member by member, so the ordinary
+    running counter applies and a partial extraction is normal.
+
+    It is addressed by path, though, because pycdlib exposes no
+    index-based read — which is the one thing that makes ISO different
+    from ZIP, RAR and TAR here. A repeated path resolves to a single
+    record, so the sibling is unreachable rather than merely awkward.
+    Claiming each source path once leaves the shadowed member unmapped
+    instead of extracting the same record twice under two names, which
+    would report a member as analysed using another member's bytes.
+
+    The extension chosen here must match the one
+    :func:`enumerate_iso` walked with, since the names in ``entries``
+    were produced in that namespace.
+    """
     try:
         import pycdlib  # noqa: PLC0415
     except ImportError:
@@ -235,11 +360,30 @@ _ACE_MAGIC_AT_7 = b"**ACE**"
 
 
 def detect_ace(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
-    """ACE format detection. We deliberately do not extract.
+    """Confirm an ACE archive by signature. Deliberately does not extract.
 
-    Rationale: the only public ACE parser (``acefile`` / ``unace``)
-    has a history of RCE CVEs (CVE-2018-20250). Flagging alone is
-    enough — downstream scoring treats presence as suspicious.
+    Args:
+        file_path: The candidate archive.
+
+    Returns:
+        ``(entries, meta)`` with a single synthetic entry describing the
+        archive itself, or an empty list and a recorded error if the
+        signature is absent.
+
+    The only public ACE parsers have a history of memory-corruption
+    CVEs, and CVE-2018-20250 is a path traversal in the extraction path
+    itself. Running an abandoned parser over hostile input to complete a
+    listing would create the vulnerability this tool exists to find, so
+    the archive is identified and never opened.
+
+    The entry describes the container rather than any member, since no
+    member list can be obtained without parsing. That is enough for
+    scoring: ``ace_detected`` fires on the format's presence, which is
+    the finding — an ACE archive arriving in 2026 is itself the signal,
+    whatever is inside it.
+
+    The signature sits at offset 7 rather than 0, which is why the
+    length check guards 14 bytes and not 7.
     """
     meta = ContainerMeta(detected_format="ace")
     entries: list[ArchiveEntry] = []
