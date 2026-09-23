@@ -23,6 +23,16 @@ _EXEC_MIME_TO_TYPE: dict[str, str] = {
     "application/x-dosexec":     "PE",
     "application/vnd.microsoft.portable-executable": "PE",
     "application/x-executable":  "ELF",
+    # Distributions have built executables position-independent by
+    # default for years, and libmagic gives those their own type. Without
+    # it the common case of a modern Linux binary was typed as "not an
+    # executable" and never hashed. /usr/bin/ls on this machine reports
+    # x-pie-executable.
+    "application/x-pie-executable": "ELF",
+    # A PIE executable is structurally a shared object, so older libmagic
+    # builds report the same file this way instead. Both spellings map to
+    # the same label because the distinction is not one a report can act
+    # on.
     "application/x-sharedlib":   "ELF",
     "application/x-mach-binary": "MachO",
 }
