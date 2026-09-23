@@ -32,8 +32,9 @@ Both the declared sizes and the member count are attacker-controlled
 metadata. That is acceptable *here* — lying about them to get under a
 threshold means declaring a small archive, and the enumerator then
 refuses to read more than was declared, so the lie costs the attacker
-the payload. It is not acceptable everywhere: see the open item in
-CLAUDE.md about the OOXML guards trusting the ZIP central directory.
+the payload. It is not acceptable everywhere: see the open item in the
+project notes about the OOXML guards trusting the ZIP central
+directory.
 
 The guard reports rather than raises, so a tripped bomb still produces a
 report with its metadata, its indicator flags and a score. Silence would
