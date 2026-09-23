@@ -126,11 +126,16 @@ def _find_header_mismatches(file_path: Path) -> list[dict]:
         return []
 
     mismatches: list[dict] = []
-    seen_names: set[str] = set()
+    # Every central-directory record is compared, including repeats of a
+    # name already seen. Repeated names are distinct records pointing at
+    # distinct local headers, so skipping the second let a benign record
+    # placed first hide whatever the second declared — and a duplicate
+    # name is already the shape this package treats as payload-hiding,
+    # which makes it the last place to stop looking. Identical findings
+    # are collapsed afterwards instead, so an archive that genuinely
+    # repeats one mistake still reports it once.
+    seen_findings: set[str] = set()
     for cd in cd_records:
-        if cd["filename"] in seen_names:
-            continue
-        seen_names.add(cd["filename"])
         lfh = _parse_lfh_at(data, cd["local_header_offset"])
         if lfh is None:
             continue
@@ -215,7 +220,12 @@ def _find_header_mismatches(file_path: Path) -> list[dict]:
                         }
 
         if diff:
-            mismatches.append({"name": cd["filename"], **diff})
+            finding = {"name": cd["filename"], **diff}
+            key = repr(sorted(finding.items()))
+            if key in seen_findings:
+                continue
+            seen_findings.add(key)
+            mismatches.append(finding)
     return mismatches
 
 

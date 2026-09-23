@@ -296,3 +296,80 @@ def test_a_compression_method_disagreement_is_reported(tmp_path):
 
     assert len(mismatches) == 1, mismatches
     assert mismatches[0]["compression_method"] == {"lfh": 8, "cd": 0}
+
+
+def _build_two_member_zip(path: Path, *, second_cd_method: int) -> None:
+    """Write a ZIP with two members sharing one name.
+
+    The first agrees with its local header; the second does not. Every
+    archive library resolves the shared name to one record, so a scanner
+    that looks at one of them looks at the wrong one half the time.
+    """
+    blobs = []
+    out = b""
+    centrals = []
+    for method in (8, 8):
+        compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+        blob = compressor.compress(_PAYLOAD) + compressor.flush()
+        blobs.append(blob)
+
+    offsets = []
+    for idx, blob in enumerate(blobs):
+        offsets.append(len(out))
+        crc = zlib.crc32(_PAYLOAD) & 0xFFFFFFFF
+        out += struct.pack(
+            "<IHHHHHIIIHH",
+            _LFH_SIG, 20, 0, 8, 0, 0,
+            crc, len(blob), len(_PAYLOAD), len(_NAME), 0,
+        ) + _NAME + blob
+
+    cd_offset = len(out)
+    for idx, blob in enumerate(blobs):
+        crc = zlib.crc32(_PAYLOAD) & 0xFFFFFFFF
+        method = 8 if idx == 0 else second_cd_method
+        centrals.append(struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            _CD_SIG, 20, 20, 0, method, 0, 0, crc,
+            len(blob), len(_PAYLOAD), len(_NAME), 0, 0, 0, 0, 0, offsets[idx],
+        ) + _NAME)
+
+    central = b"".join(centrals)
+    out += central
+    out += struct.pack(
+        "<IHHHHIIH", _EOCD_SIG, 0, 0, 2, 2, len(central), cd_offset, 0,
+    )
+    path.write_bytes(out)
+
+
+def test_a_mismatch_behind_a_duplicate_name_is_still_reported(tmp_path):
+    """Skipping repeated names let a clean decoy hide a diverging record.
+
+    Repeated member names are distinct central-directory records, each
+    pointing at its own local header. Deduplicating by name meant only the
+    first was ever compared, so placing a benign record first hid whatever
+    the second declared — and a duplicate name is already the shape this
+    package treats as payload-hiding, which makes it the last place the
+    comparison should stop looking.
+    """
+    target = tmp_path / "shadowed_mismatch.zip"
+    _build_two_member_zip(target, second_cd_method=0)
+
+    mismatches = _find_header_mismatches(target)
+
+    assert len(mismatches) == 1, mismatches
+    assert mismatches[0]["name"] == _NAME.decode()
+    assert mismatches[0]["compression_method"] == {"lfh": 8, "cd": 0}
+
+
+def test_duplicate_names_that_both_agree_report_nothing(tmp_path):
+    """Dropping the dedupe must not start reporting honest repeats.
+
+    A duplicate name is scored separately by the duplicate-member
+    indicator. This function's job is the header differential, so two
+    records that each agree with their own local header are silent here
+    however many times the name repeats.
+    """
+    target = tmp_path / "honest_duplicates.zip"
+    _build_two_member_zip(target, second_cd_method=8)
+
+    assert _find_header_mismatches(target) == []
