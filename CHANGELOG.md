@@ -10,12 +10,76 @@ Everything before it is a step toward that.
 | 0.5.0 | Defect sweep, full test coverage, commenting standard |
 | 0.5.1 | Comment passes 4 and 5, eleven defects fixed, three document evasion paths closed |
 | 0.5.2 | The archive_analysis defect sweep — twelve fixes, four archive evasion paths closed, the 227s intake stall |
-| 0.5.3 | *(current)* The archive_analysis comment pass — four more fixes, five ZIP header-differential evasions closed |
+| 0.5.3 | The archive_analysis comment pass, batches 1–2 — four fixes, five ZIP header-differential evasions closed |
+| 0.5.4 | *(current)* Batches 3–4 — the RAR and 7z/CAB/ISO handlers, three more 7z fixes including a bomb-guard bypass |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.4 — 2026-09-24
+
+Batches 3 and 4 of the `archive_analysis` comment pass: the RAR handlers,
+then 7z, CAB, ISO and ACE. Documenting the 7z handler turned up three
+defects, one of them a decompression-bomb guard that could be bypassed
+outright. All three were measured against py7zr 1.1.0 rather than reasoned
+about.
+
+### Fixed — `sevenzip_handler`
+
+- **The decompression-bomb budget could be bypassed entirely.** py7zr offers
+  no per-member read, so the budget is enforced as a single pre-flight sum
+  before `extractall`. That sum excluded encrypted members, on the
+  assumption `extractall` would not produce them — but py7zr describes
+  encryption only for the archive as a whole, so *every* member of a
+  password-protected archive reads as encrypted and the sum collapsed to 0,
+  which passes any budget. `extractall` then ran unbounded, decompressing
+  whatever was not actually encrypted before failing on whatever was.
+  Demonstrated on a password-protected archive holding 1002 bytes: the
+  guard compared 0 against the limit. Every member counts now; refusing a
+  fully-encrypted archive on its declared size costs nothing, since
+  extracting it without the password fails anyway.
+
+- **Every 7z member's timestamp was wrong by the host's UTC offset.** py7zr
+  returns an aware UTC `datetime`; `timetuple()` discards the tzinfo and
+  `time.mktime` then reads the naive result as local time. Measured at
+  exactly 32400s under `TZ=Asia/Tokyo`. A report's timestamps are evidence,
+  and being uniformly wrong is worse than being absent because nothing in
+  the output says so.
+
+- **The encryption test read an attribute that does not exist.** `FileInfo`
+  spells it `crc32`; the code asked for `crc`, so the "missing CRC" half of
+  the condition always held and the flag was archive-level by accident.
+  Reading the real field would have inverted the test rather than fixed it:
+  an encrypted member carries the *same* crc32 as the same bytes stored
+  unencrypted, and the only entries reporting `None` are directories. The
+  flag is archive-level deliberately now, and `ArchiveEntry.crc` is
+  populated rather than always `None`.
+
+### Documented
+
+- `rar_handler` / `rar_raw_headers` — why every member name is read twice,
+  by `rarfile` and again by the raw walker: the library strips the NTFS ADS
+  suffix that CVE-2025-8088 hides its whole drop path inside, so the
+  sanitised view is what you extract with and the raw view is what you
+  judge. Records that the STM stream name lives in the service record's
+  *header body*, not its data area — established from the samples rather
+  than the specification, and the one fact the module exists to encode.
+  Also records the 64 MiB read cap as a real gap rather than a memory
+  bound: past it the walker reports fewer members than `rarfile`, so ADS
+  recovery is refused wholesale.
+
+- `sevenzip_handler` / `other_handlers` — py7zr's all-or-nothing extraction
+  is what shapes the 7z path, including why duplicate members are genuinely
+  unrecoverable for that format. Not extracting ACE is recorded as a
+  security decision rather than a missing feature.
+
+### Tests
+
+**832 → 837.** The 7z tests build real archives with py7zr and assert
+against what the library actually returns, since all three defects were
+assumptions about it that reading could not settle.
 
 ## 0.5.3 — 2026-09-24
 
