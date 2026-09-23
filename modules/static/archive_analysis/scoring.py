@@ -37,8 +37,8 @@ detection.
 **Two vocabularies meet here.** The classification returned by this
 module is not the pipeline's LOW/MEDIUM/HIGH/CRITICAL band; the pipeline
 derives its own from the summed 0–100 score. A green LOW banner above a
-red MALICIOUS classification is that known mismatch, recorded in
-CLAUDE.md, not a bug in this file.
+red MALICIOUS classification is that known mismatch, recorded in the
+project notes, not a bug in this file.
 
 The bands are low because these weights are small and additive by design
 — two or three ordinary indicators should reach SUSPICIOUS, since an
