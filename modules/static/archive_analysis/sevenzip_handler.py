@@ -3,12 +3,39 @@
 7z archives can encrypt the central header so member listings are
 unavailable without the password. We flag that as ``header_encrypted``
 and return early.
+
+Design notes
+------------
+**py7zr extracts all or nothing, and that one constraint shapes the
+rest of this file.** It exposes no per-member read, so bounding the
+extraction has to happen *before* the call — hence the pre-flight sum
+rather than the running counter every other handler uses — and the
+members land wherever the library decided to put them rather than where
+this module asked. Working out which file on disk is which member is
+therefore a search, which is what `_map_extracted_paths` is, and why
+that function is shared with the CAB handler rather than living here as
+a private detail.
+
+It also means a duplicate member name is genuinely unrecoverable for
+this format. ``extractall`` writes the second over the first, so the
+earlier member's bytes are gone before this module looks. That is
+reported as ``shadowed_member_unrecoverable`` rather than passed over —
+7z is in ``_OVERWRITING_FORMATS`` for exactly this reason, unlike ZIP,
+RAR and TAR where the member can still be addressed by index.
+
+Encryption is recorded at archive level, because that is the only level
+py7zr describes it at. It reports whether the archive is
+password-protected and offers nothing per-member to refine that with.
+Measured against py7zr 1.1.0: an encrypted member carries the *same*
+crc32 as the same bytes stored unencrypted, and the only entries
+reporting no crc32 are directories — so CRC presence says nothing about
+encryption, and using it would flag every folder while missing every
+encrypted payload.
 """
 
 from __future__ import annotations
 
 import logging
-import time
 from pathlib import Path
 
 from .entries import ArchiveEntry, ContainerMeta, member_destinations
@@ -17,6 +44,22 @@ logger = logging.getLogger(__name__)
 
 
 def enumerate_7z(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
+    """Read a 7z archive and return normalised entries + metadata.
+
+    Args:
+        file_path: The archive. Opened read-only; nothing is extracted.
+
+    Returns:
+        ``(entries, meta)``. An empty entry list with
+        ``meta.header_encrypted`` set is a result rather than a failure:
+        a 7z archive can encrypt its central header, so the member list
+        itself is unavailable without the password.
+
+    ``PasswordRequired`` is caught separately from the other failures
+    precisely so that distinction survives. Folding it into the general
+    handler would record "could not open" for an archive whose refusal
+    to open is itself the finding.
+    """
     meta = ContainerMeta(detected_format="7z")
     entries: list[ArchiveEntry] = []
 
@@ -58,19 +101,60 @@ def enumerate_7z(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
 
 
 def _to_entry(info, encrypted_fallback: bool) -> ArchiveEntry:
+    """Normalise one py7zr file-info record into an :class:`ArchiveEntry`.
+
+    Args:
+        info:               The record as py7zr parsed it. Untyped
+                            because py7zr is an optional import.
+        encrypted_fallback: Whether the archive as a whole is
+                            password-protected.
+
+    Returns:
+        The normalised entry. ``member_index`` is left unset — nothing
+        in the 7z path can address a member by index anyway, since
+        extraction goes through ``extractall``.
+
+    ``is_encrypted`` is the conjunction described in the module
+    docstring: a missing CRC only means encrypted in an archive that is
+    password-protected, and password protection only implicates the
+    members whose CRC is absent.
+
+    ``timestamp`` comes from ``creationtime``, which is the field py7zr
+    populates as a datetime — on 1.1.0 ``lastwritetime`` comes back as a
+    string. It is converted with ``datetime.timestamp()`` rather than
+    ``time.mktime(...timetuple())``: py7zr returns an aware UTC value,
+    ``timetuple()`` throws the tzinfo away, and ``mktime`` then reads the
+    result as local time. That silently shifted every 7z member by the
+    host's offset.
+    """
+    # datetime.timestamp(), not time.mktime(timetuple()). py7zr hands back
+    # an aware UTC datetime; timetuple() discards the tzinfo and mktime
+    # then reads the naive result as local time, so every member's time
+    # was wrong by the host's offset — measured at exactly 32400s under
+    # TZ=Asia/Tokyo. A report's timestamps are evidence, and being
+    # uniformly wrong is worse than being absent because nothing in the
+    # output says so.
     try:
-        ts = int(time.mktime(info.creationtime.timetuple())) if info.creationtime else None
-    except (ValueError, TypeError, OverflowError, AttributeError):
+        ts = int(info.creationtime.timestamp()) if info.creationtime else None
+    except (ValueError, TypeError, OverflowError, AttributeError, OSError):
         ts = None
     return ArchiveEntry(
         name=info.filename,
         size_compressed=getattr(info, "compressed", 0) or 0,
         size_uncompressed=getattr(info, "uncompressed", 0) or 0,
-        is_encrypted=bool(getattr(info, "crc", None) is None and encrypted_fallback),
+        # Archive-level, because py7zr gives nothing per-member to refine
+        # it with. The previous test also required a missing CRC, which
+        # was vacuous twice over: the attribute is spelled `crc32`, so
+        # `crc` was always absent and the condition always held. Reading
+        # the real field would have inverted the test rather than fixed
+        # it — measured against py7zr 1.1.0, an encrypted member carries
+        # the same crc32 as the same bytes stored unencrypted, and the
+        # entries that report None are the directories.
+        is_encrypted=bool(encrypted_fallback),
         is_symlink=False,
         timestamp=ts,
         method=None,
-        crc=getattr(info, "crc", None),
+        crc=getattr(info, "crc32", None),
     )
 
 
@@ -80,15 +164,48 @@ def extract_members_to_temp(
     tmp_dir: Path,
     max_total_bytes: int,
 ) -> None:
-    """py7zr requires extracting the whole archive at once; we do so into
-    ``tmp_dir`` but cap the total via a pre-flight size sum."""
+    """Extract the whole archive into ``tmp_dir``, or none of it.
+
+    Args:
+        file_path:       The archive.
+        entries:         Members, used for the pre-flight sum and then
+                         mapped to their extracted files.
+        tmp_dir:         Destination, owned and removed by the caller.
+        max_total_bytes: Ceiling for the archive's total uncompressed
+                         size.
+
+    Returns:
+        None. ``entry.extracted_path`` is populated by
+        :func:`_map_extracted_paths` afterwards.
+
+    py7zr offers no per-member read, so the usual running counter is
+    impossible — by the time a member could be counted it is already on
+    disk. The budget is therefore enforced as a single decision before
+    the call, and an archive over it yields no extracted bytes at all
+    rather than a partial set. Metadata analysis is unaffected, which is
+    what keeps that acceptable.
+
+    Every member counts toward the sum, encrypted ones included. Since
+    py7zr reports encryption only for the archive as a whole, excluding
+    them made the sum 0 for any password-protected archive and let it
+    past the budget entirely.
+    """
     try:
         import py7zr  # noqa: PLC0415
     except ImportError:
         return
 
-    # Pre-flight check — abort if total uncompressed would exceed the budget.
-    total = sum(e.size_uncompressed for e in entries if not e.is_encrypted)
+    # Pre-flight check — abort if total uncompressed would exceed the
+    # budget. Every member counts, including the encrypted ones.
+    # Excluding them looked harmless and was a bypass: py7zr describes
+    # encryption only at archive level, so every member of a
+    # password-protected archive reads as encrypted and the sum collapsed
+    # to 0, which passes any budget. extractall then ran unbounded and
+    # decompressed whatever was not actually encrypted before failing on
+    # whatever was. Nothing here can tell the two apart, so refusing a
+    # fully-encrypted archive on its declared size is the right trade —
+    # extracting it without the password would have failed regardless.
+    total = sum(e.size_uncompressed for e in entries)
     if total > max_total_bytes:
         return
 
