@@ -270,18 +270,62 @@ def _dump_payload(payload: bytes) -> str | None:
         The tempfile path, or ``None`` if it could not be written.
 
     ``delete=False`` because the file has to outlive this function for
-    the orchestrator to re-enter the pipeline on it. **The caller owns
-    the deletion** — these are live malware bytes and nothing else will
-    remove them. The ``sfx_overlay_`` prefix exists so a leak is
-    identifiable if one ever escapes.
+    the orchestrator to re-enter the pipeline on it.
+
+    Ownership transfers exactly when a path is returned. Up to that
+    point the file is this function's, and every failure path — a
+    refused write, a flush that fails at close, an exception that is not
+    an OSError at all — removes it before leaving. After that point
+    **the caller owns the deletion**, and nothing else will remove it.
+    These are live malware bytes, so there is no third state where
+    neither side is responsible. The ``sfx_overlay_`` prefix exists so a
+    leak is identifiable if one ever escapes anyway.
     """
+    # Structure note: the outer `finally` contains the unlink and nothing
+    # else. That is the whole design of this function. Anything placed
+    # before it in the same block — a close(), a log call — is another
+    # statement that can raise or be interrupted, and an interrupt there
+    # skips the unlink and leaks the payload. Ctrl-C is asynchronous and
+    # KeyboardInterrupt derives from BaseException, so `except OSError`
+    # does not contain it. Keep the outer `finally` a single guarded
+    # unlink; put anything else in the inner one.
+    tmp = None
+    handed_over = False
     try:
         tmp = tempfile.NamedTemporaryFile(
             prefix="sfx_overlay_", delete=False,
         )
-        tmp.write(payload)
-        tmp.close()
+        try:
+            tmp.write(payload)
+            # close() is inside the try, not deferred to cleanup, because
+            # write() on a buffered file can succeed with the bytes still
+            # in memory — the flush that reaches disk happens here. A full
+            # disk therefore surfaces at close, leaving a short or empty
+            # file, and that has to fail the dump. Handing the
+            # orchestrator a truncated payload to recurse into and score
+            # is a wrong answer, which is worse than the missing one
+            # `None` gives.
+            tmp.close()
+        finally:
+            # Only reached when write() or close() did not complete. The
+            # descriptor must be released before the unlink below, on the
+            # platforms where that matters.
+            if not tmp.closed:
+                try:
+                    tmp.close()
+                except Exception:  # noqa: BLE001
+                    logger.debug("Could not close SFX payload dump")
+        # Set only once the bytes are on disk and the path is about to be
+        # returned: this is the single point where ownership of the file
+        # passes to the caller.
+        handed_over = True
         return tmp.name
     except OSError as exc:
         logger.debug("Could not dump SFX overlay payload: %s", exc)
         return None
+    finally:
+        if tmp is not None and not handed_over:
+            try:
+                Path(tmp.name).unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Could not remove partial SFX payload dump")
