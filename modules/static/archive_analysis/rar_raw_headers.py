@@ -15,6 +15,35 @@ whatever was parsed up to the failure point.
 RAR5 is the default format written by WinRAR 6.x / 7.x and every
 sample observed in the corpus uses it. RAR4 support is included as a
 fallback for older archives.
+
+Design notes
+------------
+This is the same two-readers shape as `zip_handler`, for the same
+reason. The library gives a clean, sanitised view, and the sanitisation
+is exactly what the attack hides behind — so a second parser reads the
+bytes the library declined to show. Neither replaces the other:
+``rarfile`` owns decompression and the member list, this owns the names.
+
+**The STM stream name is not where the format documentation suggests.**
+It lives inside the service record's *header body*, appended after the
+``file_name`` field, not in the record's data area. That was established
+by reading the CVE-2025-8088 samples rather than the specification, and
+it is the single fact this module exists to encode — a reader who
+assumes the data area finds nothing and concludes the archive is clean.
+
+Everything is bounded and nothing raises past ``parse_rar_filenames``.
+The walkers carry an iteration guard, vints are capped at their 10-byte
+maximum, and every offset is checked against the buffer before use — the
+input is a malicious archive by assumption, so a crash here is a denial
+of service on the whole scan.
+
+**Known limit: only the first 64 MiB are read.** Past that the walk sees
+a truncated archive and reports fewer members than ``rarfile`` does,
+which makes `rar_handler._attach_raw_names` refuse the enrichment
+wholesale rather than risk pairing a suffix with the wrong member. ADS
+recovery therefore does not run at all on archives over the cap. That is
+the safe direction — a wrong attribution is worse than none — but it is
+a real gap, not merely a memory bound.
 """
 
 from __future__ import annotations
@@ -28,7 +57,11 @@ logger = logging.getLogger(__name__)
 
 _RAR4_SIG = b"Rar!\x1a\x07\x00"
 _RAR5_SIG = b"Rar!\x1a\x07\x01\x00"
-_MAX_RAR_BYTES = 64 * 1024 * 1024  # cap memory for huge archives
+# Whole-file read, capped. The walk needs random access across headers
+# scattered through the file, so this is a bound on memory rather than a
+# streaming window — see the known limit in the module docstring for what
+# it costs on an archive larger than this.
+_MAX_RAR_BYTES = 64 * 1024 * 1024
 
 
 def parse_rar_filenames(file_path: Path) -> list[dict]:
@@ -82,6 +115,11 @@ def _parse_rar5(data: bytes, start: int) -> list[dict]:
     out: list[dict] = []
     pos = start
     n = len(data)
+    # Iteration guard. Every path through the loop is meant to advance
+    # `pos`, but the input is attacker-controlled and a record that
+    # computes a zero or backwards advance would spin forever. The guard
+    # is the backstop that makes that a truncated parse instead of a hung
+    # scan; the `header_size == 0` break below is the specific case.
     guard = 0
 
     while pos + 4 < n and guard < 100_000:
@@ -121,6 +159,12 @@ def _parse_rar5(data: bytes, start: int) -> list[dict]:
             pos = record_end + data_size
             continue
 
+        # A malformed record is skipped rather than ending the walk: the
+        # records that follow are independently addressable, and an
+        # archive is not required to be wholly valid for its later
+        # members to be worth reading. A structurally impossible *size*,
+        # by contrast, breaks out above — past that point the offsets
+        # are guesses.
         if header_type == 2:  # file header
             try:
                 name = _parse_rar5_file_header(data, cursor, record_end)
@@ -211,6 +255,27 @@ def _parse_rar5_file_header(data: bytes, start: int, end: int) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _parse_rar4(data: bytes, start: int) -> list[dict]:
+    """Walk RAR4 blocks and return one entry per FILE_HEAD.
+
+    Args:
+        data:  The archive bytes, possibly truncated at the read cap.
+        start: Offset just past the RAR4 signature.
+
+    Returns:
+        ``[{"name": str, "ads_suffix": str | None}, ...]`` in archive
+        order, empty if nothing parsed.
+
+    RAR4 has no SERVICE records, so there is no STM equivalent here —
+    an ADS can only appear as a colon inside the member name itself,
+    which :func:`_split_ads` handles. That is why this walker is
+    markedly simpler than the RAR5 one despite covering the same
+    ground.
+
+    Fixed-width headers rather than vints, so the bounds checks are
+    arithmetic: a block that declares a size below the 7-byte header,
+    or one that ends at or before it started, ends the walk rather than
+    being skipped, since either makes every following offset a guess.
+    """
     out: list[dict] = []
     pos = start
     n = len(data)
@@ -286,7 +351,26 @@ class _VIntError(Exception):
 
 
 def _read_vint(data: bytes, pos: int) -> tuple[int, int]:
-    """RAR5 variable-length integer — 7 bits/byte, MSB = continuation."""
+    """RAR5 variable-length integer — 7 bits/byte, MSB = continuation.
+
+    Args:
+        data: The buffer.
+        pos:  Offset of the first byte.
+
+    Returns:
+        ``(value, bytes_consumed)``.
+
+    Raises:
+        _VIntError: The encoding ran past its 10-byte maximum, or the
+            buffer ended mid-value.
+
+    The 10-byte cap is the format's own: 10 x 7 bits covers a 64-bit
+    value. Without it a run of continuation bytes — trivial to write
+    into a malicious archive — walks the buffer to its end on every
+    field. Raising rather than returning a sentinel keeps the callers
+    honest, since a vint that cannot be read means the offsets after it
+    are unknown rather than merely wrong.
+    """
     val = 0
     shift = 0
     n = len(data)
