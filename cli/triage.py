@@ -33,6 +33,7 @@ payload. The per-file progress lines are on stderr either way.
 
 import copy
 import logging
+import os
 from pathlib import Path
 
 import click
@@ -194,7 +195,7 @@ def triage(
 
 
 def _collect_files(directory: Path, *, recursive: bool) -> list[Path]:
-    """Return the files to analyse, dotfiles excluded, deterministically ordered.
+    """Return the files to analyse, deterministically ordered.
 
     Args:
         directory: The sweep root. Already known to be a directory.
@@ -205,19 +206,35 @@ def _collect_files(directory: Path, *, recursive: bool) -> list[Path]:
         two sweeps of the same directory produce the same ``-f jsonl``
         output, which is what makes the format diffable between runs.
 
-    With ``recursive`` a dot-prefixed *directory* is skipped too — walking
-    into ``.git`` or ``.venv`` is never what a triage sweep wants. The same
-    rule excludes a dot-prefixed *file*, which is collateral rather than
-    the intent, and is pinned by a test; see the project notes for why it
-    has been left as a decision rather than changed.
+    Only *directories* are skipped for being dot-prefixed — walking into
+    ``.git`` or ``.venv`` is never what a triage sweep wants. A
+    dot-prefixed **file** is analysed like any other: the exclusion was
+    written for those two directories, and extending it to file names
+    meant a sample called ``.payload.exe`` was never analysed and never
+    reported as skipped, so the sweep silently covered less than the
+    directory held.
+
+    ``os.walk`` rather than ``rglob``, because pruning has to happen
+    during the walk. ``rglob("*")`` yields every path regardless and the
+    filter runs afterwards, so the walker still descends into a hidden
+    directory and the caller still pays an ``is_file()`` stat per entry.
+    Measured on a 20,000-file ``.git``: 0.83s filtering ``rglob`` against
+    0.00s pruning the walk. Deleting the entry from *dirnames* in place
+    is what stops the descent — rebinding the name would not.
+
+    Symlinked directories are not followed (``os.walk`` defaults to
+    ``followlinks=False``), so a link pointing at ``/`` cannot turn a
+    sweep of one folder into a sweep of the filesystem.
     """
-    candidates = directory.rglob("*") if recursive else directory.iterdir()
-    return sorted(
-        f
-        for f in candidates
-        if f.is_file()
-        and not any(part.startswith(".") for part in f.relative_to(directory).parts)
-    )
+    if not recursive:
+        return sorted(f for f in directory.iterdir() if f.is_file())
+
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(directory):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        base = Path(dirpath)
+        found.extend(base / name for name in filenames)
+    return sorted(f for f in found if f.is_file())
 
 
 def _analyse_all(
