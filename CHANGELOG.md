@@ -12,12 +12,94 @@ Everything before it is a step toward that.
 | 0.5.2 | The archive_analysis defect sweep — twelve fixes, four archive evasion paths closed, the 227s intake stall |
 | 0.5.3 | The archive_analysis comment pass, batches 1–2 — four fixes, five ZIP header-differential evasions closed |
 | 0.5.4 | Batches 3–4 — the RAR and 7z/CAB/ISO handlers, three more 7z fixes including a bomb-guard bypass |
-| 0.5.5 | *(current)* Batch 5 — archive_analysis complete; the OOXML costume bypass and the ADS extension blind spot closed |
+| 0.5.5 | Batch 5 — archive_analysis complete; the OOXML costume bypass and the ADS extension blind spot closed |
+| 0.5.6 | *(current)* lnk_analysis complete — four fixes including a size-cap bypass that deleted the module from a scan |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.6 — 2026-09-24
+
+The `lnk_analysis` comment pass, all four batches. The package arrived better
+documented than any before it, so the pass mostly filled contracts — and then
+turned up four defects anyway, one of them the cheapest evasion found in the
+project so far.
+
+### Fixed — the size cap deleted the module from a scan
+
+`run()` returned `status="skipped"` and score 0 for any shortcut over
+`max_lnk_size_mb`. Appending eleven megabytes of nulls therefore removed
+`lnk_analysis` from the analysis entirely, requiring no understanding of the
+format. Measured on `Grandoreiro.lnk`: **MALICIOUS at 60 untouched, skipped
+and worth 0 with padding appended.**
+
+The shell-link structure sits at the front of the file, so a bounded prefix
+always contains it. The cap now bounds how much is *read*, never whether the
+file is looked at. Three consequences had to follow: the real file size is
+restored onto the parse result (it drives `large_file` and is printed), the
+overlay bounds are recomputed from that size — a structure padded to end
+exactly at the cap otherwise leaves the prefix with no trailing bytes and the
+overlay looks absent, a quieter version of the same bypass — and a truncated
+overlay carries no digests and is not forwarded to VirusTotal, since a hash of
+the part that happened to be read is a miss dressed up as an answer.
+
+`test_size_cap_skips_without_reading` was inverted rather than deleted: it
+asserted the behaviour that was the bug, and despite its name never checked
+that the read was bounded.
+
+### Fixed — a padded basename hid the LOLBin
+
+`_basename` stripped trailing separators and spaces but not leading ones, so
+`C:\Windows\System32\   cmd.exe` resolved to `'   cmd.exe'`, which matches no
+LOLBin. Windows ignores leading whitespace when it executes, so the shortcut
+runs `cmd.exe` while the module reports no LOLBin target — and `lolbin_target`
+is a component of the two heaviest rules in the engine, including the
+ZDI-CAN-25373 padding combination. Whitespace padding is the central technique
+this module exists to detect, which made the basename the last place it should
+have been able to hide.
+
+### Fixed — `full_path` dropped the host from every network target
+
+`LinkInfoData.full_path` concatenated `LocalBasePath` and `CommonPathSuffix`
+unconditionally. A network-targeted shortcut has no `LocalBasePath` at all, so
+for a UNC or WebDAV target it returned the bare suffix — `\payload.exe`
+instead of `\\attacker.com@SSL\DavWWWRoot\payload.exe`. `command.py` feeds
+that into its four-source target resolution, so the reported target for exactly
+the shape the module flags as `webdav_remote_exec` had the attacker's host
+removed. Latent in the current corpus, where all 30 samples carry a local
+`LinkInfo`.
+
+### Fixed — a false forgery premise
+
+`_timestamps_fabricated` treated a write time earlier than the creation time as
+impossible. Windows produces that ordering every time a file is copied.
+`APT28.lnk` shows it — creation and access at 2009-07-13, the Windows 7 RTM
+date, with a write time a month earlier — and was flagged as fabricated on that
+basis alone. The condition is gone; the two that remain describe states a
+filesystem does not produce.
+
+### Documented
+
+Comment passes over all eight files. The notes worth keeping: why the
+deobfuscation search is breadth-first rather than depth-first, why the
+bounds-checked accessors guard against a plausible zero rather than an
+exception, why shell-item dispatch reads the class type's high nibble, and why
+`resolve_target` reports disagreement on basenames rather than full paths.
+
+One inaccuracy in the new notes was corrected rather than left standing: the
+timestamp-source comparison's false positive is not an edge case around
+midnight. DOS timestamps are local and FILETIMEs are UTC, so they disagree for
+a window each day equal to the host's UTC offset. Its real rate is unmeasured,
+because measuring it needs benign shortcuts and the corpus has none — it fires
+zero times on the 30 malicious samples, and that zero must not be read as
+accuracy.
+
+### Tests
+
+**868 → 882.** Corpus unchanged at 29 of 30 MALICIOUS; `APT28.lnk` drops from
+23 to 15, the difference being the false forgery flag.
 
 ## 0.5.5 — 2026-09-24
 
