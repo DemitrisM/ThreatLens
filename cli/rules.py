@@ -62,9 +62,18 @@ def update(
         validate_rules,
     )
 
+    # ── Mutually exclusive modes ────────────────────────────────────────
+    # Refused rather than resolved by precedence: a flag that is accepted
+    # and then silently ignored is worse than one that is rejected, because
+    # the user believes the run did what they asked.
     if check and force:
         raise click.UsageError(
             "--check and --force are mutually exclusive: --check applies nothing"
+        )
+    if validate_only and (force or check):
+        raise click.UsageError(
+            "--validate-only runs offline and applies nothing, so it cannot be "
+            "combined with --force or --check"
         )
 
     _setup_logging(verbosity=verbosity)
@@ -101,6 +110,20 @@ def update(
         _print_update_results(report, verbosity > 0)
 
     out.print()
+
+    # ── Exit code ───────────────────────────────────────────────────────
+    # Reported after the results, so a source that did work is still shown.
+    # A source that errored means the rule set on disk is not the one the
+    # config asks for, and the next scan runs against whatever is there —
+    # which a scheduled job must be able to detect. Broken *rules* are not
+    # counted: they were fetched correctly and `yara_scanner` isolates them
+    # by design, so that is a report, not a failure to run.
+    failed = [s["name"] for s in report["sources"] if s.get("error")]
+    if failed:
+        raise RuntimeFailure(
+            f"{len(failed)} of {len(report['sources'])} rule source(s) failed: "
+            + ", ".join(failed)
+        )
 
 
 def _print_validation(vr: dict, verbose: bool) -> None:
