@@ -161,33 +161,49 @@ _FILETIME_EPOCH_DELTA = 116_444_736_000_000_000  # 1601-01-01 -> 1970-01-01, in 
 #
 # struct.unpack on a short buffer is the single most common exception to
 # escape a LNK parser. These return None instead.
+#
+# Slicing would not raise either — it silently yields a short or empty
+# result, and int.from_bytes(b"") is 0 — so the danger without a guard is
+# not a crash but a plausible zero flowing into a size field and driving
+# a walk over bytes that were never there. None is what makes the overrun
+# visible to the caller.
+#
+# Callers overwhelmingly write `_u32(data, off) or 0`, which folds None
+# and a genuine zero together. That is correct for the fixed-layout
+# header, where "absent" and "zero" are the same claim, and deliberately
+# not used for size and offset fields, where the two differ.
 # ---------------------------------------------------------------------------
 
 def _u8(data: bytes, off: int) -> int | None:
+    """Byte at ``off``, or None if it would overrun."""
     if off < 0 or off + 1 > len(data):
         return None
     return data[off]
 
 
 def _u16(data: bytes, off: int) -> int | None:
+    """Little-endian uint16 at ``off``, or None if it would overrun."""
     if off < 0 or off + 2 > len(data):
         return None
     return int.from_bytes(data[off:off + 2], "little")
 
 
 def _u32(data: bytes, off: int) -> int | None:
+    """Little-endian uint32 at ``off``, or None if it would overrun."""
     if off < 0 or off + 4 > len(data):
         return None
     return int.from_bytes(data[off:off + 4], "little")
 
 
 def _i32(data: bytes, off: int) -> int | None:
+    """Signed little-endian int32 — IconIndex may be a negative resource ID."""
     if off < 0 or off + 4 > len(data):
         return None
     return int.from_bytes(data[off:off + 4], "little", signed=True)
 
 
 def _u64(data: bytes, off: int) -> int | None:
+    """Little-endian uint64 at ``off``, or None if it would overrun."""
     if off < 0 or off + 8 > len(data):
         return None
     return int.from_bytes(data[off:off + 8], "little")
@@ -342,6 +358,21 @@ def shannon_entropy(data: bytes) -> float:
 
 @dataclass
 class ShellLinkHeader:
+    """The fixed 76-byte header, decoded.
+
+    Both raw and rendered forms of the three timestamps are kept. The ISO
+    strings are None whenever the FILETIME is zero or out of range, and
+    both cases are common and are themselves findings — so the raw
+    integers stay available for the indicators, which need to tell a
+    zeroed timestamp from one that merely failed to render.
+
+    Note the raw values cannot distinguish a zero field from a truncated
+    one: they are read with the ``or 0`` idiom described above, which
+    folds None into zero. For this header that is the intended reading,
+    since a header short enough to truncate a timestamp is already
+    recorded as an anomaly.
+    """
+
     link_flags: int = 0
     flag_names: list[str] = field(default_factory=list)
     file_attributes: int = 0
@@ -359,11 +390,29 @@ class ShellLinkHeader:
     hotkey: int = 0
 
     def has(self, flag_name: str) -> bool:
+        """True if ``flag_name`` is set in LinkFlags.
+
+        Args:
+            flag_name: A name from :data:`LINK_FLAGS`.
+
+        Returns:
+            Whether the bit is set. An unknown name is simply False —
+            parsing is gated on these, so a typo must not raise
+            mid-parse.
+        """
         return flag_name in self.flag_names
 
 
 @dataclass
 class LinkInfoData:
+    """The LinkInfo structure's analytically useful fields.
+
+    LinkInfo describes where the target lived when the shortcut was
+    made — a local path, a network share, or both. It is one of four
+    independent sources for the target, and `command.py` reconciles
+    them; disagreement between them is itself an indicator.
+    """
+
     local_base_path: str = ""
     common_path_suffix: str = ""
     net_name: str = ""
@@ -374,6 +423,12 @@ class LinkInfoData:
 
     @property
     def full_path(self) -> str:
+        """Base path and common suffix joined, as the spec defines it.
+
+        Concatenated with no separator: the two fields are already a
+        split of one path, and the suffix carries its own leading
+        separator when it needs one.
+        """
         return f"{self.local_base_path}{self.common_path_suffix}"
 
 
@@ -517,6 +572,25 @@ def _finalise(data: bytes, out: ParsedLnk, offset: int) -> ParsedLnk:
 # ---------------------------------------------------------------------------
 
 def _parse_header(data: bytes, out: ParsedLnk) -> None:
+    """Decode the fixed header and record its spec violations.
+
+    Args:
+        data: The whole file.
+        out:  Mutated in place — the header and any anomalies found.
+
+    Returns:
+        None.
+
+    Every field is read at a fixed offset, so there is no cursor to
+    desynchronise and no ordering dependency; a truncated header yields
+    zeros rather than a partial parse.
+
+    The ``MUST be zero`` checks are the point of the function as much as
+    the field values are. Explorer writes these correctly and
+    hand-rolled builders routinely do not, so a reserved bit that is set
+    is free provenance signal — which is why each one appends to
+    ``anomalies`` instead of being ignored or raising.
+    """
     hdr = out.header
     hdr.link_flags = _u32(data, 0x14) or 0
     hdr.flag_names = [name for mask, name in LINK_FLAGS if hdr.link_flags & mask]
