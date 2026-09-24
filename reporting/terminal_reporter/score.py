@@ -37,7 +37,30 @@ def print_score_banner(
     verdict = build_verdict(module_results, scoring)
     if verdict:
         con.print()
-        con.print(Text(f"  {verdict}", style="dim italic"))
+        # Wrapped here rather than left to rich. Two spaces inside the
+        # string indent only the first line: rich wraps on the console
+        # width and restarts at column 0, so any verdict naming more than
+        # two findings read as a stray paragraph rather than the rest of
+        # the sentence above it. `rich.padding.Padding` fixes the indent
+        # but pads every line out to the full width, putting trailing
+        # whitespace on the line a reader is most likely to select.
+        #
+        # `Text.wrap` rather than `textwrap.wrap` because the measurement
+        # has to be in terminal cells, not characters: the verdict quotes
+        # the LNK TrackerDataBlock's build-host name, which is
+        # attacker-controlled and may be full-width, and a character
+        # count would under-wrap it and hand the overflow back to rich.
+        #
+        # The width floor only guards against zero. Nothing preserves a
+        # two-space indent on a console three columns wide, and a larger
+        # floor would break the indent at widths where it still fits.
+        body = Text(verdict, style="dim italic")
+        for line in body.wrap(con, max(1, con.width - 2)):
+            # Wrapping keeps the separator space at the fold. `rstrip`
+            # on a Text edits in place and returns None, so it cannot be
+            # chained the way the str method can.
+            line.rstrip()
+            con.print(Text("  ") + line)
 
 
 def print_findings(

@@ -73,3 +73,128 @@ def test_no_truncation_no_hint():
 
 def test_empty_entries_render_nothing():
     assert render(100, []) == ""
+
+
+# ── wrapped blocks keep their indent ────────────────────────────────
+
+
+@pytest.mark.parametrize("width", [66, 80, 100, 120])
+def test_the_verdict_keeps_its_indent_when_it_wraps(width):
+    """The indent was two spaces inside the string, so rich dropped it.
+
+    A wrapped verdict restarted at column 0 while every other block in
+    the report stays at column 2, which reads as a stray paragraph
+    rather than the continuation of the sentence above it. Measured on
+    Grandoreiro.lnk at 100 columns, whose verdict names four findings
+    and needs two lines to do it.
+    """
+    from reporting.terminal_reporter.score import print_score_banner
+
+    scoring = {"total_score": 60, "risk_band": "HIGH", "breakdown": []}
+    module_results = [
+        {
+            "module": "lnk_analysis",
+            "status": "success",
+            "score_delta": 60,
+            "data": {
+                "classification": "MALICIOUS",
+                "lolbin_target": "powershell.exe",
+                "indicator_flags": {
+                    "encoded_powershell": True,
+                    "icon_masquerade": True,
+                    "known_bad_infrastructure": True,
+                },
+                "tracker": {"machine_id": "laptop-pp7fvpth"},
+            },
+        }
+    ]
+
+    buf = io.StringIO()
+    print_score_banner(scoring, module_results, console=make_console(width, file=buf))
+
+    lines = [line for line in buf.getvalue().splitlines() if line.strip()]
+    score_line = max(i for i, ln in enumerate(lines) if "/100" in ln)
+    verdict_lines = lines[score_line + 1 :]
+    assert verdict_lines, "no verdict rendered"
+    for line in verdict_lines:
+        assert line.startswith("  "), f"width {width}: {line!r} lost the indent"
+
+
+@pytest.mark.parametrize("width", [66, 80, 100])
+def test_the_verdict_carries_no_trailing_whitespace(width):
+    """`rich.padding.Padding` fixes the indent and pads to full width.
+
+    That puts trailing spaces on the one line of the report a reader is
+    most likely to select and copy, so the wrapping is done here instead.
+    """
+    from reporting.terminal_reporter.score import print_score_banner
+
+    scoring = {"total_score": 60, "risk_band": "HIGH", "breakdown": []}
+    module_results = [
+        {
+            "module": "lnk_analysis",
+            "status": "success",
+            "score_delta": 60,
+            "data": {
+                "classification": "MALICIOUS",
+                "lolbin_target": "powershell.exe",
+                "indicator_flags": {
+                    "encoded_powershell": True,
+                    "icon_masquerade": True,
+                    "known_bad_infrastructure": True,
+                },
+                "tracker": {"machine_id": "laptop-pp7fvpth"},
+            },
+        }
+    ]
+
+    buf = io.StringIO()
+    print_score_banner(scoring, module_results, console=make_console(width, file=buf))
+
+    for line in buf.getvalue().splitlines():
+        assert line == line.rstrip(), f"width {width}: trailing space in {line!r}"
+
+
+@pytest.mark.parametrize("width", [20, 21, 22, 40])
+def test_the_verdict_survives_a_narrow_console(width):
+    """A floor above the indent hands the wrapping back to rich.
+
+    `max(20, width - 2)` meant that at any width under 22 the wrapped
+    line plus its indent overran the console, rich re-wrapped it, and
+    the overflow restarted at column 0 — recreating the bug the manual
+    wrapping exists to fix.
+
+    66 columns is the width the report is actually supported at; these
+    are the band where that floor misbehaved, not a claim that the rest
+    of the layout holds here. Below about 20 the score bar itself wraps
+    onto three lines, which this assertion cannot tell from a verdict.
+    """
+    from reporting.terminal_reporter.score import print_score_banner
+
+    scoring = {"total_score": 60, "risk_band": "HIGH", "breakdown": []}
+    module_results = [
+        {
+            "module": "lnk_analysis",
+            "status": "success",
+            "score_delta": 60,
+            "data": {
+                "classification": "MALICIOUS",
+                "lolbin_target": "powershell.exe",
+                "indicator_flags": {"encoded_powershell": True},
+            },
+        }
+    ]
+
+    buf = io.StringIO()
+    print_score_banner(scoring, module_results, console=make_console(width, file=buf))
+
+    # Everything after the score line. Sliced this way rather than by
+    # index because the bar itself wraps below about forty columns, and
+    # its continuation is not a verdict line.
+    lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+    score_line = max(i for i, ln in enumerate(lines) if "/100" in ln)
+    verdict_lines = lines[score_line + 1 :]
+
+    assert verdict_lines
+    for line in verdict_lines:
+        assert line.startswith("  "), f"width {width}: {line!r} lost the indent"
