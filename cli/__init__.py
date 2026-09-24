@@ -11,6 +11,27 @@ to stdout, diagnostics to stderr, and the exit status is meaningful: 0 clean,
 
 Subcommands live in dedicated modules and are registered via ``add_command``
 so that nothing in this package imports it back.
+
+Design notes
+------------
+**The subcommand imports sit at the bottom of the file on purpose.** Each
+one imports ``cli._console`` and ``cli._helpers``, which are submodules of
+this package, so importing them at the top would run those imports while
+this module is still half-initialised. Defining :data:`cli` and
+``__version__`` first and importing afterwards means the package is
+complete by the time anything reaches back into it. The ``E402`` suppressions
+mark that as deliberate rather than an oversight.
+
+**``analyse`` is kept as a hidden command that only fails.** Removing it
+outright would make an older invocation print Click's generic "no such
+command", which does not say where the behaviour went; this exits 2 with
+the two verbs that replaced it. ``UNPROCESSED`` so that the arguments of
+the old form — paths, flags — are swallowed rather than re-parsed into a
+different error about an unknown option.
+
+**``max_content_width`` is 100.** Help output is the one place the tool
+does not adapt to the terminal: the option tables are written to line up at
+that width, and the values quoted in ``--help`` are chosen to fit it.
 """
 
 import click
@@ -31,6 +52,9 @@ __all__ = ["cli", "__version__"]
 @click.version_option(version=__version__, prog_name="ThreatLens")
 def cli() -> None:
     """ThreatLens — static malware analysis with transparent confidence scoring."""
+    # Deliberately empty: the group exists to host the four verbs and to
+    # carry --version and -h. Any setup done here would run for every
+    # subcommand, including the ones that must not touch the config.
 
 
 @click.command("analyse", hidden=True)

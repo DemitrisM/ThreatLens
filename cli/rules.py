@@ -3,6 +3,27 @@
 A group rather than a single verb so later passes can add ``rules list`` /
 ``rules validate`` without another top-level command. Rendered results go to
 stdout; failures go to stderr and exit 3.
+
+Design notes
+------------
+**The three modes are mutually exclusive and refused, not resolved.**
+``--check`` reports without applying, ``--force`` re-clones, and
+``--validate-only`` runs offline and applies nothing. Picking a winner by
+precedence would mean accepting a flag and silently not honouring it,
+which leaves the user believing the run did what they asked.
+
+**A source that errored is exit 3, a rule that will not compile is not.**
+The first means the rules on disk are not the ones the config asks for, so
+the next scan runs against something else — a scheduled job has to be able
+to see that. The second means the fetch worked and an upstream rule is
+broken; ``yara_scanner`` compiles per-file and isolates it by design, so
+it is a finding rather than a failure to run.
+
+**Nothing here writes a machine format**, so the renderers use rich markup
+throughout. Results go to ``out``; progress and skip notices go to ``err``.
+
+``core.rule_updater`` returns an aggregate dict and raises nothing — the
+formatting, and the decision about the exit status, both live here.
 """
 
 import logging
@@ -127,7 +148,20 @@ def update(
 
 
 def _print_validation(vr: dict, verbose: bool) -> None:
-    """Display rule validation results."""
+    """Display rule validation results.
+
+    Args:
+        vr:      A ``validate_rules`` result. The caller has already
+                 handled ``skipped_reason``, so the counts are present.
+        verbose: True at ``-v``, which lists each broken file and its
+                 compiler error. Off by default because a signature-base
+                 clone routinely carries a handful of rules that need a
+                 YARA module this build lacks, and a wall of them would
+                 bury the counts that matter.
+
+    Yellow rather than red for broken rules: the scan still runs, with the
+    rules that did compile.
+    """
     total = vr["total_files"]
     valid = vr["valid_count"]
     broken = vr["broken_count"]
@@ -147,7 +181,18 @@ def _print_validation(vr: dict, verbose: bool) -> None:
 
 
 def _print_check_results(report: dict) -> None:
-    """Display ``--check`` results."""
+    """Display ``--check`` results, one line per source.
+
+    Args:
+        report: The ``update_all_sources`` aggregate, gathered in check
+                mode so nothing on disk has changed.
+
+    The four states are distinguished deliberately — not cloned, errored,
+    behind, up to date. "Not cloned" is the first-run case and says what
+    will happen rather than reading as a fault; the commit pair is printed
+    for a source that is behind so the change can be inspected upstream
+    before it is pulled.
+    """
     for src in report["sources"]:
         name = src["name"]
         if not src["exists"]:
@@ -170,7 +215,21 @@ def _print_check_results(report: dict) -> None:
 
 
 def _print_update_results(report: dict, verbose: bool) -> None:
-    """Display update results per source, then validation."""
+    """Display update results per source, then validation.
+
+    Args:
+        report:  The ``update_all_sources`` aggregate.
+        verbose: Passed through to :func:`_print_validation`.
+
+    One panel per source rather than a table: the fields differ by action —
+    a clone has no previous commit, a pull has a change breakdown, an error
+    has neither — and a table would need a column for every field and leave
+    most of them empty.
+
+    ``action`` is read with a default and an unknown value renders as
+    "Unknown" rather than raising, so a newer ``rule_updater`` reporting an
+    action this renderer has not been taught cannot break the command.
+    """
     from rich.panel import Panel  # noqa: PLC0415
 
     action_style = {
