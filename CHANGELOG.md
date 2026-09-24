@@ -15,12 +15,109 @@ Everything before it is a step toward that.
 | 0.5.5 | Batch 5 — archive_analysis complete; the OOXML costume bypass and the ADS extension blind spot closed |
 | 0.5.6 | lnk_analysis complete — four fixes including a size-cap bypass that deleted the module from a scan |
 | 0.5.7 | html_analysis complete — a Windows-1252 page decoded to mojibake and reported clean |
-| 0.5.8 | *(current)* onenote_analysis complete — one wrong byte had disabled the module's headline rule |
+| 0.5.8 | onenote_analysis complete — one wrong byte had disabled the module's headline rule |
+| 0.5.9 | *(current)* cli/ complete — seven fixes, three of them exit codes that reported success on a run that had not worked |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.9 — 2026-09-24
+
+The `cli/` comment pass, all three batches. Seven defects, and the theme
+running through them is an exit status or an output that claimed a run had
+done something it had not.
+
+### Fixed — three exit codes that reported success
+
+`triage --min-score 90 --fail-on HIGH` exited 0 on a directory holding a
+HIGH file. `--min-score` is documented as hiding files from the output, but
+the filter ran before the reports list was built, so a hidden file was
+invisible to `--fail-on` as well — and that invocation is exactly the shape
+a CI gate would use to catch such a file. `_analyse_all` returns two lists
+now: the rows to print, and every report produced, which is what the
+threshold is graded against. The same split fixed the reported sweep time,
+which summed only the printed rows.
+
+`rules update` with every source unreachable printed red error panels and
+exited 0. `core.rule_updater` reports per-source failures in its return
+value and raises nothing, so the CLI formatted them and returned normally;
+a scheduled job saw success while the next scan ran against whatever rules
+happened to be on disk. It exits 3 now, after printing, so a source that
+did work is still reported. Broken *rules* are deliberately not counted —
+they were fetched correctly and `yara_scanner` isolates them at compile
+time, which makes them a finding rather than a failure to run.
+
+`-p deep` could run fewer modules than `-p standard`. Only `standard`
+filled `enabled_modules` from the defaults when the config supplied none,
+so a config naming no modules gave `standard` all thirteen and `deep` an
+empty list — which the rule-10 guard correctly refuses as a usage error.
+Asking for the more thorough profile was the way to get a scan that would
+not run.
+
+### Fixed — `--modules` ran the lookup before the module it reads
+
+The pipeline executes `enabled_modules` in sequence and hands each module
+its predecessors' results through `_module_results_so_far`, so that list's
+order is a correctness constraint. `_resolve_list` kept the order the user
+typed, and nothing about a comma-separated allowlist suggests order
+matters: `--modules vt,onenote` ran `virustotal` first, so the forward
+lookup for every embedded payload saw an empty prior-results list and was
+skipped while the scan still reported success. Names are sorted into
+pipeline order now, with an unrecognised name keeping its position at the
+end — the safe direction.
+
+The same test found a second case: `file_intake` was only force-added when
+absent, so naming it explicitly and second left it second, and every module
+after it read no hashes and no file type.
+
+### Fixed — `--hash-only` did not stop the dynamic provider
+
+The provider is selected by `config["dynamic_provider"]` alone and is not
+listed in `enabled_modules`, so restricting the module list to
+`file_intake` restricted the static modules and nothing else. A config
+naming a provider would have detonated the sample for a request that only
+ever wanted four hashes. Harmless while all three providers are stubs, and
+a live one is the point at which it stops being harmless.
+
+Two more in the same function: `-o` was accepted and silently ignored, so
+the payload went to stdout, no file was created and the exit status was 0;
+and `-f html` was refused only after the file had been hashed, when it is a
+usage error that can be raised before any work.
+
+### Fixed — a missing hash rendered as a truncated one
+
+`compare` appended its ellipsis unconditionally, so a file whose
+`file_intake` did not succeed produced `N/A…` in the SHA256 row: a missing
+value dressed up as a digest beginning with those characters.
+
+### Documented
+
+All nine files. The AST proof goes blind here — `verify_comments.py` strips
+docstrings before comparing, and Click builds every `--help` string from the
+docstring of the command it decorates, so a rewritten help text is invisible
+to it. Each batch therefore also rendered the root and all five verb forms
+at a fixed width and diffed them against a baseline captured before the
+pass; all six identical at every step.
+
+Recorded along the way: why the subcommand imports sit at the bottom of the
+package root, why `analyse` survives as a hidden command that only fails,
+why `compare` truncates the one SHA256 the tool otherwise always prints
+whole, and why the progress spinner's `finalise` is mandatory rather than
+optional.
+
+### Tests
+
+**973 → 984.**
+
+### Logged, not fixed
+
+`triage` skips dot-prefixed *files*, not only dot-prefixed directories. The
+rationale is `.git` and `.venv`, which are directories; excluding a file
+named `.payload.exe` is collateral, and such a file is never analysed and
+never reported as skipped. It is pinned by an existing test, so changing it
+inverts a deliberate contract rather than fixing an oversight.
 
 ## 0.5.8 — 2026-09-24
 
