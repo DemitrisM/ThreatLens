@@ -84,10 +84,40 @@ def _resolve_list(raw: str, flag: str) -> list[str]:
     for token in tokens:
         name = resolve_module_name(token)
         # Aliases can collide (pe and exe both mean pe_analysis), so
-        # de-duplicate while keeping the order the user typed.
+        # de-duplicate. Order is imposed afterwards, not taken from here.
         if name not in resolved:
             resolved.append(name)
-    return resolved
+    return _canonical_order(resolved)
+
+
+#: The order the pipeline executes in. Each module sees its predecessors'
+#: results through ``_module_results_so_far``, so this is a correctness
+#: constraint, not a preference: ``virustotal`` looks up the hashes the
+#: container modules surfaced and finds none if it runs before them.
+_EXECUTION_ORDER = tuple(DEFAULTS["enabled_modules"])
+
+
+def _canonical_order(names: list[str]) -> list[str]:
+    """Sort *names* into pipeline execution order.
+
+    A comma-separated allowlist gives a user no reason to think its order
+    matters, so the order typed is discarded rather than honoured —
+    ``--modules vt,onenote`` would otherwise run the lookup before the
+    module that produces what it looks up, skipping the forward lookup
+    for every embedded payload while still reporting success.
+
+    Args:
+        names: Canonical module names, already de-duplicated.
+
+    Returns:
+        The same names, ordered by ``_EXECUTION_ORDER``. A name absent
+        from that table keeps its relative position at the end, which is
+        the safe direction — an unrecognised module runs after the ones
+        whose output it might want to read.
+    """
+    known = [n for n in _EXECUTION_ORDER if n in names]
+    unknown = [n for n in names if n not in _EXECUTION_ORDER]
+    return known + unknown
 
 
 def _apply_module_overrides(
@@ -106,8 +136,11 @@ def _apply_module_overrides(
     """
     if modules is not None:
         names = _resolve_list(modules, "--modules")
-        if _MANDATORY_MODULE not in names:
-            names.insert(0, _MANDATORY_MODULE)
+        # Removed and re-inserted rather than only inserted when absent:
+        # a user who names it explicitly should not be able to demote it
+        # by typing it second, since every module reads its metadata.
+        names = [n for n in names if n != _MANDATORY_MODULE]
+        names.insert(0, _MANDATORY_MODULE)
         config["enabled_modules"] = names
 
     if skip is not None:
