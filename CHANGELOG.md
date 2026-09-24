@@ -16,12 +16,130 @@ Everything before it is a step toward that.
 | 0.5.6 | lnk_analysis complete — four fixes including a size-cap bypass that deleted the module from a scan |
 | 0.5.7 | html_analysis complete — a Windows-1252 page decoded to mojibake and reported clean |
 | 0.5.8 | onenote_analysis complete — one wrong byte had disabled the module's headline rule |
-| 0.5.9 | *(current)* cli/ complete — eight fixes, three of them exit codes that reported success on a run that had not worked |
+| 0.5.9 | cli/ complete — eight fixes, three of them exit codes that reported success on a run that had not worked |
+| 0.5.10 | *(current)* The reporting defect sweep — eight fixes found by running the tool, not the tests |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.10 — 2026-09-24
+
+The `reporting/` defect sweep. Eight fixes, and the thing they have in
+common is that no test could have found any of them: every one came from
+scanning a real sample and reading the output.
+
+The other tests here feed the reporters a frozen fixture, which is what
+makes them fast. Snapshots go further and store the rendered text — but
+they are captured without colour and keep wrapped text as a single
+string, so they had recorded a mangled truncation, a verdict restarting
+at column 0 and a row of three false booleans as *correct*.
+
+Two of the eight needed a **live** run with every module enabled. Every
+sample report during this work had used `--skip vt,capa`, so no rendered
+report had ever contained the VirusTotal table, and its permalink had
+been folded in half the whole time.
+
+### Fixed — what the reports were actually showing
+
+**MacroRaptor always reported all three flags false.** Both reporters read
+`autoexec`, `write` and `execute` — the attribute names on MacroRaptor's
+own object, not the keys `doc_analysis` stores, which are `auto_exec`,
+`write_file` and `execute_command`. Every lookup missed, so AgentTesla.doc
+rendered `flagged (A=False, W=False, X=False)` when all three are true.
+The severity keyed on the same absent `execute`, so a macro MacroRaptor
+says executes a command could never render as "bad". The flags are named
+in words now, and the two builders share one function — they held the same
+three wrong names, copied between them.
+
+**The FINDINGS table cut reasons mid-word and hid findings.** A reason is
+a list of findings joined by "; " but was cut at a character offset:
+ACRStealer.exe rendered `LoadLibraryW (+1 mor...`, which reads as a
+mangled count rather than a truncation, and dropped five findings —
+including "No digital signature found" — while the verdict line above
+still named them. It cuts on clause boundaries now and counts what it
+dropped. It also stopped cutting when cutting does not pay: four real
+reasons sit between the cap and half again as much, and truncating them
+lost a finding each to save between five and forty characters.
+
+**The VirusTotal permalink was folded in half.** It lived in a table cell
+with `overflow="fold"`, and the link is 100 characters, so it does not fit
+inside a bordered table at any supported width. It broke after `...640e6`,
+which defeats double-click copy and a terminal's link detection, on the
+one string in the report whose entire purpose is to be opened. It prints
+below the table now, soft-wrapped so it stays one logical line.
+
+**A wrapped verdict restarted at column 0.** The indent was two spaces
+inside the string, so it applied to the first line only. `Padding` fixes
+that but pads every line to full width, putting trailing whitespace on the
+line a reader is most likely to copy — so the wrapping is done with
+`Text.wrap`, measuring terminal cells rather than characters, because the
+verdict quotes the LNK build-host name and that is attacker-controlled and
+may be full-width.
+
+**Binary noise was reported as Windows file paths.** `<letter>:\` plus two
+arbitrary bytes satisfies the `windows_path` regex, and compressed data
+produces that shape constantly. Measured over 100 corpus samples: 31 of 71
+distinct path IOCs were noise, in a category the report caps at five rows
+— so real paths were being pushed out of the table by it. ACRStealer.exe
+reported four paths of which three were `B:\4b`, `f:\O^` and `g:\-7-`.
+
+The rule is deliberately loose. A stricter version also required a vowel
+and an opening letter; it removed three more pieces of noise and would
+have discarded `C:\tmp`, `C:\src`, `C:\bin`, `C:\123456` and
+`C:\_sandbox` with them. A missed indicator costs more than a noisy row,
+so three junk entries survive and a test records that as a decision.
+71 distinct path IOCs to 40, with nothing real dropped.
+
+**Nine colour literals outside the palette** — five as `rich_style(x) or
+"white"`, two as `.get(key, "white")`, and the two that colour the score
+delta on the headline table. Rich reads "white" as ANSI colour 7, not the
+terminal default, so it is a real choice and a poor one on a light
+background. `theme.NEUTRAL` is `"default"` now, and the test parses both
+fallback spellings — checking only `.get` is what let the five `or
+"white"` sites through.
+
+**A nested archive with no member name rendered as "?"**, which reads as a
+parse failure. It is not one: the nested child of a self-extracting PE is
+the archive carved out of the overlay, and `data["sfx"]` records the
+offset. ACRStealer.exe now reads "SFX overlay @ 480768".
+
+**The IOC heading broke across two lines.** rich centres a table title
+inside the table and wraps it to that width, and "Indicators of Compromise
+(IOCs)" is 31 characters — so a scan whose only IOC is a short domain
+rendered it as "Indicators of" over "Compromise (IOCs)".
+
+### Added — the corpus is part of the test run now
+
+`tests/test_live_corpus.py` scans one real sample per format through the
+real pipeline and asserts against the rendered report: nothing overflows
+the console, a SHA256 that reaches the page arrives on one line, a
+truncated reason names what it dropped, no row renders a bare `?` or a
+literal false flag, and the verdict keeps its indent when it wraps. Each
+of those is a fault found by hand first.
+
+It skips itself when the corpus is absent, so a clean checkout and CI are
+unaffected, and `THREATLENS_CORPUS` points it at another copy.
+`virustotal` and `capa_analysis` sit behind a `corpus_slow` marker,
+deselected by default — excluding them is exactly how the folded
+permalink stayed invisible, so the marked test turns both on.
+
+It does not replace reading the output. It stops the faults already found
+from coming back.
+
+### Fixed in the documentation
+
+Two contradictions in the project notes, both self-contradictions within
+one file: `max_archive_extracted_size_mb` was described as a whole-tree
+budget in the config reference and as per-archive in the design notes
+twenty lines later, and detail level 0 was described as showing "every
+archive member" when `LIMITS` caps it at fifty and always says so.
+
+### Tests
+
+**984 → 1048**, of which 7 are live corpus scans. The suite takes ~40s,
+up from ~19s.
 
 ## 0.5.9 — 2026-09-24
 
