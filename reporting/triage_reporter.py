@@ -259,7 +259,7 @@ def print_triage_table(
         )
 
     for name, _reason in failures:
-        table.add_row("[red]ERR[/red]", "[red]ERROR[/red]", "—", "", name)
+        table.add_row("[error]ERR[/error]", "[error]ERROR[/error]", "—", "", name)
 
     con.print()
     con.print(table)

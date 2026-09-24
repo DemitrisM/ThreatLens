@@ -133,7 +133,7 @@ def print_module_errors(
     con.print()
     for result in errors:
         con.print(
-            f"  [red]![/red] {result.get('module', 'unknown')}: "
+            f"  [error]![/error] {result.get('module', 'unknown')}: "
             f"[dim]{result.get('reason', 'failed')}[/dim]"
         )
 

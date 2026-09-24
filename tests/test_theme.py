@@ -7,11 +7,21 @@ from reporting.theme import CLASS_SEVERITY, TOKENS, css_root, rich_style
 
 
 def test_every_token_has_both_representations():
+    """A token carries a rich style, a CSS colour, or both.
+
+    ``css`` is None for a composed rich style such as "bold cyan", where
+    the weight is the point and the hue already has a token of its own —
+    the HTML report styles its headings with its own rules, so emitting
+    a variable for it would put an unused declaration in `:root`.
+    """
     for name, token in TOKENS.items():
         assert "rich" in token, f"{name} has no rich key"
-        assert re.fullmatch(r"#[0-9a-f]{6}", token["css"]), (
-            f"{name} css value {token['css']!r} is not a 6-digit hex colour"
-        )
+        assert "css" in token, f"{name} has no css key"
+        assert token["rich"] or token["css"], f"{name} carries neither half"
+        if token["css"] is not None:
+            assert re.fullmatch(r"#[0-9a-f]{6}", token["css"]), (
+                f"{name} css value {token['css']!r} is not a 6-digit hex colour"
+            )
 
 
 def test_rich_style_returns_the_token_value():
@@ -24,12 +34,17 @@ def test_rich_style_falls_back_for_unknown_names():
     assert rich_style("no_such_token") == ""
 
 
-def test_css_root_emits_a_variable_per_token():
+def test_css_root_emits_a_variable_per_coloured_token():
+    """And nothing for a rich-only one, which has no colour to emit."""
     css = css_root()
     assert css.startswith(":root {")
     assert css.rstrip().endswith("}")
     for name, token in TOKENS.items():
-        assert f"--{name.replace('_', '-')}:" in css
+        var = f"--{name.replace('_', '-')}:"
+        if token["css"] is None:
+            assert var not in css, f"{name} is rich-only but reached the CSS"
+            continue
+        assert var in css
         assert token["css"] in css
 
 
@@ -124,21 +139,23 @@ def test_class_severity_values_are_valid_severities():
 # ── Design rule 8: colour comes from the palette ────────────────────
 
 
-#: Every module that resolves a style, plus the one CLI file that builds
-#: a coloured table. `theme.py` is excluded — it owns the colours.
+#: Everything that renders. `theme.py` is excluded — it owns the colours,
+#: and it is the one file where a hue is supposed to be spelled out.
 _COLOUR_OWNERS = tuple(
     p
-    for p in sorted(Path("reporting").rglob("*.py")) + [Path("cli/compare.py")]
+    for p in sorted(Path("reporting").rglob("*.py")) + sorted(Path("cli").rglob("*.py"))
     if p.name != "theme.py"
 )
 
 
-#: Bare rich colour names. A compound style like "bold red" is out of
-#: scope: those are still written inline in a few section builders and
-#: moving them all is its own job. This guards the *fallbacks*, which is
-#: where the design-rule-8 violation actually was.
+#: Bare rich colour names, in any combination with a weight. `[dim]` and
+#: `[bold]` are deliberately absent: they carry no hue, they are emphasis
+#: rather than colour, and design rule 8 is about colour.
 _BARE_COLOURS = frozenset(
-    {"white", "black", "red", "green", "yellow", "blue", "magenta", "cyan"}
+    {
+        "white", "black", "red", "green", "yellow", "blue", "magenta",
+        "cyan", "orange1",
+    }
 )
 
 
@@ -190,6 +207,101 @@ def test_no_reporter_falls_back_to_a_bare_colour_name():
     offences = [o for path in _COLOUR_OWNERS for o in _bare_colour_fallbacks(path)]
 
     assert not offences, "\n".join(offences)
+
+
+#: Rich markup naming a hue, with or without a weight: `[red]`,
+#: `[bold red]`, `[/dim red]`. The palette is registered as a
+#: `rich.Theme` on both consoles, so the semantic name is what belongs
+#: here — `[bad]`, `[brand]`, `[error_dim]`.
+_COLOUR_MARKUP_RE = re.compile(
+    r"\[/?(?:[a-z]+ )*(?:" + "|".join(sorted(_BARE_COLOURS)) + r")(?: [a-z]+)*\]"
+)
+
+
+def _colour_markup(path: Path) -> list[str]:
+    """Every string constant in *path* that spells a hue in markup.
+
+    Docstrings are skipped: they explain the rule, and several of them
+    quote the very markup they are telling the reader not to write.
+    """
+    import ast
+
+    tree = ast.parse(path.read_text())
+    docstrings = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+    }
+
+    offences: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if node in docstrings:
+            continue
+        for hit in _COLOUR_MARKUP_RE.findall(node.value):
+            offences.append(
+                f"{path}:{node.lineno} writes {hit!r} — use the semantic "
+                f"token, which the console's rich.Theme resolves"
+            )
+    return offences
+
+
+def test_no_reporter_spells_a_colour_in_markup():
+    """The other half of design rule 8, and the half that was untrue.
+
+    Twenty-nine call sites wrote `[red]`, `[bold cyan]`, `[dim red]` and
+    the like directly. The rule said none existed. Registering the
+    palette as a `rich.Theme` on both consoles is what makes the
+    semantic name work in markup, so there is now no reason to spell a
+    hue anywhere but `theme.py` — and this test says so mechanically
+    rather than leaving the rule to be believed.
+    """
+    offences = [o for path in _COLOUR_OWNERS for o in _colour_markup(path)]
+
+    assert not offences, "\n".join(offences)
+
+
+def test_every_style_name_used_in_markup_is_a_real_token():
+    """A typo in a semantic tag renders as literal text, not as colour.
+
+    That is the risk the Theme introduces: `[bad]` is checked by nobody
+    at runtime, and `[badd]` would print the brackets. Rich's own style
+    names stay legal — `dim`, `bold`, and combinations of them.
+    """
+    import ast
+
+    from reporting.theme import TOKENS
+
+    # Only tokens with a rich half: `rich_theme()` registers those and
+    # skips the CSS-only ones, so `[code_bg]` is not an error but it is
+    # not a style either — it renders as plain text while the author
+    # believes a colour was applied. That silent no-op is the same shape
+    # as the `"white"` fallback this rule was written for.
+    allowed = {name for name, token in TOKENS.items() if token["rich"]} | {
+        "dim", "bold", "italic", "underline", "reverse", "blink", "strike",
+    }
+    tag = re.compile(r"\[/?([a-z_][a-z0-9_ ]*)\]")
+
+    unknown: list[str] = []
+    for path in _COLOUR_OWNERS:
+        tree = ast.parse(path.read_text())
+        docstrings = {
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+        }
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if node in docstrings:
+                continue
+            for name in tag.findall(node.value):
+                if all(word in allowed for word in name.split()):
+                    continue
+                unknown.append(f"{path}:{node.lineno} uses unknown style {name!r}")
+
+    assert not unknown, "\n".join(unknown)
 
 
 def test_the_neutral_style_is_the_terminal_default():
