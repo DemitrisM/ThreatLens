@@ -23,6 +23,31 @@ argument limit has no primary Microsoft source and is probably a
 shell/dialog limit rather than a format one. The format ceiling is the
 uint16 ``CountCharacters`` field, 65,535, and the spec explicitly exempts
 COMMAND_LINE_ARGUMENTS from its own 260-character rule.
+
+Design notes
+------------
+Patterns are matched against the **target and arguments joined**, not
+against the arguments alone. That is what catches the shape where the
+command is smuggled into the target field — the original ZDI-CAN-25373
+form — and it means a rule written as though it were reading a command
+line is reading the whole invocation, which is the right unit.
+
+Target resolution reports disagreement on **basenames**, not full
+paths. Four sources describe the same target at different levels of
+qualification — the IDList carries a shell path, RELATIVE_PATH a
+relative one, LinkInfo an absolute one — so comparing full strings
+would disagree on nearly every real shortcut. Comparing what actually
+runs does not.
+
+Every list here is local to the module by convention rather than shared,
+matching ``html_analysis`` and ``string_analysis``. The duplication is
+accepted: these are detection tables tuned per format, and a shared
+table would couple three modules' false-positive profiles together.
+
+No pattern contains a nested quantifier. The realistic denial-of-service
+vector in this module is catastrophic backtracking over a 65 KB padded
+argument string, not the binary parse — and a padded argument string is
+precisely what the module exists to look at.
 """
 
 from __future__ import annotations
@@ -193,7 +218,18 @@ _TRAVERSAL_RE = re.compile(r"\.\.[\\/]")
 
 @dataclass
 class PaddingAnalysis:
-    """Whitespace-padding measurements for one string."""
+    """Whitespace-padding measurements for one string.
+
+    ``whitespace_ratio`` is measured over the whole string and
+    ``visible_whitespace_ratio`` over only what Explorer renders. Both
+    exist because the pair is the finding: a string that is blank where
+    the user looks and dense past that point is the evasion, while
+    either measurement alone describes an untidy argument.
+
+    ``tier`` grades the cruder length-based signals and is separate from
+    ``zdi_can_25373``, which is a positional claim rather than a
+    magnitude one.
+    """
 
     length: int = 0
     max_run: int = 0
@@ -243,6 +279,18 @@ def analyse_padding(text: str) -> PaddingAnalysis:
     Published thresholds for the cruder checks come from the SigmaHQ rule
     ``proc_creation_win_susp_lnk_exec_hidden_cmd``, which matches on 17
     consecutive spaces or 6 consecutive newlines.
+
+    Args:
+        text: The argument or path string to measure.
+
+    Returns:
+        A :class:`PaddingAnalysis`. An empty string yields the default,
+        which grades as ``"none"``.
+
+    The exotic characters are graded ``strong`` on presence alone,
+    without any length condition. ``\x11``-``\x13`` and the vertical
+    tab render as nothing at all and appear in no text a human typed, so
+    one of them is as strong a signal as a hundred spaces.
     """
     result = PaddingAnalysis(length=len(text))
     if not text:
@@ -298,6 +346,27 @@ def resolve_target(parsed) -> tuple[str, str, bool]:  # noqa: ANN001 — ParsedL
     the winner: an environment path that differs from the IDList while
     ``PreferEnvironmentPath`` is set means the thing Explorer displays is
     not the thing that runs.
+
+    Args:
+        parsed: A ``ParsedLnk``. Untyped in the signature because typing
+                it would import the parser, which imports this module's
+                siblings.
+
+    Returns:
+        ``(target, source, disagreement)``. ``source`` names which field
+        won, so the report can say where the path came from rather than
+        asserting one.
+
+    The priority order is by qualification, not by trust: LinkInfo
+    carries the fully-qualified path and the environment block the least
+    reliable one. ``PreferEnvironmentPath`` inverts that, because the
+    flag means Windows itself will prefer it — the resolution has to
+    follow what executes, not what reads best.
+
+    Disagreement is computed across **all** candidates, including the
+    ones the priority order discarded. A spoof works precisely by making
+    the winning field differ from the one displayed, so discarding the
+    losers would discard the evidence.
     """
     candidates: list[tuple[str, str]] = []
     if parsed.link_info and parsed.link_info.full_path:
@@ -325,8 +394,33 @@ def resolve_target(parsed) -> tuple[str, str, bool]:  # noqa: ANN001 — ParsedL
 
 
 def _basename(path: str) -> str:
+    """The final component of a Windows path.
+
+    Args:
+        path: A path in either separator style, possibly with trailing
+              separators or padding spaces.
+
+    Returns:
+        The last component, or the whole string when there is no
+        separator.
+
+    Not ``pathlib`` or ``os.path``: this runs on Linux, where a
+    backslash is an ordinary filename character, so the stdlib would
+    return ``C:\\Windows\\System32\\cmd.exe`` unchanged and every
+    LOLBin comparison against a basename would fail. Trailing whitespace
+    is stripped along with separators because a padded target is one of
+    the shapes this module is looking for.
+    """
     cleaned = path.rstrip("\\/ ").replace("/", "\\")
-    return cleaned.rsplit("\\", 1)[-1] if "\\" in cleaned else cleaned
+    component = cleaned.rsplit("\\", 1)[-1] if "\\" in cleaned else cleaned
+    # Strip padding from the component itself, not just the whole path.
+    # Windows ignores leading whitespace when it executes, so
+    # `System32\   cmd.exe` runs cmd.exe while an unstripped basename
+    # compares as "   cmd.exe" and matches no LOLBin. Padding is the
+    # central technique this module detects; the basename is the last
+    # place it should be able to hide. PADDING_CHARS rather than str.strip
+    # so the non-printing characters count too.
+    return component.strip("".join(PADDING_CHARS))
 
 
 def analyse(parsed, file_name: str = "") -> CommandAnalysis:  # noqa: ANN001
@@ -336,6 +430,20 @@ def analyse(parsed, file_name: str = "") -> CommandAnalysis:  # noqa: ANN001
     single best source for the double-extension check — ``Invoice.pdf.lnk``
     is what the victim sees in Explorer, and it appears in no field
     inside the file itself.
+
+    Args:
+        parsed:    A ``ParsedLnk``.
+        file_name: The shortcut's own filename, when the caller has one.
+                   Empty when parsing bytes from a container, where no
+                   filename exists.
+
+    Returns:
+        A fully populated :class:`CommandAnalysis`.
+
+    Order matters in one place: the deobfuscated IOCs are folded into
+    ``urls`` before the suspicious-host check runs, so a host that only
+    appears after a base64 layer is undone is still matched against the
+    hosting list. Everything else here is independent.
     """
     out = CommandAnalysis()
 
@@ -403,7 +511,22 @@ def analyse(parsed, file_name: str = "") -> CommandAnalysis:  # noqa: ANN001
 
 
 def _extract_urls(command_line: str, parsed) -> list[str]:  # noqa: ANN001
-    """URLs, UNC paths and bare IPs from the command line and icon fields."""
+    """URLs, UNC paths and bare IPs from the command line and icon fields.
+
+    Args:
+        command_line: Target and arguments, already joined.
+        parsed:       A ``ParsedLnk``, for the icon and environment
+                      fields.
+
+    Returns:
+        De-duplicated indicators in discovery order, capped at 50.
+
+    The icon and environment fields are searched alongside the command
+    line because they are the ones Quarkslab call "720 bytes of free
+    space": fixed-size, never rendered in full by Explorer, and
+    therefore a standard place to park a URL that no command-line-only
+    scan would see.
+    """
     haystack = " ".join(filter(None, (
         command_line, parsed.icon_location, parsed.icon_env_target,
         parsed.env_target,
@@ -430,6 +553,17 @@ def _is_icon_masquerade(parsed, out: CommandAnalysis) -> bool:  # noqa: ANN001
 
     This is the social-engineering half of MITRE T1027.012 — what the
     victim sees versus what runs.
+
+    Args:
+        parsed: A ``ParsedLnk``.
+        out:    The analysis so far; its target must already be resolved.
+
+    Returns:
+        True only when a LOLBin target is wearing a document's icon.
+
+    An icon drawn from the target itself is excluded — a shortcut to
+    ``notepad.exe`` showing Notepad's icon is honest, and without that
+    check every such shortcut on a normal desktop would match.
     """
     if not out.is_lolbin:
         return False
@@ -446,6 +580,16 @@ def _is_remote_icon(parsed) -> bool:  # noqa: ANN001
 
     Both a payload-download primitive and an NTLM coercion primitive: a
     UNC icon path makes the victim's machine authenticate to the attacker.
+
+    Args:
+        parsed: A ``ParsedLnk``.
+
+    Returns:
+        True if either icon field names a remote location.
+
+    No user interaction is needed: Explorer resolves the icon to draw
+    the shortcut, so merely viewing the folder triggers it. That is why
+    this scores on its own rather than only in combination.
     """
     for value in (parsed.icon_location, parsed.icon_env_target):
         lowered = (value or "").lower()
@@ -476,6 +620,19 @@ def _double_extension(parsed, file_name: str = "") -> str:  # noqa: ANN001
     executable one. A looser "contains a document extension somewhere"
     test flags ordinary names like ``report.pdf.backup`` or
     ``notes.txt.old``, which are neither deceptive nor rare.
+
+    Args:
+        parsed:    A ``ParsedLnk``.
+        file_name: The shortcut's own filename, checked first.
+
+    Returns:
+        The offending name, or ``""``.
+
+    Three sources are tried in order of how close each is to what the
+    victim actually sees: the real filename, then NAME_STRING, then
+    RELATIVE_PATH. The first two can be absent — a shortcut parsed out
+    of a container has no filename — so the fallbacks are what keep the
+    check working there.
     """
     candidates = (file_name, parsed.name_string, parsed.relative_path)
     for value in candidates:
