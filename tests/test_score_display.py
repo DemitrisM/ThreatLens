@@ -129,11 +129,17 @@ def test_findings_renders_nothing_when_no_module_scored():
 
 
 def test_findings_reason_is_untruncated_at_detail_two(report_redline):
-    """-vv exists to show the whole reason; detail 0 caps it at 120."""
+    """-vv exists to show the whole reason; detail 0 caps it at 120.
+
+    The marker is "Q" rather than "R" because the count covers the whole
+    rendered block, and the column header "Reason" contributed an R of
+    its own — so the assertion was really `cap - 1`, which passed only
+    because the old truncation spent three characters on "...".
+    """
     from reporting.terminal_reporter._common import LIMITS
     from reporting.terminal_reporter.score import print_findings
 
-    long_reason = "R" * 400
+    long_reason = "Q" * 400
     scoring = {
         "total_score": 50,
         "risk_band": "MEDIUM",
@@ -147,5 +153,5 @@ def test_findings_reason_is_untruncated_at_detail_two(report_redline):
         print_findings(scoring, [], detail, console=make_console(200, file=buf))
         return buf.getvalue()
 
-    assert render(2).count("R") > LIMITS["reason_chars"]
-    assert render(0).count("R") <= LIMITS["reason_chars"]
+    assert render(2).count("Q") > LIMITS["reason_chars"]
+    assert render(0).count("Q") <= LIMITS["reason_chars"]
