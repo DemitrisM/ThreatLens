@@ -486,3 +486,69 @@ def test_triage_isolates_config_between_files(sample_dir, stub_config, stub_pipe
     stub_pipeline(_record)
     make_runner().invoke(cli_group, ["triage", str(sample_dir), "-f", "jsonl"])
     assert seen == [0, 0]
+
+
+def test_min_score_does_not_suppress_fail_on(sample_dir, stub_config, stub_pipeline):
+    """A display filter must not decide the exit code.
+
+    `--min-score` is documented as hiding files from the output. It was
+    applied before the reports list was built, so a hidden file was also
+    invisible to `--fail-on` — and `triage --min-score 90 --fail-on HIGH`
+    exited 0 on a directory holding a HIGH file, which is the exact
+    invocation a CI gate would use to catch one.
+    """
+    scores = iter([60, 10])
+
+    def _varying(file, config, **kw):
+        score = next(scores)
+        return fake_report(file, score=score, band="HIGH" if score > 55 else "LOW")
+
+    stub_pipeline(_varying)
+    result = make_runner().invoke(
+        cli_group,
+        ["triage", str(sample_dir), "-f", "jsonl",
+         "--min-score", "90", "--fail-on", "HIGH"],
+    )
+
+    assert stdout_of(result).strip() == "", "the file should still be hidden"
+    assert result.exit_code == EXIT_THREAT
+
+
+def test_min_score_does_not_shrink_the_reported_sweep_time(
+    sample_dir, stub_config, stub_pipeline, monkeypatch
+):
+    """The time was spent whether or not the row was printed.
+
+    `--min-score` filters the table; summing the printed rows' timings
+    reported a fraction of the real cost, which is the number a user
+    reads to decide whether a sweep is affordable.
+    """
+    import cli.triage as triage_mod
+
+    scores = iter([80, 10])
+
+    def _varying(file, config, **kw):
+        score = next(scores)
+        report = fake_report(file, score=score, band="HIGH" if score > 55 else "LOW")
+        report["timing"] = {"start": 0.0, "end": 4.0, "elapsed_seconds": 4.0}
+        return report
+
+    stub_pipeline(_varying)
+
+    seen: dict[str, float] = {}
+
+    def _spy(reports, failures, elapsed, console):
+        seen["elapsed"] = elapsed
+
+    monkeypatch.setattr(
+        "reporting.triage_reporter.print_triage_table",
+        lambda reports, failures, elapsed, console: _spy(
+            reports, failures, elapsed, console
+        ),
+    )
+
+    make_runner().invoke(
+        cli_group, ["triage", str(sample_dir), "--min-score", "50"]
+    )
+
+    assert seen["elapsed"] == 8.0, "both files were analysed"
