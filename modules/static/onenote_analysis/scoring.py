@@ -5,12 +5,30 @@ Mirrors :mod:`modules.static.archive_analysis.scoring` exactly — same
 classification. Weights are provisional and will be calibrated against
 the full corpus at end of project.
 
-Classification bands (final score, after cap):
+Design notes
+------------
+Rules stack on subset containment, so a combo and the single-flag rules
+inside it all fire: an embedded LNK alongside a script is worth 30 for
+the pair *plus* 15 and 15 for each on its own. Each combo weight is an
+escalation on top of its parts, which is why reweighting one rule in
+isolation does not do what it appears to.
+
+That top rule is the reason the module exists, and it was unreachable
+until 0.5.8 — `_LNK_SIGNATURE` in ``embedded.py`` carried one wrong
+byte, so ``contains_embedded_lnk`` could never be raised. A rule is only
+as real as the flag that feeds it.
+
+Classification bands, taken from the **uncapped** total:
 
 * ``≥ 25`` → MALICIOUS
 * ``10 – 24`` → SUSPICIOUS
 * ``1 – 9`` → INFORMATIONAL
 * ``0`` → CLEAN
+
+The cap bounds what the pipeline adds, never the verdict word the report
+prints: the top band is 25 and the cap is 60, so capping cannot talk a
+MALICIOUS file down. Letting it would be a scoring artefact hiding a
+detection.
 """
 
 from __future__ import annotations
@@ -49,7 +67,16 @@ def score_onenote(
 ) -> tuple[int, str, list[str], str]:
     """Compute the module's score contribution.
 
-    Returns ``(score_delta, reason, fired_rules, classification)``.
+    Args:
+        flags: Every indicator flag raised for this file. A superset is
+               normal — the caller does not filter by which rules exist.
+
+    Returns:
+        ``(score_delta, reason, fired_rules, classification)``, where the
+        delta is capped and the classification is not. Both views are
+        returned because they answer different questions: the pipeline
+        needs a bounded contribution to sum, the report needs the verdict
+        the evidence supports.
     """
     total = 0
     fired: list[str] = []
