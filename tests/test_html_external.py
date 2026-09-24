@@ -134,3 +134,140 @@ def test_suffix_matching_respects_label_boundaries(hostile):
     result = detect_external_resources([f"https://{hostile}/a.js"], [], [])
 
     assert result["suspicious_external_domains"] == [hostile]
+
+
+# ---------------------------------------------------------------------------
+# URL schemes are case-insensitive
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "HTTP://evil.test/c2.js",
+        "HtTpS://evil.test/c2.js",
+        "HTTPS://evil.test/c2.js",
+        "//EVIL.TEST/c2.js",
+    ],
+)
+def test_a_mixed_case_scheme_is_still_an_absolute_url(url):
+    """One character of case hid an injected script completely.
+
+    `_is_relative` compared against lowercase scheme literals, so
+    `HTTP://evil.test/c2.js` did not start with `http://` and was read as
+    a same-origin relative path — skipped before any check ran, and absent
+    from the report entirely. RFC 3986 defines schemes as
+    case-insensitive and browsers fetch them happily.
+    """
+    from modules.static.html_analysis.external import _is_relative
+
+    assert _is_relative(url) is False
+
+    result = detect_external_resources([url], [], [])
+    assert result["suspicious_external_domains"] == ["evil.test"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["JaVaScRiPt:alert(1)", "DATA:text/html;base64,AAAA", "Blob:https://x/y"],
+)
+def test_a_mixed_case_local_scheme_is_still_a_local_scheme(url):
+    """The same comparison, for the schemes that carry content inline."""
+    from modules.static.html_analysis.external import _is_local_scheme
+
+    assert _is_local_scheme(url) is True
+
+
+def test_a_mixed_case_inline_iframe_scheme_is_not_treated_as_a_url():
+    """structure.py filters these by the same case-sensitive comparison.
+
+    An iframe with a `JaVaScRiPt:` source was collected as though it named
+    a host, rather than being recognised as inline content.
+    """
+    from modules.static.html_analysis.structure import parse_structure
+
+    parsed = parse_structure(
+        '<iframe src="JaVaScRiPt:alert(1)"></iframe>'
+        '<iframe src="DATA:text/html,x"></iframe>'
+    )
+
+    assert parsed["iframe_urls"] == []
+
+
+@pytest.mark.parametrize(
+    ("url", "relative"),
+    [
+        ("/assets/app.js", True),
+        ("app.js", True),
+        ("./x/app.js", True),
+        ("../app.js", True),
+        ("?v=2", True),
+        ("http://evil.test/a.js", False),
+        ("//evil.test/a.js", False),
+        ("ftp://evil.test/a.js", False),
+        ("ws://evil.test/sock", False),
+        ("wss://evil.test/sock", False),
+        ("file:///etc/passwd", False),
+        ("mailto:x@evil.test", False),
+    ],
+)
+def test_relative_means_no_scheme_rather_than_one_of_four(url, relative):
+    """The check was a blocklist of four prefixes, not a scheme test.
+
+    Anything outside http/https/ftp and protocol-relative read as a
+    same-origin path and was skipped — `ws://`, `file://` and `mailto:`
+    among them. A scheme is any leading `alpha *( alpha / digit / + / - /
+    . ) ":"` per RFC 3986, which is also how a browser decides.
+    """
+    from modules.static.html_analysis.external import _is_relative
+
+    assert _is_relative(url) is relative
+
+
+def test_a_websocket_url_in_a_script_src_is_attributed():
+    """The practical consequence of the gap, end to end."""
+    result = detect_external_resources(["ws://evil.test/sock"], [], [])
+
+    assert result["suspicious_external_domains"] == ["evil.test"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [r"\\evil.test/c2.js", r"/\evil.test/c2.js", r"\/evil.test/c2.js"],
+)
+def test_backslash_forms_of_a_protocol_relative_url_are_absolute(url):
+    """Browsers fold backslashes to slashes; the check did not.
+
+    The WHATWG URL parser treats `\\` as `/` for special schemes, so
+    `src="\\\\evil.test/c2.js"` fetches from evil.test exactly as
+    `//evil.test/c2.js` would. Matching `startswith("//")` on the raw
+    string missed every backslash spelling, and the URL was classified as
+    a same-origin path and skipped.
+    """
+    from modules.static.html_analysis.external import _is_relative
+
+    assert _is_relative(url) is False
+
+    result = detect_external_resources([url], [], [])
+    assert result["suspicious_external_domains"] == ["evil.test"]
+
+
+def test_an_entity_encoded_scheme_is_decoded_by_the_parser():
+    """Pinned because it looks like a gap and is not.
+
+    `convert_charrefs=False` is set on the structural parser to keep
+    obfuscation intact in script *bodies*. It does not affect attribute
+    values — html.parser decodes character references there either way —
+    so an entity-encoded scheme arrives already decoded and needs no
+    unescaping of its own. Adding one would be harmless here but would
+    invite the same treatment for handle_data, which would silently
+    deobfuscate the script text the obfuscation pass exists to measure.
+    """
+    from modules.static.html_analysis.structure import parse_structure
+
+    parsed = parse_structure(
+        '<script src="h&#116;tp://evil.test/c2.js"></script>'
+        '<iframe src="&#106;avascript:alert(1)"></iframe>'
+    )
+
+    assert parsed["external_script_urls"] == ["http://evil.test/c2.js"]
+    assert parsed["iframe_urls"] == []
