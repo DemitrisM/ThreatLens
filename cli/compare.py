@@ -139,11 +139,7 @@ def compare(
     # row answers "are these the same file", which the first 16 characters
     # settle. `scan` is where a hash is read to be pasted somewhere.
     h1, h2 = _get_hashes(report1), _get_hashes(report2)
-    table.add_row(
-        "SHA256",
-        h1.get("sha256", "N/A")[:16] + "…",
-        h2.get("sha256", "N/A")[:16] + "…",
-    )
+    table.add_row("SHA256", _short_sha(h1), _short_sha(h2))
 
     # One value describing a relationship, so it spans from the first
     # column and the second is left empty rather than repeating it.
@@ -209,6 +205,17 @@ def _get_hashes(report: dict) -> dict:
     if intake and intake.get("status") == "success":
         return intake["data"].get("hashes", {})
     return {}
+
+
+def _short_sha(hashes: dict) -> str:
+    """Render a SHA256 prefix, or "N/A" when there is no digest.
+
+    The ellipsis is conditional because it is a claim: it says the value
+    continues. Appended unconditionally it turned a missing hash into
+    ``N/A…``, which reads as a digest that begins with those characters.
+    """
+    digest = hashes.get("sha256")
+    return f"{digest[:16]}…" if digest else "N/A"
 
 
 def _tlsh_similarity(tlsh1: str | None, tlsh2: str | None) -> str:
