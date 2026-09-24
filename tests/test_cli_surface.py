@@ -740,3 +740,32 @@ def test_validate_only_runs_offline_and_exits_zero(stub_config, monkeypatch):
     assert result.exit_code == EXIT_OK, stdout_of(result) + stderr_of(result)
     assert called["network"] is False
     assert "2/3" in stdout_of(result)
+
+
+def test_compare_does_not_render_a_missing_hash_as_truncated(tmp_path, stub_config, monkeypatch):
+    """`"N/A"[:16] + "…"` reads as a hash that begins with N/A.
+
+    The ellipsis was appended unconditionally, so a file whose
+    `file_intake` did not succeed produced `N/A…` — a missing value
+    dressed up as a truncated one.
+    """
+    a = tmp_path / "a.bin"
+    b = tmp_path / "b.bin"
+    a.write_bytes(b"MZ\x01")
+    b.write_bytes(b"MZ\x02")
+
+    def _no_hashes(file, config, **kw):
+        report = fake_report(file)
+        for r in report["module_results"]:
+            if r.get("module") == "file_intake":
+                r["status"] = "error"
+        return report
+
+    compare_mod = importlib.import_module("cli.compare")
+    monkeypatch.setattr(compare_mod, "run_pipeline", _no_hashes)
+
+    result = make_runner().invoke(cli_group, ["compare", str(a), str(b)])
+
+    assert result.exit_code == EXIT_OK, stdout_of(result) + stderr_of(result)
+    assert "N/A…" not in stdout_of(result)
+    assert "N/A" in stdout_of(result)
