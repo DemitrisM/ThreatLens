@@ -423,13 +423,36 @@ class LinkInfoData:
 
     @property
     def full_path(self) -> str:
-        """Base path and common suffix joined, as the spec defines it.
+        """The target path this LinkInfo describes.
 
-        Concatenated with no separator: the two fields are already a
-        split of one path, and the suffix carries its own leading
-        separator when it needs one.
+        Returns:
+            The local path when there is one, otherwise the network
+            path, otherwise whatever the suffix alone says.
+
+        LocalBasePath and CommonPathSuffix are a split of one path, so
+        they concatenate with no separator — the suffix brings its own
+        when it needs one.
+
+        A network target has no LocalBasePath at all; the host and share
+        live in NetName. Concatenating unconditionally therefore returned
+        the bare suffix for exactly the shape this module flags as
+        ``webdav_remote_exec``, dropping the attacker's host from the
+        target that ``command.py`` resolves and the report prints.
+        NetName and the suffix are two paths rather than one split, so
+        they are joined with a separator, and neither side is trusted to
+        supply it.
+
+        Local wins when both are present: a mapped drive carries both,
+        and the local form is what Explorer displays and what the user
+        would recognise.
         """
-        return f"{self.local_base_path}{self.common_path_suffix}"
+        if self.local_base_path:
+            return f"{self.local_base_path}{self.common_path_suffix}"
+        if self.net_name:
+            base = self.net_name.rstrip("\\")
+            suffix = self.common_path_suffix.lstrip("\\")
+            return f"{base}\\{suffix}" if suffix else base
+        return self.common_path_suffix
 
 
 @dataclass
