@@ -85,6 +85,30 @@ def print_capabilities(module_results: list[dict], detail_level: int) -> None:
         console.print(f"  [dim](+{remaining} more — use -v to show all)[/dim]")
 
 
+def _print_permalink(data: dict) -> None:
+    """Print the VirusTotal link below the table, unbroken.
+
+    Args:
+        data: The ``virustotal`` module's ``data`` dict. A missing or
+              empty ``permalink`` prints nothing.
+
+    The permalink is 100 characters — a 36-character prefix plus the
+    SHA256 — so it does not fit inside a bordered table at any width the
+    report supports, and the table's ``overflow="fold"`` broke it across
+    two rows. That defeats double-click copy and a terminal's own link
+    detection, on the one string in the report whose entire purpose is to
+    be opened.
+
+    ``soft_wrap`` leaves it as a single logical line and lets the
+    terminal wrap it, which keeps a copy intact. It is the same rule the
+    SHA256 already has, applied to the string that contains one.
+    """
+    permalink = data.get("permalink")
+    if not permalink:
+        return
+    console.print(f"  [dim]{permalink}[/dim]", soft_wrap=True)
+
+
 def print_virustotal(module_results: list[dict], detail_level: int) -> None:
     vt = next(
         (r for r in module_results if r.get("module") == "virustotal"), None
@@ -106,9 +130,9 @@ def print_virustotal(module_results: list[dict], detail_level: int) -> None:
     if not data.get("found"):
         table.add_row("Status", "[yellow]Hash not found in VirusTotal database[/yellow]")
         table.add_row("SHA256", data.get("sha256", "N/A"))
-        table.add_row("Link", data.get("permalink", ""))
         console.print()
         console.print(table)
+        _print_permalink(data)
         return
 
     detections = data.get("malicious", 0) + data.get("suspicious", 0)
@@ -149,7 +173,6 @@ def print_virustotal(module_results: list[dict], detail_level: int) -> None:
         cs_style = "red" if cs > 0 else "green" if cs < 0 else "dim"
         table.add_row("Community Score", f"[{cs_style}]{cs}[/{cs_style}]")
 
-    table.add_row("Link", data.get("permalink", ""))
-
     console.print()
     console.print(table)
+    _print_permalink(data)

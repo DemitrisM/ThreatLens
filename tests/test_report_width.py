@@ -232,3 +232,57 @@ def test_a_narrow_ioc_table_does_not_wrap_its_own_title(width):
     output = buf.getvalue()
 
     assert "Indicators of Compromise (IOCs)" in output, output
+
+
+_VT_PERMALINK = (
+    "https://www.virustotal.com/gui/file/"
+    "499f27061cc38ec593b8104599919c92bb729a55640e6057778a18b05eb7191c"
+)
+
+
+def _vt_result(found=True):
+    return {
+        "module": "virustotal",
+        "status": "success",
+        "score_delta": 25 if found else 0,
+        "reason": "VirusTotal: 47/75 engines flagged malicious",
+        "data": {
+            "found": found,
+            "sha256": _VT_PERMALINK.rsplit("/", 1)[-1],
+            "permalink": _VT_PERMALINK,
+            "malicious": 47,
+            "suspicious": 0,
+            "total_engines": 75,
+            "detection_ratio": "47/75",
+            "threat_label": "trojan.tepfer/stealer",
+        },
+    }
+
+
+@pytest.mark.parametrize("width", [66, 80, 100, 120])
+@pytest.mark.parametrize("found", [True, False])
+def test_the_virustotal_link_is_not_broken_across_lines(width, found):
+    """The one URL in the report that exists to be opened was folded.
+
+    It lived in a table cell with `overflow="fold"`, and the permalink is
+    100 characters — 36 of prefix plus the SHA256 — so it never fits
+    inside a bordered table at any supported width. Measured on
+    ACRStealer.exe at 100 columns: the link broke after
+    `...640e6` and the tail sat on the next row, which defeats
+    double-click copy and any terminal's link detection.
+
+    This is the same rule the SHA256 already gets, applied to the string
+    that carries one.
+    """
+    from reporting.terminal_reporter._common import use_console
+    from reporting.terminal_reporter.findings import print_virustotal
+
+    buf = io.StringIO()
+    with use_console(make_console(width, file=buf)):
+        print_virustotal([_vt_result(found)], 0)
+    output = buf.getvalue()
+
+    assert _VT_PERMALINK in output, f"link folded at width {width}"
+    assert any(
+        _VT_PERMALINK in line for line in output.splitlines()
+    ), f"link split across lines at width {width}"
