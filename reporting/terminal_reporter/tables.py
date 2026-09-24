@@ -74,10 +74,18 @@ def print_ioc_table(module_results: list[dict], detail_level: int) -> None:
     if total == 0:
         return
 
+    # rich centres a table title inside the table and then wraps it to
+    # that width. The heading is 31 characters and a scan whose only IOC
+    # is a short domain builds a table narrower than that, so the title
+    # broke across two lines and read as a layout fault rather than a
+    # heading. `min_width` keeps the table at least as wide as its own
+    # name; it is a floor, so a wide table is unaffected.
+    title = "Indicators of Compromise (IOCs)"
     table = Table(
-        title="[bold]Indicators of Compromise (IOCs)[/bold]",
+        title=f"[bold]{title}[/bold]",
         box=box.ROUNDED,
         padding=(0, 1),
+        min_width=len(title) + 4,
     )
     table.add_column("Type", style="bold", no_wrap=True)
     table.add_column("Value", overflow="fold")
