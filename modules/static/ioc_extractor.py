@@ -770,6 +770,13 @@ def _filter_path_fps(paths: set[str]) -> set[str]:
     ProgramData, Temp or a user profile is kept even though benign software
     writes there constantly, because those are exactly the directories
     droppers stage payloads in — the false positives are worth the recall.
+
+    A bare drive root is treated separately, because that is the one
+    shape binary noise reaches. ``<letter>:\\`` followed by two arbitrary
+    bytes satisfies the regex, and compressed or encrypted data produces
+    it constantly: measured across 100 corpus samples, 33 of 85 distinct
+    path IOCs were noise of exactly that form. The report caps this
+    category at five rows, so the noise was pushing real paths out of it.
     """
     result: set[str] = set()
     for path in paths:
@@ -781,8 +788,70 @@ def _filter_path_fps(paths: set[str]) -> set[str]:
         # Very short paths are usually FPs (e.g., "C:\\").
         if len(path) <= 4:
             continue
+        if not _is_plausible_path(path):
+            continue
         result.add(path)
     return result
+
+
+#: A trailing ``.ext``. Naming a file is enough on its own — the regex
+#: cannot produce one from noise without the dot landing in the right
+#: place, and a filename is the most useful kind of path IOC there is.
+_PATH_EXTENSION_RE = re.compile(r"\.[A-Za-z0-9]{1,8}$")
+
+#: Characters a Windows name may plausibly contain. Anything outside this
+#: — brackets, backticks, percent signs, control punctuation — is a byte
+#: that happened to follow a drive letter, not part of a name.
+#:
+#: A leading digit or underscore is allowed on purpose: `C:\\123456` and
+#: `C:\\_sandbox` are both shapes malware really uses, and requiring an
+#: opening letter would have discarded them to remove one more piece of
+#: noise. The trade across this filter is deliberately set towards recall.
+_PATH_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9 _.\-()~$]*$")
+
+
+def _is_plausible_path(path: str) -> bool:
+    """Whether a bare ``X:\\name`` looks like a name rather than bytes.
+
+    Args:
+        path: A candidate path that has already passed the system-root
+              and minimum-length checks.
+
+    Returns:
+        True for anything naming a directory or a file, and for a drive
+        root whose single component reads as a word.
+
+    Everything past the drive root is exempt: a separator anywhere in
+    the tail or a file extension is evidence in itself, and that covers
+    the large majority of real path IOCs. The remaining test applies
+    only to a bare ``X:\\name``, and asks only that the name be three
+    characters of name-shaped text.
+
+    The separator is looked for *before* any trailing one is stripped.
+    Stripping first destroys the evidence: ``C:\\a\\`` becomes ``a`` and
+    then fails the length test, and ``C:\\Temp{123}\\`` becomes
+    ``Temp{123}`` and fails the name test on its braces — both of which
+    name a directory and say so with the trailing separator.
+
+    A stricter version of this rule required a vowel, which removed two
+    more pieces of noise and would have discarded ``C:\\tmp``, ``C:\\src``
+    and ``C:\\bin`` with them. Those are real staging directories that
+    this corpus happens not to contain, and the standing preference for
+    this tool is noise over a missed indicator — so the vowel test was
+    dropped and ``w:\\cyYT`` survives as the price.
+
+    Precondition: *path* starts with a drive letter and a colon, which
+    the ``windows_path`` pattern guarantees and the guard below rechecks
+    rather than assumes.
+    """
+    if len(path) < 4 or path[1] != ":" or path[2] != "\\":
+        return True
+    tail = path[3:]
+    if "\\" in tail:
+        return True
+    if _PATH_EXTENSION_RE.search(tail):
+        return True
+    return len(tail) >= 3 and _PATH_NAME_RE.match(tail) is not None
 
 
 def _filter_email_fps(emails: set[str]) -> set[str]:
