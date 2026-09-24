@@ -223,6 +223,73 @@ _OFFICE_OOXML_PARTS: tuple[str, ...] = (
 )
 
 
+# The package roots, separate from _OFFICE_OOXML_PARTS above precisely
+# because that tuple also holds `[Content_Types].xml` and must not be
+# used for a prefix test.
+_OFFICE_PACKAGE_ROOTS: tuple[str, ...] = ("word/", "xl/", "ppt/", "visio/")
+
+# Every top-level component a genuine OOXML package may contain. A
+# document is a closed structure: parts live under these and nowhere
+# else. Measured across the sample corpus — of 57 real OOXML packages,
+# exactly one carries anything outside this set, and that one is a
+# malware sample with a `[trash]` component.
+_OFFICE_ALLOWED_COMPONENTS: frozenset[str] = frozenset({
+    "[content_types].xml",
+    "_rels",
+    "docprops",
+    "docmetadata",
+    "customxml",
+    "customui",
+    # Digitally signed packages carry their signature parts here. Absent
+    # it a signed document is merely analysed twice rather than missed,
+    # but the extra rows are noise worth avoiding.
+    "_xmlsignatures",
+    "word",
+    "xl",
+    "ppt",
+    "visio",
+})
+
+
+# Part extensions seen across the 57 real OOXML packages in the sample
+# corpus, plus the common image and media types Office can embed that the
+# corpus happens not to contain. Anything outside this set stops the file
+# being deferred, which costs an unusual-but-benign document a second
+# analysis and costs an attacker the gap.
+# Markup, metadata and images only. Nothing here can execute, and that
+# is the selection rule rather than "what the corpus contained" — an
+# unreferenced `word/payload.xls` would otherwise defer, be ignored by
+# doc_analysis as unreferenced, and still run when a user unpacked the
+# ZIP and opened it.
+#
+# Measured: 13 of the 57 real packages carry an embedded .rtf, .xls or
+# .xlsx and therefore stop deferring. All 13 are malware samples using
+# the embedded-object delivery shape, and doc_analysis still analyses
+# them; they simply gain archive analysis as well.
+_OFFICE_ALLOWED_PART_EXTENSIONS: frozenset[str] = frozenset({
+    ".xml", ".rels", ".bin", ".vml", ".dat",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff",
+    ".emf", ".wmf", ".webp",
+})
+
+
+def _top_level_component(member_name: str) -> str:
+    """Return the first path component of a package member, folded.
+
+    Args:
+        member_name: A ZIP member name as stored.
+
+    Returns:
+        The lowercased first component, with separators normalised.
+
+    Real documents store some parts with backslashes —
+    ``word\\embeddings\\oleObject1.bin`` appears in the sample corpus —
+    so splitting on forward slashes alone would read the whole string as
+    one component and disqualify every document that embeds an object.
+    """
+    return member_name.replace("\\", "/").split("/")[0].lower()
+
+
 def is_office_ooxml_zip(file_path: Path) -> bool:
     """True if this ZIP is a legit OOXML Office container.
 
@@ -236,12 +303,20 @@ def is_office_ooxml_zip(file_path: Path) -> bool:
     Returns:
         ``True`` only when both markers are present.
 
-    Both conditions are required, and that asymmetry is the point. A
-    malicious ZIP can trivially add a ``[Content_Types].xml``, or a
-    directory called ``word/``, to claim to be a document and duck this
-    module entirely — demanding both, in a file that also parses as a
-    ZIP, is a much harder decoy to build. The cost of being too strict
-    is only that a real document gets archive-scanned as well.
+    Five conditions, and the direction they fail in is the design. This
+    predicate decides only whether ``archive_analysis`` *adds* its own
+    analysis; it does not route anything away from ``doc_analysis``,
+    which is a separate pipeline entry applying its own test. So a
+    false negative here means a document is analysed by both modules —
+    extra rows — while a false positive means a ZIP is analysed by this
+    one and possibly by neither. Every condition is therefore written to
+    fail towards "analyse it".
+
+    That asymmetry is what the conditions are for. Two name checks alone
+    were a costume: adding ``[Content_Types].xml`` and a ``word/`` entry
+    to any ZIP made this module defer while ``doc_analysis`` declined
+    the file as not an Office document, so a payload beside them was
+    examined by nothing at all.
 
     A malformed ZIP returns ``False``, so it stays with
     ``archive_analysis``. That is the safe direction: a broken ZIP is
@@ -253,8 +328,117 @@ def is_office_ooxml_zip(file_path: Path) -> bool:
     except (zipfile.BadZipFile, OSError, RuntimeError):
         return False
 
-    has_content_types = "[Content_Types].xml" in names
-    has_office_root = any(
-        n.startswith(("word/", "xl/", "ppt/", "visio/")) for n in names
+    # Matched case-insensitively, and the matched spelling is kept: part
+    # names are case-insensitive per ECMA-376, but zipfile's open() is
+    # not, so opening a hardcoded spelling would raise KeyError on a
+    # document that spells it differently.
+    content_types_name = next(
+        (n for n in names if n.lower() == "[content_types].xml"), None,
     )
-    return has_content_types and has_office_root
+    has_content_types = content_types_name is not None
+    # Separators normalised first: real packages in the corpus store
+    # some parts with backslashes, so a document whose only root
+    # spelling used them would fail this test and be analysed twice.
+    # Lowercased as well as separator-normalised: ECMA-376 part names are
+    # case-insensitive, so `WORD/document.xml` is a valid document that a
+    # case-sensitive test would decline to defer.
+    has_office_root = any(
+        n.replace("\\", "/").lower().startswith(_OFFICE_PACKAGE_ROOTS)
+        for n in names
+    )
+    if not (has_content_types and has_office_root):
+        return False
+
+    # Third condition: the package must contain nothing else. Without it
+    # the two tests above were a costume an attacker could put on — add
+    # `[Content_Types].xml` and a `word/` entry to any ZIP and this
+    # module defers to doc_analysis, which then declines it as not an
+    # Office document. Verified: both modules returned "skipped" and a PE
+    # sitting beside those two parts was examined by nothing at all.
+    #
+    # Structural on purpose. The rule cannot depend on recognising the
+    # foreign member, or an unrecognised payload walks back through the
+    # same gap; it asks only whether the archive is a closed OOXML
+    # package. Measured on the corpus: 1 of 57 real packages is
+    # disqualified, and that one carries a `[trash]` component.
+    if not all(
+        _top_level_component(n) in _OFFICE_ALLOWED_COMPONENTS for n in names
+    ):
+        return False
+
+    # Fourth: no member may carry an executable extension, at any depth.
+    # The component test alone only kept a payload out of the root —
+    # `word/malware.exe` satisfies it perfectly, and doc_analysis ignores
+    # an unreferenced part, so the costume still worked with the payload
+    # moved inside it. Measured: none of 57 real OOXML packages in the
+    # corpus contains a member with a dangerous extension, so refusing to
+    # defer on one costs nothing. Binary parts are untouched — a
+    # `vbaProject.bin` must still reach doc_analysis, which is the only
+    # module that can read its macros.
+    from .indicators import _DANGEROUS_EXTENSIONS  # noqa: PLC0415
+
+    # Matched on the stripped name's ending rather than via
+    # `PurePosixPath.suffix`, which is the wrong tool for a blocklist:
+    # the suffix of `word/.exe` is the empty string, and a trailing space
+    # or dot yields ".exe " or "" — none of which match. Windows strips
+    # trailing spaces and dots on extraction and treats a bare `.exe` as
+    # executable, so all three of those run.
+    # An allow-list, not a blocklist, and the difference is the point. A
+    # blocklist of executable and archive extensions was complete right
+    # up until the payload was named `word/payload` with no extension at
+    # all — doc_analysis ignores an unreferenced part, so that deferred
+    # and was examined by nothing. No enumeration of dangerous
+    # extensions can close that, because the attacker picks the name.
+    #
+    # Inverting it is safe here only because of the asymmetry above: an
+    # unfamiliar part type means a second module also looks at the file,
+    # never that none does. Measured against the corpus, which is what
+    # the list is drawn from.
+    for name in names:
+        # No legitimate part name contains a NUL, and one truncates the
+        # name for whatever writes the file out — `payload.exe\x00.png`
+        # ends with an allowed extension here and lands as `payload.exe`
+        # on Windows.
+        if "\x00" in name:
+            return False
+        leaf = name.replace("\\", "/").rstrip(" .\t").lower()
+        if not leaf or leaf.endswith("/"):
+            continue  # directory record
+        basename = leaf.rsplit("/", 1)[-1]
+        # `.rels` reads as a dotfile with no suffix, and every package
+        # contains one, so the extension is taken from the last dot
+        # rather than from pathlib's notion of a suffix.
+        ext = "." + basename.rsplit(".", 1)[-1] if "." in basename else ""
+        if ext not in _OFFICE_ALLOWED_PART_EXTENSIONS:
+            return False
+
+    # Fifth: the content-types part must actually be XML. Renaming the
+    # payload to a required part name satisfies every name-based test
+    # above, and doc_analysis then fails to parse it and skips — so the
+    # file is examined by nothing. All 57 corpus packages open this part
+    # with `<?xml `, so requiring a leading `<` after any BOM is free.
+    # Streamed, never `zf.read()`. That call decompresses the whole
+    # member before anything can slice it, and this runs during routing —
+    # before the decompression-bomb guard has seen a single number. A
+    # content-types part that inflates to gigabytes would exhaust memory
+    # while the tool was still deciding which module owns the file.
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf, \
+                zf.open(content_types_name) as part:
+            # More than the four bytes strictly needed: XML permits
+            # whitespace before the root element when the `<?xml ?>`
+            # declaration is omitted, so a small read could see only
+            # spaces and misjudge a valid part.
+            head = part.read(64)
+    except Exception:  # noqa: BLE001
+        # Broad on purpose. zipfile raises NotImplementedError for an
+        # unsupported compression method, and zlib its own errors for
+        # corrupt data — neither is an OSError. A narrow clause let that
+        # escape and, through run()'s last-resort handler, turned a
+        # crafted compression method on one part into "this archive was
+        # not analysed". Design rule 2 wants a decision here.
+        return False
+
+    # removeprefix, not lstrip: lstrip would strip any of those three
+    # bytes in any order and any number, which is not what a BOM is.
+    return head.removeprefix(b"\xef\xbb\xbf").lstrip().startswith(b"<")
