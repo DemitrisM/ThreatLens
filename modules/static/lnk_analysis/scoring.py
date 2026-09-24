@@ -21,6 +21,27 @@ come from combinations — a LOLBin *plus* encoded arguments, *plus*
 padding, *plus* an overlay — which is also how the format is actually
 abused. Weights are provisional and get calibrated against the full
 corpus in the end-of-project sweep.
+
+Design notes
+------------
+Rules stack, and the overlap is deliberate — a rule fires on subset
+containment, so ``lolbin_target`` alone (+5) also fires alongside
+``{lolbin_target, args_padding_zdi}`` (+40), making the pair worth 45.
+Each combo weight is an escalation on top of its parts rather than a
+replacement, which is why reweighting one rule in isolation does not do
+what it looks like.
+
+Classification is taken from the uncapped total and the delta from the
+capped one. The weights sum far past ``SCORE_CAP``, so the cap regularly
+bites — but the top band is 25, so it can only ever change the number
+the pipeline adds, never the verdict word the report prints. Letting a
+cap talk a MALICIOUS shortcut down to SUSPICIOUS would be a scoring
+artefact hiding a detection.
+
+The corpus consequence of that cap is recorded rather than hidden: all
+18 real samples pin at exactly +60, so the module ranks nothing *within*
+MALICIOUS. Fine for detection, useless for triage ordering, and the
+reason raising the cap is on the calibration sweep's list.
 """
 
 from __future__ import annotations
@@ -151,7 +172,23 @@ COMBO_RULES: list[tuple[frozenset[str], int, str]] = [
 def score_lnk(flags: frozenset[str]) -> tuple[int, str, list[str], str]:
     """Compute the module's score contribution.
 
-    Returns ``(score_delta, reason, fired_rules, classification)``.
+    Args:
+        flags: Every indicator flag raised for this shortcut. A superset
+               is normal — the caller does not filter by which rules
+               exist.
+
+    Returns:
+        ``(score_delta, reason, fired_rules, classification)``.
+
+        * ``score_delta``    — capped at ``SCORE_CAP``
+        * ``reason``         — semicolon-joined summary for the report
+        * ``fired_rules``    — one string per rule that fired, in table
+          order, so the heaviest finding leads the sentence
+        * ``classification`` — from the **uncapped** total
+
+    Both views are returned because they answer different questions: the
+    pipeline needs a bounded contribution to sum, the report needs the
+    verdict the evidence actually supports.
     """
     total = 0
     fired: list[str] = []

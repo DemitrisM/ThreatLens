@@ -19,6 +19,30 @@ the two sources is a forgery signal — see ``indicators.py``.
 Malformed DOS dates are common enough in real samples that LnkParse3 has
 a standing issue about them. Here a bad date yields ``None`` and never
 raises.
+
+Design notes
+------------
+Dispatch is on the class type's **high nibble**, not the whole byte. The
+low nibble carries per-item flags — whether the name is UTF-16, whether
+the entry is a directory — so matching the full byte would need one
+branch per flag combination and would silently fail on any combination
+not enumerated.
+
+Every path degrades rather than failing. An item class this module does
+not decode still yields a scraped name, because a recovered path
+fragment is what target resolution in ``command.py`` actually needs, and
+a truncated item is normal rather than exceptional in real samples.
+That is also why ``ShellItem`` has no required fields.
+
+The extension-block walk shares the infinite-loop guard used by every
+size-prefixed walk in this package, and the reason it is needed here is
+the same: the size comes from the file being analysed.
+
+Note the fixed offsets in :func:`_decode_beef0004` are version-gated and
+cumulative. The layout grew field by field across Windows releases, so
+the long-name offset is the sum of everything a given version added —
+which is why those additions read as a run of separate ``if`` statements
+rather than a table.
 """
 
 from __future__ import annotations
@@ -79,18 +103,21 @@ class ShellItem:
 # ---------------------------------------------------------------------------
 
 def _u16(data: bytes, off: int) -> int | None:
+    """Little-endian uint16 at ``off``, or None if it would overrun."""
     if off < 0 or off + 2 > len(data):
         return None
     return int.from_bytes(data[off:off + 2], "little")
 
 
 def _u32(data: bytes, off: int) -> int | None:
+    """Little-endian uint32 at ``off``, or None if it would overrun."""
     if off < 0 or off + 4 > len(data):
         return None
     return int.from_bytes(data[off:off + 4], "little")
 
 
 def _u64(data: bytes, off: int) -> int | None:
+    """Little-endian uint64 at ``off``, or None if it would overrun."""
     if off < 0 or off + 8 > len(data):
         return None
     return int.from_bytes(data[off:off + 8], "little")
@@ -128,7 +155,27 @@ def fat_timestamp(raw: bytes) -> str | None:
 
 
 def _read_nul_string(data: bytes, off: int, *, unicode: bool, codepage: str) -> tuple[str, int]:
-    """Read a NUL-terminated string, returning it and the offset past it."""
+    """Read a NUL-terminated string, returning it and the offset past it.
+
+    Args:
+        data:     The buffer.
+        off:      Where the string starts.
+        unicode:  True for UTF-16LE, False for the ANSI codepage.
+        codepage: Used only when ``unicode`` is False.
+
+    Returns:
+        ``(text, next_offset)``. An unterminated string yields everything
+        remaining, with the offset clamped to the buffer length, so the
+        caller keeps walking from a valid position instead of failing. A
+        starting offset that is already out of range is returned
+        unchanged alongside an empty string — there is nothing to clamp
+        to that would mean anything, and the caller's own bounds check
+        ends its walk on the next read.
+
+    An unknown codepage falls back to cp1252 rather than raising:
+    the codepage comes from configuration and a typo there must not take
+    down every shortcut in a triage run.
+    """
     if off < 0 or off >= len(data):
         return "", off
     if unicode:
@@ -154,9 +201,20 @@ def _read_nul_string(data: bytes, off: int, *, unicode: bool, codepage: str) -> 
 def decode_shell_item(payload: bytes, *, codepage: str = "cp1252") -> ShellItem:
     """Decode one ItemID payload (the bytes after its 2-byte size field).
 
+    Args:
+        payload:  The item's bytes, excluding its own size field.
+        codepage: For ANSI strings inside the item.
+
+    Returns:
+        A :class:`ShellItem`. Never raises — a decode failure sets
+        ``truncated`` and returns whatever was recovered.
+
     Unknown or truncated items degrade to a class label plus whatever
     strings can be scraped out — still enough to recover a target path,
-    which is what actually matters for triage.
+    which is what actually matters for triage. The broad ``except`` is
+    required rather than lazy: these are attacker-controlled bytes being
+    read at fixed offsets, and one malformed item must cost that item
+    and not the IDList.
     """
     item = ShellItem()
     if not payload:
@@ -282,9 +340,20 @@ def _decode_beef0004(block: bytes, version: int, item: ShellItem) -> None:
 def _scrape_name(payload: bytes, codepage: str) -> str:
     """Last resort for item classes we do not decode.
 
-    Prefers the longest embedded UTF-16 run, falling back to ASCII. A
-    recovered path fragment beats nothing, and the target-resolution
-    chain in ``command.py`` can still use it.
+    Args:
+        payload:  The undecoded item bytes.
+        codepage: For the non-Unicode fallback.
+
+    Returns:
+        The best candidate string, or ``""``.
+
+    Prefers the longest embedded UTF-16 run, falling back to the
+    shortcut's own ANSI codepage — not ASCII, since the item may carry a
+    non-Latin path and the codepage is the only encoding information
+    available. A recovered path fragment beats nothing, and the
+    target-resolution chain in ``command.py`` can still use it. Longest
+    wins because the competing runs are a path and the fragments around
+    it, and the path is the long one.
     """
     best = ""
     for candidate in _utf16_runs(payload):
@@ -301,7 +370,26 @@ def _scrape_name(payload: bytes, codepage: str) -> str:
 
 
 def _utf16_runs(payload: bytes, min_chars: int = 3) -> list[str]:
-    """Extract printable UTF-16LE runs without regex backtracking."""
+    """Extract printable UTF-16LE runs without regex backtracking.
+
+    Args:
+        payload:   Bytes to scan.
+        min_chars: Shortest run worth keeping.
+
+    Returns:
+        The printable runs, in order.
+
+    Hand-written rather than a regex on purpose. The pattern for this —
+    repeated ``(printable, NUL)`` pairs — is the shape that backtracks
+    catastrophically on adversarial input, and the input here is
+    adversarial by definition. A linear scan over byte pairs cannot.
+
+    Known limit: only even byte offsets are examined, so a UTF-16 run
+    that begins at an odd offset is invisible. Real items are aligned,
+    and this is a last-resort scraper for classes the module does not
+    decode — a missed run costs a name that was already a guess. Worth
+    knowing before relying on it for anything load-bearing.
+    """
     runs: list[str] = []
     current: list[str] = []
     for index in range(0, len(payload) - 1, 2):
