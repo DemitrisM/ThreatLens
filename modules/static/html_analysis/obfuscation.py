@@ -7,6 +7,29 @@ and obfuscated variable names.
 
 All checks are pure-regex on the already-extracted script blocks.
 No external dependencies.
+
+Design notes
+------------
+Two views of the same script text are kept, and using the wrong one is
+the mistake this module already made once. ``combined`` is the raw
+source, matched by the API patterns — an ``eval(`` inside a string
+literal still counts, because the literal is usually what gets eval'd.
+``clean`` has large string literals blanked and is matched by the
+comment and identifier heuristics, which are statistical and would
+otherwise be reading base64: a run of ``A``s satisfies the long-
+identifier pattern, and ``//8AALgA`` inside a PE blob satisfies the
+line-comment pattern.
+
+Everything here is an *indicator of obfuscation*, never of intent.
+Minified production JavaScript trips several of these on its own, which
+is why each is a small weight and the module leans on combinations —
+and why the junk-comment and identifier checks carry thresholds rather
+than firing on a single occurrence.
+
+The junk-comment check is the one genuinely novel heuristic: ClickFix
+pages pad their scripts with AI-generated prose full of implausibly long
+compound words, which reads as English to a human skimming and is
+statistically obvious in aggregate.
 """
 
 import logging
@@ -66,9 +89,16 @@ def detect_obfuscation(script_blocks: list[str]) -> dict:
     """Return obfuscation flags and a human-readable indicator list.
 
     Args:
-        script_blocks: list of inline ``<script>`` block text strings.
+        script_blocks: Inline ``<script>`` block text strings.
 
-    Returns a flat dict suitable for merging into the module data dict.
+    Returns:
+        A flat dict suitable for merging into the module data dict. An
+        empty input returns the same keys with everything false, because
+        the reporters index them unconditionally.
+
+    The API patterns run against the raw text and the two statistical
+    checks against the string-blanked copy — see the module docstring
+    for why that split is load-bearing rather than tidiness.
     """
     if not script_blocks:
         return _empty_result()
@@ -102,11 +132,21 @@ def detect_obfuscation(script_blocks: list[str]) -> dict:
 
 
 def _detect_junk_comments(clean_js: str) -> bool:
-    """Return True when comment blocks contain an implausibly high ratio
-    of very-long words — the hallmark of ClickFix-style junk camouflage.
+    """True when comments carry an implausible ratio of very long words.
 
-    ``clean_js`` should have large string literals already stripped so that
-    base64 data does not match the comment pattern.
+    Args:
+        clean_js: Script text with large string literals already blanked,
+                  so base64 data cannot match the comment pattern.
+
+    Returns:
+        Whether the comment text looks like generated camouflage.
+
+    Three guards, each removing a different way to be wrong. Only
+    comments containing at least three spaces are kept, because real
+    prose has word gaps and any encoded data that survived blanking does
+    not. Fewer than eight tokens is not enough text to measure a ratio
+    against. And the ratio itself is over tokens rather than characters,
+    so one enormous word cannot carry the result.
     """
     # Only keep comment captures that contain spaces (real text has word gaps;
     # any remaining encoded data would still be space-free).
@@ -122,13 +162,19 @@ def _detect_junk_comments(clean_js: str) -> bool:
 
 
 def _detect_obfuscated_varnames(clean_js: str) -> bool:
-    """Return True when multiple very long, programmatically-generated
-    identifiers appear in the script content.
+    """True when several implausibly long identifiers appear together.
 
-    Detects both camelCase (4+ transitions) and snake_case (2+ long parts)
-    obfuscation styles, as used in ClickFix-style attacks.
+    Args:
+        clean_js: Script text with large string literals already blanked.
 
-    ``clean_js`` should have large string literals already stripped.
+    Returns:
+        Whether at least ``_MIN_OBFUSCATED_VARS`` such names were found.
+
+    Counted, not matched once. A single 30-character camelCase name is a
+    style choice someone might genuinely make; three of them in one file
+    is a generator. The threshold is what separates the two, and it is
+    why this returns a bool over a population rather than a list of
+    names.
     """
     candidates = _LONG_IDENT_RE.findall(clean_js)
     suspicious = [n for n in candidates if _looks_obfuscated(n)]
@@ -136,7 +182,22 @@ def _detect_obfuscated_varnames(clean_js: str) -> bool:
 
 
 def _looks_obfuscated(name: str) -> bool:
-    """Heuristic: does a variable name look programmatically generated?"""
+    """Heuristic: does one identifier look programmatically generated?
+
+    Args:
+        name: A candidate identifier, already length-filtered by the
+              regex that found it.
+
+    Returns:
+        Whether it matches either generated style.
+
+    Two styles, because the generators observed in the wild use two.
+    Many lower-to-upper transitions is the camelCase form; several long
+    underscore-separated segments is the snake_case form, as in
+    ``quadapplicationor_ultramicroserviceer``. Both tests are about
+    *structure* rather than length alone — a long name that is one word
+    is a description, not a generated token.
+    """
     if len(name) < 30:
         return False
     # CamelCase obfuscation: many lower→upper transitions.
@@ -155,6 +216,15 @@ def _looks_obfuscated(name: str) -> bool:
 
 
 def _empty_result() -> dict:
+    """Every key this module emits, all negative.
+
+    Returns:
+        The full result shape for a page with no inline script.
+
+    Built in one place and always in full so the reporters and the
+    scoring engine can index any key without guarding it — the same
+    contract the analysis modules' ``_empty_data`` helpers follow.
+    """
     return {
         "has_eval": False,
         "has_fromcharcode": False,
