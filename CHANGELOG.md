@@ -13,12 +13,92 @@ Everything before it is a step toward that.
 | 0.5.3 | The archive_analysis comment pass, batches 1–2 — four fixes, five ZIP header-differential evasions closed |
 | 0.5.4 | Batches 3–4 — the RAR and 7z/CAB/ISO handlers, three more 7z fixes including a bomb-guard bypass |
 | 0.5.5 | Batch 5 — archive_analysis complete; the OOXML costume bypass and the ADS extension blind spot closed |
-| 0.5.6 | *(current)* lnk_analysis complete — four fixes including a size-cap bypass that deleted the module from a scan |
+| 0.5.6 | lnk_analysis complete — four fixes including a size-cap bypass that deleted the module from a scan |
+| 0.5.7 | *(current)* html_analysis complete — a Windows-1252 page decoded to mojibake and reported clean |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.7 — 2026-09-24
+
+The `html_analysis` comment pass, both batches. Two defect clusters, and the
+first is the most consequential single bug found in the project: a page that
+analysed cleanly because the text had been destroyed before any indicator saw
+it.
+
+### Fixed — a Windows-1252 page decoded to mojibake and reported clean
+
+`_read_html` tried utf-8, then utf-16, then latin-1, each strict. The middle
+step is the problem: `bytes.decode("utf-16")` without a BOM assumes
+little-endian and pairs the bytes up, which succeeds for essentially **any**
+even-length input. A Windows-1252 page — anything with an accented character,
+which fails strict utf-8 — was therefore claimed by utf-16 whenever its length
+happened to be even.
+
+Nothing raised. The document became mojibake and every indicator silently
+found nothing. Measured: a 50-byte latin-1 page decoded to `格浴㹬猼牣灩㹴…`
+and the `eval(atob(` call it carried vanished. Roughly half of all non-UTF-8
+pages, by byte-length parity.
+
+UTF-16 is now used only when a BOM says so, matching the browser — HTML5
+sniffing does not select it otherwise, and the spec overrides a
+`<meta charset="utf-16">` declaration to UTF-8 precisely to stop that being an
+attack surface.
+
+UTF-32 is deliberately absent from the BOM table, and briefly was not. Its
+little-endian mark is the UTF-16-LE mark followed by two NULs, so listing it
+made a UTF-16 document whose first character is U+0000 decode as UTF-32 — one
+character of payload to blind the module. Caught in review before it reached a
+commit, and pinned by a test.
+
+The magic sniff had the same class of bug: it compared raw bytes, so a BOM sat
+in front of `<html` and a UTF-16 page spelled it `<\x00h\x00`. Both are
+ordinary ways to save an HTML file that a browser opens as HTML whatever the
+extension claims — and a decoy extension is exactly what that fallback is for.
+
+### Fixed — the reported external domain was not the domain
+
+`_extract_domain` normalised hostnames with `netloc.lstrip("www.")`.
+`str.lstrip` takes a *set of characters*, so it ate every leading `w` and `.`:
+`wordpress.com` became `ordpress.com`, `wp.com` became `p.com`, `web.site`
+became `eb.site`. That name went into the report as the suspicious external
+domain — an IOC an analyst blocks, for a host that does not exist. It also made
+two allowlist entries permanently unreachable.
+
+Three more in the same comparison. Schemes are case-insensitive per RFC 3986,
+so `HTTP://evil.test/c2.js` did not match the lowercase literals and read as a
+*relative* path — skipped entirely. The relative test was a blocklist of four
+prefixes rather than a scheme test, so `ws://`, `file://` and `mailto:` were
+skipped too. And browsers fold backslashes, so `src="\\evil.test/c2.js"`
+fetches from evil.test while `startswith("//")` missed every backslash
+spelling.
+
+Separately, the allowlist matched exactly, so legitimate CDN subdomains were
+flagged — the corpus serves from `c0.wp.com` and `stats.wp.com`, plainly why
+`wp.com` is listed. Matching is on whole labels now, not `endswith`, which is
+itself a bypass: `notwp.com` ends with `wp.com` as raw text.
+
+### Rejected after testing
+
+Entity-encoded schemes were proposed as a fourth gap and are not one.
+`convert_charrefs=False` affects text nodes only, so `src="h&#116;tp://…"`
+arrives from `html.parser` already decoded. A test pins it, because unescaping
+attributes looks harmless and would invite the same for `handle_data` — which
+would deobfuscate the script text the obfuscation pass exists to measure.
+
+### Documented
+
+All six files. The notes worth keeping: why ClickFix inverts the usual delivery
+problem and therefore needs two independent halves of evidence, why the
+obfuscation pass keeps two views of the same script text, and why HTML
+smuggling is statically decidable at all.
+
+### Tests
+
+**882 → 940.** Corpus unchanged: the two WordPress false positives are gone and
+every genuine C2 domain is still reported, now under its real name.
 
 ## 0.5.6 — 2026-09-24
 
