@@ -198,3 +198,37 @@ def test_the_verdict_survives_a_narrow_console(width):
     assert verdict_lines
     for line in verdict_lines:
         assert line.startswith("  "), f"width {width}: {line!r} lost the indent"
+
+
+@pytest.mark.parametrize("width", [66, 80, 100, 120])
+def test_a_narrow_ioc_table_does_not_wrap_its_own_title(width):
+    """rich centres a table title inside the table, then wraps it.
+
+    "Indicators of Compromise (IOCs)" is 31 characters, and a scan whose
+    only IOC is a short domain builds a table narrower than that — so
+    the heading broke across two lines and read as a layout fault.
+    Measured on AgentTesla.html, whose single IOC is "link.click".
+    """
+    from reporting.terminal_reporter._common import use_console
+    from reporting.terminal_reporter.tables import print_ioc_table
+
+    module_results = [
+        {
+            "module": "ioc_extractor",
+            "status": "success",
+            "data": {"iocs": {"domain": ["link.click"]}, "total_iocs": 1},
+            # The full module contract, not only the keys this reader
+            # touches — a mock that drops them stops being a check that
+            # the reporter handles what a module really returns.
+            "score_delta": 5,
+            "reason": "Domains: link.click",
+            "elapsed_seconds": 0.01,
+        }
+    ]
+
+    buf = io.StringIO()
+    with use_console(make_console(width, file=buf)):
+        print_ioc_table(module_results, 0)
+    output = buf.getvalue()
+
+    assert "Indicators of Compromise (IOCs)" in output, output
