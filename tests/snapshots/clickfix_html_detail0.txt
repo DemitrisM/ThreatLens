@@ -25,9 +25,9 @@
  Module            Δ   Reason                                                                       
  ────────────────────────────────────────────────────────────────────────────────────────────────── 
  html_analysis   +50   Blob delivery chain (new Blob + URL.createObjectURL); Junk-comment           
-                       camouflage (AI-generated obfuscation noise); Obfus...                        
+                       camouflage (AI-generated obfuscation noise) … 2 more findings — use -vv      
  ioc_extractor   +20   Network IOCs found: 51 URLs/IPs; Domains: api.w.org, fonts.googleapis.com,   
-                       neutralmarlservices.com (+4 more); 1 email...                                
+                       neutralmarlservices.com (+4 more); 1 email address(es) found                 
                                                                                                     
 
   HTML Smuggling Indicators

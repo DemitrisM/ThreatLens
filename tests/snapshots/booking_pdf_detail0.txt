@@ -26,7 +26,8 @@
  Module            Δ   Reason                                                                       
  ────────────────────────────────────────────────────────────────────────────────────────────────── 
  pdf_analysis    +50   Raw PDF markers: /OpenAction(1), /JavaScript(1), /JS(1); peepdf extracted 1  
-                       JavaScript block(s); Social-engineering J...                                 
+                       JavaScript block(s); Social-engineering JS alert: non compatibile, aprilo    
+                       nel browser                                                                  
  ioc_extractor   +15   Network IOCs found: 1 URLs/IPs; Domains: bociking.netlify.app                
                                                                                                     
 
