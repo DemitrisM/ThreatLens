@@ -11,14 +11,27 @@ cannot drift apart. CSS values are copied verbatim from the template block
 they replace, so switching to :func:`css_root` changes no rendered output.
 """
 
-from typing import Final, TypedDict
+from typing import TYPE_CHECKING, Final, TypedDict
+
+if TYPE_CHECKING:  # pragma: no cover
+    from rich.theme import Theme
 
 
 class Token(TypedDict):
-    """One palette entry: how rich draws it, how CSS draws it."""
+    """One palette entry: how rich draws it, how CSS draws it.
+
+    ``css`` is ``None`` for an entry the HTML report has no use for —
+    a composed rich style such as "bold cyan", where the weight is the
+    point and the hue already has a token of its own. :func:`css_root`
+    skips those rather than emitting a variable nothing references.
+
+    One table, not two. A second rich-only map was the obvious way to
+    keep the CSS block clean, and it would have split the single source
+    of colour in half to save three unused variables.
+    """
 
     rich: str
-    css: str
+    css: str | None
 
 
 TOKENS: Final[dict[str, Token]] = {
@@ -57,6 +70,12 @@ TOKENS: Final[dict[str, Token]] = {
     "text_faint": {"rich": "dim", "css": "#6b7280"},
     "accent": {"rich": "cyan", "css": "#4cc9f0"},
     "code_bg": {"rich": "", "css": "#0b0d12"},
+    # Composed rich styles — weight plus hue. CSS has no use for them:
+    # the HTML report styles its headings with its own rules, and the
+    # hues here already appear above.
+    "brand": {"rich": "bold cyan", "css": None},
+    "ok_strong": {"rich": "bold green", "css": None},
+    "error_dim": {"rich": "dim red", "css": None},
 }
 
 #: IOC type -> display label. The colour token is ``ioc_<type>``.
@@ -131,10 +150,34 @@ def css_root() -> str:
     """
     lines = [":root {"]
     for name, token in TOKENS.items():
+        if token["css"] is None:
+            continue
         var = f"--{name.replace('_', '-')}:"
         lines.append(f"        {var:<16}{token['css']};")
     lines.append("    }")
     return "\n".join(lines)
+
+
+def rich_theme() -> "Theme":
+    """The palette as a :class:`rich.theme.Theme`.
+
+    Attached to the console singletons in :mod:`reporting.console`, which
+    is what lets a reporter write ``[bad]…[/bad]`` instead of ``[red]…``.
+    That is the mechanism that makes design rule 8 enforceable rather
+    than aspirational: a semantic name in the markup has no hue in it, so
+    changing the hue is a one-line edit here and a test can reject any
+    bare colour name it finds in the source.
+
+    Tokens with an empty rich half are skipped — they are CSS-only
+    chrome, and registering them would shadow nothing useful while
+    letting ``[bg]`` parse as a valid style.
+    """
+    from rich.theme import Theme  # noqa: PLC0415
+
+    return Theme(
+        {name: token["rich"] for name, token in TOKENS.items() if token["rich"]},
+        inherit=True,
+    )
 
 
 __all__ = [
@@ -145,4 +188,5 @@ __all__ = [
     "css_root",
     "ioc_style",
     "rich_style",
+    "rich_theme",
 ]

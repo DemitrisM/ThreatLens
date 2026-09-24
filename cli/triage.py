@@ -41,7 +41,7 @@ import click
 from core.config_loader import ConfigNotFound, get_config
 from core.pipeline import run_pipeline
 
-from ._console import err, out
+from ._console import err, out, print_machine
 from ._exit import EXIT_THREAT, FAIL_ON_CHOICES, RuntimeFailure, meets_threshold
 from ._helpers import PROFILES, _apply_module_overrides, _apply_scan_profile, _detail_level, _setup_logging
 from ._progress import _make_progress_cb
@@ -155,7 +155,7 @@ def triage(
 
     files = _collect_files(directory, recursive=recursive)
     if not files:
-        err.print(f"[yellow]No files found in {directory}[/yellow]")
+        err.print(f"[warn]No files found in {directory}[/warn]")
         return
 
     # An empty directory is not an error: a sweep that finds nothing to
@@ -164,7 +164,7 @@ def triage(
     machine = fmt in _MACHINE_FORMATS
     if not machine:
         err.print(
-            f"\n[bold cyan]Triage:[/bold cyan] {len(files)} file(s) in {directory}\n"
+            f"\n[brand]Triage:[/brand] {len(files)} file(s) in {directory}\n"
         )
 
     reports, analysed, failures = _analyse_all(
@@ -283,7 +283,7 @@ def _analyse_all(
             logger.error("Pipeline failed for %s: %s", file.name, exc)
             logger.debug("Pipeline traceback", exc_info=True)
             failures.append((file.name, str(exc)))
-            err.print(f"[red]  failed: {exc}[/red]")
+            err.print(f"[error]  failed: {exc}[/error]")
             continue
         finally:
             progress_fin()
@@ -329,7 +329,7 @@ def _emit_machine(reports: list[dict], fmt: str) -> None:
             [build_json_report(r) for r in reports], indent=2, default=str
         )
 
-    click.echo(payload)
+    print_machine(payload)
 
 
 def _print_summary(

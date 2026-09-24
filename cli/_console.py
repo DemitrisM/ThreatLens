@@ -7,6 +7,6 @@ err`` call site working while guaranteeing there is exactly one stdout
 ``Console`` in the tree.
 """
 
-from reporting.console import err, out
+from reporting.console import err, out, print_machine
 
-__all__ = ["err", "out"]
+__all__ = ["err", "out", "print_machine"]

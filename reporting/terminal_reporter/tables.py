@@ -135,9 +135,9 @@ def print_timing_table(module_results: list[dict], timing: dict) -> None:
         name = r.get("module", "unknown")
 
         if elapsed > 60:
-            time_str = f"[red]{elapsed:.1f}s[/red]"
+            time_str = f"[bad]{elapsed:.1f}s[/bad]"
         elif elapsed > 10:
-            time_str = f"[yellow]{elapsed:.1f}s[/yellow]"
+            time_str = f"[warn]{elapsed:.1f}s[/warn]"
         else:
             time_str = f"[dim]{elapsed:.1f}s[/dim]"
 

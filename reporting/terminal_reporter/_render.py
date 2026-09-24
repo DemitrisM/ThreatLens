@@ -274,7 +274,7 @@ def render_hash_list(
     for name, meta, sha in shown:
         con.print(f"  [bold]{name}[/bold]  [dim]{meta}[/dim]")
         if sha:
-            con.print(f"  [cyan]{sha}[/cyan]")
+            con.print(f"  [accent]{sha}[/accent]")
         con.print()
     if hidden:
         con.print(f"  [dim]{more_hint(hidden)}[/dim]")
