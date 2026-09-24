@@ -941,3 +941,66 @@ def test_overlay_sha256_renders_in_full(tmp_path):
     assert len(sha) == 64
     values = " ".join(row.value for row in lnk_rows(data, 2))
     assert data["overlay"]["description"] in values
+
+
+# ---------------------------------------------------------------------------
+# LinkInfo full_path for network targets
+# ---------------------------------------------------------------------------
+
+def test_full_path_uses_the_network_name_when_there_is_no_local_path():
+    """A network-targeted shortcut has no LocalBasePath, only a NetName.
+
+    full_path concatenated LocalBasePath and CommonPathSuffix
+    unconditionally, so for a UNC or WebDAV target it returned the bare
+    suffix — `\\payload.exe` instead of
+    `\\\\attacker.com@SSL\\DavWWWRoot\\payload.exe`. command.py feeds
+    full_path into its four-source target resolution, so the reported
+    target for exactly the shape this module flags as webdav_remote_exec
+    was a fragment with the attacker's host removed.
+    """
+    from modules.static.lnk_analysis.parser import LinkInfoData
+
+    info = LinkInfoData(
+        net_name="\\\\attacker.com@SSL\\DavWWWRoot",
+        common_path_suffix="payload.exe",
+    )
+
+    assert info.full_path == "\\\\attacker.com@SSL\\DavWWWRoot\\payload.exe"
+
+
+def test_full_path_prefers_the_local_path_when_both_are_present():
+    """A mapped drive carries both; the local path is what Explorer shows."""
+    from modules.static.lnk_analysis.parser import LinkInfoData
+
+    info = LinkInfoData(
+        local_base_path="C:\\Users\\v\\Desktop\\",
+        net_name="\\\\server\\share",
+        common_path_suffix="report.docx",
+    )
+
+    assert info.full_path == "C:\\Users\\v\\Desktop\\report.docx"
+
+
+def test_full_path_does_not_double_the_separator():
+    """NetName may or may not carry a trailing separator; the suffix too."""
+    from modules.static.lnk_analysis.parser import LinkInfoData
+
+    trailing = LinkInfoData(
+        net_name="\\\\host\\share\\", common_path_suffix="\\a.exe",
+    )
+    assert trailing.full_path == "\\\\host\\share\\a.exe"
+
+
+def test_full_path_with_a_network_name_and_no_suffix():
+    """The share itself is the target when no suffix follows."""
+    from modules.static.lnk_analysis.parser import LinkInfoData
+
+    info = LinkInfoData(net_name="\\\\host\\share")
+    assert info.full_path == "\\\\host\\share"
+
+
+def test_full_path_is_empty_when_link_info_carries_nothing():
+    """No path of any kind must not become a stray separator."""
+    from modules.static.lnk_analysis.parser import LinkInfoData
+
+    assert LinkInfoData().full_path == ""
