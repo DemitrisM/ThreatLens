@@ -19,8 +19,8 @@
 
   ███████████████░░░░░░░  68/100  HIGH
 
-  Likely malicious with .NET stealer rule class strings (+2), network IOC indicators, encoded data, 
-unsigned binary
+  Likely malicious with .NET stealer rule class strings (+2), network IOC indicators, encoded data,
+  unsigned binary
 
   FINDINGS
                                                                                                     
