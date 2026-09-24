@@ -366,13 +366,20 @@ def test_unwritable_output_exits_three(sample, stub_config, stub_pipeline):
 
 @pytest.fixture
 def sample_dir(tmp_path):
-    """Two files at the top level, one nested, one dotfile."""
+    """Two files at the top level, one nested, one inside a dot-directory.
+
+    A dot-prefixed *file* is deliberately not here — that is its own
+    behaviour and lives in `hidden_dir`, so the count these tests depend
+    on stays at two.
+    """
     (tmp_path / "a.exe").write_bytes(b"MZ\x00")
     (tmp_path / "b.exe").write_bytes(b"MZ\x01")
-    (tmp_path / ".hidden.exe").write_bytes(b"MZ\x02")
     nested = tmp_path / "nested"
     nested.mkdir()
     (nested / "c.exe").write_bytes(b"MZ\x03")
+    noise = tmp_path / ".venv"
+    noise.mkdir()
+    (noise / "d.exe").write_bytes(b"MZ\x02")
     return tmp_path
 
 
@@ -383,13 +390,13 @@ def test_triage_jsonl_emits_one_line_per_file_and_no_chrome(
     assert result.exit_code == EXIT_OK, stdout_of(result) + stderr_of(result)
 
     lines = stdout_of(result).strip().splitlines()
-    assert len(lines) == 2  # a.exe, b.exe — dotfile and subdirectory excluded
+    assert len(lines) == 2  # a.exe, b.exe — subdirectories are not descended
     names = {json.loads(line)["file"].rsplit("/", 1)[-1] for line in lines}
     assert names == {"a.exe", "b.exe"}
     assert "Triage Summary" not in stdout_of(result)
 
 
-def test_triage_recursive_descends_but_still_skips_dotfiles(
+def test_triage_recursive_descends_but_still_skips_dot_directories(
     sample_dir, stub_config, stub_pipeline
 ):
     result = make_runner().invoke(
@@ -769,3 +776,92 @@ def test_compare_does_not_render_a_missing_hash_as_truncated(tmp_path, stub_conf
     assert result.exit_code == EXIT_OK, stdout_of(result) + stderr_of(result)
     assert "N/A…" not in stdout_of(result)
     assert "N/A" in stdout_of(result)
+
+
+# ── triage: hidden paths ────────────────────────────────────────────
+
+
+@pytest.fixture
+def hidden_dir(tmp_path):
+    """One visible file, one dot-prefixed file, one inside a dot-directory."""
+    (tmp_path / "visible.exe").write_bytes(b"MZ\x00")
+    (tmp_path / ".payload.exe").write_bytes(b"MZ\x01")
+    noise = tmp_path / ".git"
+    noise.mkdir()
+    (noise / "index").write_bytes(b"MZ\x02")
+    return tmp_path
+
+
+def _triaged_names(result) -> set[str]:
+    return {
+        json.loads(line)["file"].rsplit("/", 1)[-1]
+        for line in stdout_of(result).strip().splitlines()
+    }
+
+
+def test_a_dot_prefixed_file_is_analysed(hidden_dir, stub_config, stub_pipeline):
+    """Hiding a sample is the oldest trick on the platform.
+
+    The exclusion exists for `.git` and `.venv`, which are directories.
+    Extending it to files meant a sample named `.payload.exe` was never
+    analysed and never reported as skipped — the sweep simply said less
+    than the directory contained, with nothing to indicate it.
+    """
+    result = make_runner().invoke(
+        cli_group, ["triage", str(hidden_dir), "-f", "jsonl"]
+    )
+
+    assert result.exit_code == EXIT_OK, stdout_of(result) + stderr_of(result)
+    assert _triaged_names(result) == {"visible.exe", ".payload.exe"}
+
+
+def test_a_dot_prefixed_directory_is_still_skipped(
+    hidden_dir, stub_config, stub_pipeline
+):
+    """That half of the rule is the half with a reason.
+
+    Walking `.git` or `.venv` is never what a sweep wants, and a repo
+    checkout would otherwise dominate the run.
+    """
+    result = make_runner().invoke(
+        cli_group, ["triage", str(hidden_dir), "-r", "-f", "jsonl"]
+    )
+
+    assert result.exit_code == EXIT_OK
+    assert _triaged_names(result) == {"visible.exe", ".payload.exe"}
+
+
+def test_a_dot_prefixed_file_inside_a_normal_directory_is_analysed(
+    tmp_path, stub_config, stub_pipeline
+):
+    """The test is the parent chain, not the name of the file itself."""
+    nested = tmp_path / "samples"
+    nested.mkdir()
+    (nested / ".dropper.exe").write_bytes(b"MZ\x00")
+
+    result = make_runner().invoke(cli_group, ["triage", str(tmp_path), "-r", "-f", "jsonl"])
+
+    assert _triaged_names(result) == {".dropper.exe"}
+
+
+def test_a_symlinked_directory_is_not_followed(tmp_path, stub_config, stub_pipeline):
+    """A link pointing outward must not widen the sweep.
+
+    `os.walk` defaults to `followlinks=False`, so a symlink to another
+    tree is not descended — otherwise a link named `samples -> /` would
+    turn a sweep of one folder into a sweep of the filesystem, and a
+    link pointing back at an ancestor would not terminate.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "elsewhere.exe").write_bytes(b"MZ\x00")
+
+    root = tmp_path / "sweep"
+    root.mkdir()
+    (root / "here.exe").write_bytes(b"MZ\x01")
+    (root / "link").symlink_to(outside, target_is_directory=True)
+
+    result = make_runner().invoke(cli_group, ["triage", str(root), "-r", "-f", "jsonl"])
+
+    assert result.exit_code == EXIT_OK, stdout_of(result) + stderr_of(result)
+    assert _triaged_names(result) == {"here.exe"}
