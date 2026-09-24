@@ -19,6 +19,28 @@ Two recursion modes, controlled by ``config["onenote_full_recursion"]``:
 ``.onepkg`` bundles are CABs containing ``.one`` + ``.onetoc2`` — they
 are left to ``archive_analysis``; we short-circuit with a descriptive
 skip reason rather than re-implement CAB parsing here.
+
+Design notes
+------------
+The threat model is carriage, not execution. A ``.one`` file does not
+run anything by itself: the attacker puts an attachment on the page
+behind a lure image and the victim double-clicks it. So the whole module
+reduces to finding attachments and saying what they are — which is why
+blob typing in ``embedded.py`` carries the weight, and why a typing gap
+is a silent detection loss rather than a downgrade.
+
+The pipeline is linear and each stage consumes the one before it: walk
+the records, type them, derive flags, score. Nothing loops back, so a
+failure anywhere yields a partial report rather than none.
+
+The file is **mapped, never read whole** — see :func:`_analyse` for why
+that replaced a size cap that could be defeated by padding.
+
+Hash-only is the default recursion mode on purpose. A blob's SHA256
+reaches VirusTotal through the existing ``embedded_executables`` shape
+at no cost, and that answers the common question. Full-pipeline
+recursion writes payloads to disk and re-enters the whole tool, which is
+expensive enough to be config-gated.
 """
 
 from __future__ import annotations
@@ -56,7 +78,25 @@ _RECURSE_KINDS = frozenset({"pe", "elf", "macho", "msi"})
 
 
 def run(file_path: Path, config: dict) -> dict:
-    """Module entry point — returns the standard result dict."""
+    """Module entry point — returns the standard result dict.
+
+    Args:
+        file_path: The file to analyse.
+        config:    Passed through untouched. Nothing is read here any
+                   more — the budgets and recursion settings are read
+                   further down, where they are used.
+
+    Returns:
+        The standard module dict. ``"skipped"`` for a non-OneNote file
+        and for a ``.onepkg`` bundle, ``"error"`` for one that could not
+        be read, ``"success"`` otherwise — including for a notebook
+        whose records are all malformed, since "this is a OneNote file
+        carrying nothing readable" is itself a result.
+
+    There is deliberately no size check here any more. It used to skip
+    anything over ``max_onenote_size_mb`` and score 0, which made
+    padding a notebook enough to remove the module from a scan.
+    """
     try:
         if not file_path.exists():
             return _error("File does not exist")
@@ -259,6 +299,40 @@ def _recurse_into_embedded(
 
 
 def _payload_for_blob(blob: EmbeddedBlob, data_bytes: bytes) -> bytes:
+    """Re-slice a blob's payload from the parent buffer.
+
+    Args:
+        blob:       A typed blob, carrying its record offset and size.
+        data_bytes: The mapped notebook.
+
+    Returns:
+        The payload bytes, or ``b""`` if the recorded extent no longer
+        fits the buffer.
+
+    Re-sliced rather than carried: ``EmbeddedBlob`` deliberately holds
+    hashes and a size but not the bytes, so collecting several hundred
+    typed blobs costs no more than their metadata. The payload is
+    materialised only for the few kinds recursion actually descends
+    into.
+
+    The bounds guard is unreachable in practice and kept anyway. A blob
+    only exists because the walker already sliced its payload inside the
+    file *and* within the cumulative budget, so ``start + blob.size``
+    cannot exceed the buffer — verified across the corpus, where the
+    guard never fires. It stays because this function takes its extent
+    from a dataclass rather than from the walk, and that coupling is not
+    enforced by anything.
+
+    That same invariant is why the slice cannot exhaust memory: a
+    payload larger than the budget never became a blob, so there is
+    nothing here to stream. An inflated ``cbLength`` produces no blob at
+    all rather than a large one.
+
+    NOTE: the 36 here duplicates ``parser._FDSO_HEADER_SIZE``. They
+    cannot disagree without silently shifting every recursed payload by
+    the difference — which would still decode to *something* — so if
+    either moves, both must.
+    """
     start = blob.offset + 36  # FDSO header size — mirrors parser._FDSO_HEADER_SIZE
     end = start + blob.size
     if end > len(data_bytes):
@@ -267,6 +341,21 @@ def _payload_for_blob(blob: EmbeddedBlob, data_bytes: bytes) -> bytes:
 
 
 def _suffix_for_kind(kind: str) -> str:
+    """The extension to give a recursed payload on disk.
+
+    Args:
+        kind: The blob's typed kind.
+
+    Returns:
+        A file extension, defaulting to ``.bin``.
+
+    Mostly cosmetic, and deliberately so. Every module the child
+    pipeline runs gates on magic bytes rather than on the name — an
+    OLE-compound MSI is claimed by ``doc_analysis``, and
+    ``archive_analysis`` types it as nothing at all — so the suffix
+    changes no routing. It exists to make the temp file legible in a log
+    or a stack trace while it briefly exists.
+    """
     return {
         "pe": ".bin",
         "elf": ".bin",
@@ -276,7 +365,19 @@ def _suffix_for_kind(kind: str) -> str:
 
 
 def _summarise_child_report(child: dict) -> dict:
-    """Slim the nested pipeline report so it doesn't bloat the parent."""
+    """Slim the nested pipeline report so it doesn't bloat the parent.
+
+    Args:
+        child: A complete ``run_pipeline`` report.
+
+    Returns:
+        Its scoring block plus a one-line summary per module.
+
+    A nested report embedded whole would carry every module's full data
+    — strings, IOCs, capa matches — for each payload at every depth. The
+    parent's JSON is meant to be readable, and the child's score and
+    per-module verdicts are what the parent needs to convey.
+    """
     return {
         "scoring": child.get("scoring", {}),
         "module_results": [
@@ -296,6 +397,14 @@ def _summarise_child_report(child: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _skipped(reason: str) -> dict:
+    """A file this module does not own.
+
+    Args:
+        reason: Shown to the user as the skip explanation.
+
+    Returns:
+        The standard dict with ``status="skipped"`` and no score.
+    """
     return {
         "module": "onenote_analysis",
         "status": "skipped",
@@ -306,6 +415,15 @@ def _skipped(reason: str) -> dict:
 
 
 def _error(reason: str) -> dict:
+    """A file this module should have handled and could not.
+
+    Args:
+        reason: Shown to the user as the failure explanation.
+
+    Returns:
+        The standard dict with ``status="error"`` and no score — an
+        analysis that did not run must not move a verdict either way.
+    """
     return {
         "module": "onenote_analysis",
         "status": "error",

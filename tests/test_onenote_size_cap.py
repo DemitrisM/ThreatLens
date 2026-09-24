@@ -201,3 +201,39 @@ def test_an_over_budget_payload_is_skipped_not_scanned_through():
     blobs = walk_file_data_store_objects(crafted, max_payload_bytes=32)
 
     assert blobs == [], f"scanned into the payload: {blobs}"
+
+
+def test_an_inflated_length_field_produces_no_blob_at_all():
+    """The invariant the recursion's re-slice depends on.
+
+    `_payload_for_blob` takes its extent from the dataclass rather than
+    from the walk, so it can only be safe because the walker never emits
+    a record whose payload did not fit the file and the budget. Pinned
+    here because nothing in the types enforces it: an inflated cbLength
+    must yield no blob, not a large one.
+    """
+    from modules.static.onenote_analysis.parser import (
+        FILE_DATA_STORE_GUID,
+        ONESTORE_HEADER_GUID,
+    )
+
+    crafted = (
+        ONESTORE_HEADER_GUID + b"\x00" * 32
+        + FILE_DATA_STORE_GUID
+        + (2**32).to_bytes(8, "little")
+        + b"\x00" * 12
+        + b"MZ" + b"\x00" * 512
+    )
+
+    assert walk_file_data_store_objects(crafted, max_payload_bytes=50 * 1024 * 1024) == []
+
+
+def test_every_emitted_blob_can_be_resliced(tmp_path):
+    """The same invariant, end to end over a real notebook."""
+    from modules.static.onenote_analysis import _payload_for_blob
+    from modules.static.onenote_analysis.embedded import classify_blob
+
+    data = _SAMPLE.read_bytes()
+    for offset, payload in walk_file_data_store_objects(data):
+        blob = classify_blob(offset, payload)
+        assert _payload_for_blob(blob, data) == payload
