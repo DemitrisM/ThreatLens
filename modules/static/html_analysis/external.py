@@ -75,7 +75,8 @@ def detect_external_resources(
         if _is_relative(url):
             continue
         domain = _extract_domain(url)
-        if domain and domain not in _CDN_ALLOWLIST and not _is_same_site_url(url):
+        if domain and not _is_allowlisted(domain) \
+                and not _is_same_site_url(url):
             suspicious_script_urls.append(url)
             if domain not in suspicious_domains:
                 suspicious_domains.append(domain)
@@ -88,7 +89,7 @@ def detect_external_resources(
     for url in iframe_urls:
         if not _is_relative(url) and not _is_local_scheme(url):
             domain = _extract_domain(url)
-            if domain and domain not in _CDN_ALLOWLIST:
+            if domain and not _is_allowlisted(domain):
                 suspicious_iframes.append(url)
 
     has_xhr = bool(_XHR_RE.search(combined))
@@ -107,14 +108,82 @@ def detect_external_resources(
     }
 
 
+def _normalise_host(host: str) -> str:
+    """Lowercase a hostname and drop a leading ``www.`` and any port.
+
+    Args:
+        host: A hostname, possibly with a port or a ``www.`` prefix.
+
+    Returns:
+        The comparison form.
+
+    ``removeprefix``, never ``lstrip``. ``lstrip("www.")`` takes a *set of
+    characters*, so it eats every leading ``w`` and ``.``: wordpress.com
+    became ordpress.com, wp.com became p.com, web.site became eb.site.
+    That name then travelled into the report as the suspicious domain —
+    an IOC an analyst would block, for a host that does not exist.
+
+    Both sides of the allowlist comparison go through this, because the
+    list is written with and without the prefix. Normalising one side
+    only would break whichever spelling the other side used.
+    """
+    host = host.lower().strip()
+    if "@" in host:                 # strip any userinfo
+        host = host.rsplit("@", 1)[-1]
+    if host.startswith("[") and "]" in host:        # IPv6 literal
+        host = host[:host.index("]") + 1]
+    elif ":" in host:
+        host = host.rsplit(":", 1)[0]
+    return host.removeprefix("www.")
+
+
+#: The allowlist in comparison form, built once. Entries are written both
+#: ways above; this is what they are actually matched against.
+_CDN_ALLOWLIST_NORMALISED: frozenset[str] = frozenset(
+    _normalise_host(entry) for entry in _CDN_ALLOWLIST
+)
+
+
+def _is_allowlisted(domain: str) -> bool:
+    """True if ``domain`` is an allowlisted CDN, or a subdomain of one.
+
+    Args:
+        domain: A hostname already through :func:`_normalise_host`.
+
+    Returns:
+        Whether the domain should be treated as known infrastructure.
+
+    Matched on whole labels — equal to an entry, or ending with a dot
+    followed by one. Exact matching alone flagged real CDN subdomains:
+    the corpus serves from ``c0.wp.com`` and ``stats.wp.com``, which are
+    plainly why ``wp.com`` is on the list, and both were reported as
+    suspicious.
+
+    The obvious loose fix is ``endswith``, and it is an allowlist bypass:
+    ``notwp.com`` ends with ``wp.com`` as raw text while being an
+    unrelated domain, and an attacker registers that in a minute. The dot
+    is what makes the comparison about domains rather than strings.
+    """
+    return any(
+        domain == entry or domain.endswith("." + entry)
+        for entry in _CDN_ALLOWLIST_NORMALISED
+    )
+
+
 def _extract_domain(url: str) -> str:
+    """The hostname a URL points at, in comparison form.
+
+    Args:
+        url: An absolute URL, or a protocol-relative ``//host/path``.
+
+    Returns:
+        The normalised hostname, or ``""`` when none can be read.
+    """
     url = url.strip()
     if url.startswith("//"):
         url = "https:" + url
     try:
-        netloc = urllib.parse.urlparse(url).netloc.lower()
-        # Strip www. prefix for comparison.
-        return netloc.lstrip("www.") if not netloc.startswith("www.") else netloc
+        return _normalise_host(urllib.parse.urlparse(url).netloc)
     except Exception:  # noqa: BLE001
         return ""
 
