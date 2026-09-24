@@ -19,6 +19,66 @@ Two recursion modes are supported, controlled by
 
 OOXML Office ZIPs short-circuit to ``status="skipped"`` so
 ``doc_analysis`` keeps owning ``.docx`` / ``.xlsm`` / ``.pptx``.
+
+Design notes
+------------
+**The order of the phases is the security property, not a style
+choice.** Enumerate, then guard, then extract, then indicate, then
+recurse, then score. Each step is only safe because the one before it
+ran: the bomb guard needs the declared sizes enumeration produces, and
+extraction must not begin until the guard has cleared it. Reordering any
+two of them re-opens something.
+
+``extracted`` is the gate the whole back half hangs on. It is set only
+when bytes actually reached disk *and* the bomb guard did not trip, and
+it controls the MIME check, the embedded-executable hashing and —
+above all — the recursion. The single-stream formats are why it cannot
+simply be "did extraction run": gz/bz2/xz have no member listing, so
+their payload is written before the guard can see a number, and
+treating that as extracted would hand a decompression bomb straight to
+the recursive descent.
+
+That write is bounded rather than unguarded, which is what keeps the
+ordering survivable: ``enumerate_single_stream`` reads at most
+``_INNER_STREAM_CAP + 1`` bytes and writes at most ``_INNER_STREAM_CAP``
+— 64 MiB — so a gz bomb costs that and no more, and the guard then
+refuses everything downstream. The bound is a truncation, so the
+indicators still see a prefix of the payload rather than nothing.
+
+Two gaps in archive-only recursion, both consequences of it not being
+the full pipeline and both recorded rather than fixed here. A nested
+OOXML container is skipped, and since ``doc_analysis`` is not run on
+nested members in this mode, its macros go unread — the member still
+scores for its extension, and ``archive_full_recursion`` exists for
+the case where that is not enough. A nested PE is skipped for the same
+structural reason: ``_recurse_into_inner_archives`` gates on
+``is_archive_target``, which answers False for a PE by design, so a
+nested SFX dropper is not carved the way a top-level one is.
+
+**One owner for the scratch directory, one cleanup.** ``tmp_dir`` is
+created here and removed in the ``finally``, whatever happens in
+between. The extracted bytes are live malware and a path that leaves
+them behind is the defect class this package has already had twice.
+
+Every indicator runs whether or not extraction happened. A
+header-encrypted archive, or one the bomb guard refused, still has
+member names, sizes and timestamps to judge — reporting nothing for it
+would be the single worst outcome, since those are exactly the archives
+worth reporting on.
+
+**Nested results merge their flags into the parent and discard their
+scores.** A child's indicator flags are added to the parent's set, so a
+dangerous member three archives deep scores at full parent weight. The
+damping that would fix it has a receiving end in ``core.scoring`` —
+``_clamp`` accepts a float specifically for it — and no sender. That is
+a deliberate deferral to the end-of-project calibration sweep, because
+wiring it changes every nested archive's score and the corpus would
+need re-observing.
+
+The module never raises. ``run`` wraps everything in a last-resort
+handler that turns an unexpected failure into ``status="error"``, per
+design rule 2, because this module parses attacker-controlled binary
+formats through six third-party libraries.
 """
 
 from __future__ import annotations
@@ -75,7 +135,28 @@ _DEFAULT_MIME_CHECK_MB = 10
 
 
 def run(file_path: Path, config: dict) -> dict:
-    """Module entry point — returns the standard result dict."""
+    """Module entry point — returns the standard result dict.
+
+    Args:
+        file_path: The file to analyse.
+        config:    Pipeline configuration. Read for the recursion depth,
+                   the extraction budget, the bomb thresholds and the
+                   MIME-check ceiling.
+
+    Returns:
+        The standard module dict. ``status`` is ``"skipped"`` for a file
+        this module does not own, ``"error"`` for one it could not read,
+        and ``"success"`` otherwise — including for an archive it could
+        only describe rather than open.
+
+    The three gates run in this order for a reason. A PE is checked
+    first because ``is_archive_target`` deliberately answers False for
+    one, so asking that first would route every SFX dropper to
+    "not applicable". The OOXML check comes before the general archive
+    test because an Office document *is* a valid ZIP and would otherwise
+    be enumerated here as well as by ``doc_analysis``, scoring the same
+    file twice.
+    """
     try:
         if not file_path.exists():
             return _error("File does not exist")
@@ -104,6 +185,28 @@ def run(file_path: Path, config: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _analyse_pe_for_sfx(file_path: Path, config: dict) -> dict:
+    """Analyse a PE as a possible self-extracting archive.
+
+    Args:
+        file_path: A file already known to start with ``MZ``.
+        config:    Pipeline configuration, passed to the child analysis.
+
+    Returns:
+        The standard module dict. ``"skipped"`` when the PE carries no
+        archive overlay, which is the common case for an ordinary
+        executable.
+
+    The carved payload is analysed by re-entering ``_analyse_archive``
+    at depth 1 rather than by a second parser, so an SFX dropper's
+    contents get the full indicator set. Its flags are merged into the
+    parent's, which is what lets ``sfx_dropper`` combine with whatever
+    the payload itself raises.
+
+    The ``finally`` is not optional: ``scan_pe_overlay`` hands back a
+    tempfile it does not own, and this function is the only place that
+    can delete it. Those are carved malware bytes, and a child analysis
+    that raises must not leave them behind.
+    """
     sfx = scan_pe_overlay(file_path)
     if not sfx.get("is_sfx"):
         return _skipped("PE has no archive overlay")
@@ -157,6 +260,27 @@ def _analyse_pe_for_sfx(file_path: Path, config: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _analyse_archive(file_path: Path, config: dict, depth: int) -> dict:
+    """Enumerate, guard, extract, indicate, recurse and score one archive.
+
+    Args:
+        file_path: The container.
+        depth:     Current recursion depth; 0 for the file the user
+                   named. Compared against
+                   ``max_archive_recursion_depth``.
+        config:    Pipeline configuration.
+
+    Returns:
+        The standard module dict, always ``"success"`` — a format that
+        could not be opened yields an empty listing and a recorded
+        handler error rather than a failure, because "this is an archive
+        nothing could read" is itself worth reporting.
+
+    Note the budget values are re-read from config on every call,
+    including recursive ones, so each archive in a nested tree is
+    granted the full allowance rather than a decrementing remainder. The
+    name ``max_archive_extracted_size_mb`` suggests otherwise; it is
+    per-archive.
+    """
     fmt = detect_format(file_path)
     max_depth = int(config.get("max_archive_recursion_depth", _DEFAULT_MAX_DEPTH))
     extract_budget = int(config.get(
@@ -415,6 +539,30 @@ def _dispatch_extract(
     tmp_dir: Path,
     max_total_bytes: int,
 ) -> None:
+    """Route to the format's extractor.
+
+    Args:
+        file_path:       The container.
+        fmt:             Detected format key.
+        entries:         Members, updated in place with
+                         ``extracted_path``.
+        tmp_dir:         Scratch directory owned by the caller.
+        max_total_bytes: Budget passed through to the extractor, which
+                         enforces it in the way its format allows —
+                         member by member for ZIP, RAR, TAR and ISO, as
+                         a single pre-flight decision for 7z and CAB.
+
+    Returns:
+        None.
+
+    The single-stream formats return immediately: their payload was
+    already written during enumeration, because those formats have no
+    member listing to read without decompressing. Falling through to an
+    extractor here would write it a second time.
+
+    An unrecognised format falls off the end and does nothing, which is
+    correct — enumeration produced no entries for it either.
+    """
     if fmt == "zip":
         zip_extract(file_path, entries, tmp_dir, max_total_bytes)
     elif fmt == "rar":
@@ -443,8 +591,34 @@ def _recurse_into_inner_archives(
 ) -> list[dict]:
     """For each extracted member that is itself an archive, descend.
 
-    Mode is controlled by ``config["archive_full_recursion"]`` —
-    archive-only by default, full-pipeline when True.
+    Args:
+        entries: Members of the parent, already extracted.
+        config:  Pipeline configuration; ``archive_full_recursion``
+                 selects the mode.
+        depth:   Depth to analyse the children at, already incremented.
+
+    Returns:
+        One result dict per inner archive, in member order.
+
+    Only members that actually reached disk are considered, which ties
+    the recursion to the same ``extracted`` gate as everything else —
+    a bomb-guarded archive has no extracted members and therefore no
+    descent.
+
+    Two modes, and the default is the narrow one. Archive-only recursion
+    re-enters this module, so a nested container is opened and its
+    members judged but its payloads are not given the full static
+    battery. Full-pipeline recursion runs ``run_pipeline`` on each inner
+    archive, which is far more expensive and can re-enter this module
+    again from the other side — it is config-gated for that reason.
+
+    A nested OOXML container is skipped rather than descended into, for
+    the same reason the top-level check exists: ``doc_analysis`` owns
+    those, and analysing one here would double-count it.
+
+    The full-pipeline arm catches broadly because it is calling the
+    entire pipeline on attacker-controlled bytes; a child failure must
+    cost that child, not the parent scan.
     """
     full_pipeline = bool(config.get("archive_full_recursion", False))
     out: list[dict] = []
@@ -477,7 +651,19 @@ def _recurse_into_inner_archives(
 
 
 def _summarise_child_report(child: dict) -> dict:
-    """Slim a full-pipeline child report so it doesn't bloat the parent."""
+    """Slim a full-pipeline child report so it doesn't bloat the parent.
+
+    Args:
+        child: A complete ``run_pipeline`` report.
+
+    Returns:
+        Its scoring block plus a one-line summary per module.
+
+    A nested report embedded whole would carry every module's full data
+    — strings, IOCs, capa matches — for each inner archive, at every
+    depth. The parent's JSON is meant to be readable; the child's score
+    and per-module verdicts are what the parent needs to convey.
+    """
     return {
         "scoring": child.get("scoring", {}),
         "module_results": [
@@ -497,6 +683,18 @@ def _summarise_child_report(child: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _empty_data() -> dict:
+    """The report contract: every key this module can ever emit.
+
+    Returns:
+        A fully-populated dict of empty values.
+
+    Built in one place and always in full, so a reporter can index any
+    key without guarding it. A key that appears only when its indicator
+    fires would mean every consumer — the terminal rows, the HTML
+    mirror, the JSON schema — needs a ``.get`` with the right default,
+    and one of them would eventually get it wrong. ``classification``
+    defaults to ``CLEAN`` rather than None for the same reason.
+    """
     return {
         "detected_format": None,
         "entries": [],
@@ -532,6 +730,19 @@ def _empty_data() -> dict:
 
 
 def _skipped(reason: str) -> dict:
+    """A file this module does not own.
+
+    Args:
+        reason: Shown to the user as the skip explanation.
+
+    Returns:
+        The standard dict with ``status="skipped"`` and no score.
+
+    Distinct from ``_error``: a skip means the question does not apply,
+    an error means it applied and could not be answered. The pipeline
+    renders them differently and design rule 10 turns on the
+    difference.
+    """
     return {
         "module": "archive_analysis",
         "status": "skipped",
@@ -542,6 +753,18 @@ def _skipped(reason: str) -> dict:
 
 
 def _error(reason: str) -> dict:
+    """A file this module should have handled and could not.
+
+    Args:
+        reason: Shown to the user as the failure explanation.
+
+    Returns:
+        The standard dict with ``status="error"`` and no score.
+
+    Scores zero deliberately. An analysis that did not run must never
+    contribute to a verdict in either direction — see design rule 10,
+    which is the same principle at the CLI level.
+    """
     return {
         "module": "archive_analysis",
         "status": "error",
