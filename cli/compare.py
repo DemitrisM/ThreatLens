@@ -93,6 +93,7 @@ def compare(
     from rich.table import Table  # noqa: PLC0415
 
     from reporting.terminal_reporter._common import BAND_COLOURS  # noqa: PLC0415
+    from reporting.theme import NEUTRAL  # noqa: PLC0415
 
     _setup_logging(verbosity=verbosity)
     try:
@@ -125,8 +126,8 @@ def compare(
     # and not a neutral one — unreachable in practice, since every band
     # comes from `core.scoring`'s fixed set and is therefore in the table.
     # Recorded in the project notes: the literal belongs in the palette.
-    c1 = BAND_COLOURS.get(scoring1["risk_band"], "white")
-    c2 = BAND_COLOURS.get(scoring2["risk_band"], "white")
+    c1 = BAND_COLOURS.get(scoring1["risk_band"], NEUTRAL)
+    c2 = BAND_COLOURS.get(scoring2["risk_band"], NEUTRAL)
     table.add_row(
         "Score",
         f"[{c1}]{scoring1['total_score']} / 100  {scoring1['risk_band']}[/{c1}]",

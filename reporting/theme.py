@@ -72,10 +72,33 @@ IOC_TYPE_LABELS: Final[dict[str, str]] = {
 }
 
 
+#: The style for "no opinion". Not a TOKEN, because it has no CSS half —
+#: HTML already expresses this as ``--text`` and a token would put an
+#: unused variable in the ``:root`` block.
+#:
+#: Rich reads ``"default"`` as the terminal's own foreground (SGR 39). The
+#: obvious spellings are both wrong: ``"white"`` is ANSI colour 7 and
+#: disappears on a light background, and ``""`` is a markup error, since
+#: rich has nothing for ``[/]`` to close.
+NEUTRAL: Final[str] = "default"
+
+
 def ioc_style(ioc_type: str) -> tuple[str, str]:
-    """``(display label, rich style)`` for an IOC type."""
+    """``(display label, rich style)`` for an IOC type.
+
+    Args:
+        ioc_type: A key of :data:`IOC_TYPE_LABELS`. An unrecognised type
+                  is passed through as its own label rather than dropped,
+                  so a new IOC category added to ``ioc_extractor`` renders
+                  before it is given a colour here.
+
+    Returns:
+        ``(label, rich style)``. The style is :data:`NEUTRAL` when the
+        type has no token, so an uncoloured row is uncoloured rather than
+        assigned a hue that would imply a severity.
+    """
     label = IOC_TYPE_LABELS.get(ioc_type, ioc_type)
-    return label, rich_style(f"ioc_{ioc_type}") or "white"
+    return label, rich_style(f"ioc_{ioc_type}") or NEUTRAL
 
 #: A module's ``data["classification"]`` mapped to an indicator severity.
 #: Deliberately holds no risk-band keys: ``onenote.py`` used to look up a
@@ -117,6 +140,7 @@ def css_root() -> str:
 __all__ = [
     "CLASS_SEVERITY",
     "IOC_TYPE_LABELS",
+    "NEUTRAL",
     "TOKENS",
     "css_root",
     "ioc_style",

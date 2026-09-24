@@ -3,7 +3,7 @@
 from rich import box
 from rich.table import Table
 
-from reporting.theme import ioc_style
+from reporting.theme import NEUTRAL, ioc_style
 
 from ._common import LIMITS, STATUS_COLOURS, console
 from ._render import more_hint
@@ -133,7 +133,7 @@ def print_timing_table(module_results: list[dict], timing: dict) -> None:
         else:
             time_str = f"[dim]{elapsed:.1f}s[/dim]"
 
-        status_colour = STATUS_COLOURS.get(status, "white")
+        status_colour = STATUS_COLOURS.get(status, NEUTRAL)
         table.add_row(name, time_str, f"[{status_colour}]{status}[/{status_colour}]")
 
     total = timing.get("elapsed_seconds", 0)

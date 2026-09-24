@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from reporting.console import out
-from reporting.theme import rich_style
+from reporting.theme import NEUTRAL, rich_style
 
 
 class Flag(NamedTuple):
@@ -249,7 +249,7 @@ def print_triage_table(
     table.add_column("FILE", overflow="fold")
 
     for row in rows:
-        style = rich_style(row["band"].lower()) or "white"
+        style = rich_style(row["band"].lower()) or NEUTRAL
         table.add_row(
             str(row["score"]),
             f"[{style}]{row['band']}[/{style}]",

@@ -15,6 +15,8 @@ from rich.text import Text
 
 from reporting.shared import build_verdict
 
+from reporting.theme import NEUTRAL, rich_style
+
 from ._common import LIMITS, BAND_COLOURS
 from ._common import console as default_console
 from ._render import module_strip, score_bar
@@ -27,7 +29,7 @@ def print_score_banner(
     con = console or default_console
     score = scoring.get("total_score", 0)
     band = scoring.get("risk_band", "LOW")
-    colour = BAND_COLOURS.get(band, "white")
+    colour = BAND_COLOURS.get(band, NEUTRAL)
 
     con.print()
     con.print(f"  {score_bar(score, band)}  [{colour}]{score}/100  {band}[/{colour}]")
@@ -66,7 +68,9 @@ def print_findings(
     for item in breakdown:
         delta = item.get("score_delta", 0)
         sign = "+" if delta > 0 else ""
-        colour = "red" if delta > 0 else "green"
+        # From the palette, not spelled here: design rule 8, and these
+        # two are the only colours on the report's headline table.
+        colour = rich_style("bad") if delta > 0 else rich_style("success")
         reason = item.get("reason", "")
         # -vv exists to show the whole thing; below that, cap it.
         if detail_level < 2 and len(reason) > cap:
@@ -136,11 +140,12 @@ def print_module_table(
         status = result.get("status", "unknown")
         delta = result.get("score_delta", 0)
         reason = result.get("reason", "")
-        status_colour = STATUS_COLOURS.get(status, "white")
+        status_colour = STATUS_COLOURS.get(status, NEUTRAL)
 
         if isinstance(delta, (int, float)) and delta != 0:
             sign = "+" if delta > 0 else ""
-            delta_cell = f"[{'red' if delta > 0 else 'green'}]{sign}{delta}[/]"
+            cell_colour = rich_style("bad") if delta > 0 else rich_style("success")
+            delta_cell = f"[{cell_colour}]{sign}{delta}[/]"
         else:
             delta_cell = "[dim]—[/dim]"
 
