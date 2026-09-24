@@ -6,6 +6,25 @@ visible HTML body for social-engineering lure patterns typical of ClickFix /
 fake-verification / fake-CAPTCHA pages.
 
 No external dependencies.
+
+Design notes
+------------
+ClickFix inverts the usual delivery problem. Nothing is downloaded and
+nothing executes in the browser — the page copies a command to the
+clipboard and persuades the victim to paste it into Win+R themselves.
+So there is no payload to carve and no exploit to match; the evidence is
+a clipboard write plus text that talks the user into running it.
+
+That is why the lure patterns are matched against the **rendered HTML**
+while the clipboard mechanism is matched against **script blocks**. The
+two halves live in different parts of the document and neither is
+sufficient alone: a clipboard write is ordinary on a page with a "copy"
+button, and verification language is ordinary on a real CAPTCHA page.
+
+Scoring treats them as a combination for that reason. Pattern labels are
+returned rather than counts, because "which lure" is what tells an
+analyst whether they are looking at a fake CAPTCHA or a fake browser
+update.
 """
 
 import logging
@@ -75,7 +94,23 @@ _CLIPBOARD_VAR_ASSIGN_RE = re.compile(
 def detect_clickfix(html_text: str, script_blocks: list[str]) -> dict:
     """Detect ClickFix / clipboard-poisoning indicators.
 
-    Returns a flat dict suitable for merging into the module data dict.
+    Args:
+        html_text:     The full page text, for the social-engineering
+                       lures — they live in rendered content, not script.
+        script_blocks: Inline script bodies, for the clipboard mechanism.
+
+    Returns:
+        A flat dict suitable for merging into the module data dict.
+
+    Only the first ``writeText`` call is captured. A page doing this
+    twice is not a different finding, and the payload preview exists to
+    show an analyst the command, not to enumerate every copy button.
+
+    ``execCommand('copy')`` sets the mechanism flag without yielding a
+    payload: it copies the current selection rather than a literal, so
+    there is no string in the source to extract. The flag still matters
+    — it is the older API and the one a page uses when the command is
+    rendered into the DOM instead of held in a variable.
     """
     combined = "\n".join(script_blocks)
 
@@ -93,6 +128,11 @@ def detect_clickfix(html_text: str, script_blocks: list[str]) -> dict:
     if has_exec_copy:
         has_clipboard_write = True
 
+    # Substring matching, on the payload only. The clipboard text is a
+    # command line the victim is about to run, so a LOLBin name appearing
+    # anywhere in it is the finding — there is no surrounding syntax to
+    # parse and no legitimate reason for one to be there. Matching the
+    # whole page instead would fire on any article mentioning PowerShell.
     # ── LOLBin detection in payload ────────────────────────────────────────
     lolbins_found: list[str] = []
     if clipboard_payload:

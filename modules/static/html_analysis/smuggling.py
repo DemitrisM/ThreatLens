@@ -14,6 +14,36 @@ Pass 3 — Smuggling mechanism sweep:
   and navigator.msSaveOrOpenBlob.
 
 No external dependencies beyond stdlib (base64, binascii, hashlib, re).
+
+Design notes
+------------
+HTML smuggling never downloads the payload. The bytes arrive inside the
+page as a base64 literal and the browser assembles them locally, so no
+network inspection sees a file transfer and no download reputation
+applies. The payload is therefore *present in the file being analysed*,
+which is what makes this statically decidable at all.
+
+Detection is in two halves for that reason. Pass 2 recovers the payload
+and identifies it by magic bytes; pass 3 looks for the assembly
+mechanism — atob, Blob, createObjectURL, a synthetic click. Either alone
+is weak: a base64 blob might be an image, and Blob machinery is ordinary
+on real sites. Together they are the technique.
+
+The nested pass exists because two-stage samples are common: the outer
+blob decodes to JavaScript which itself holds the binary blob. FormBook
+and xloader ship exactly that, and stopping at the first decode reports
+"JavaScript" for a file carrying a PE.
+
+Everything is bounded — a minimum blob length, a decode cap, a blob
+count, and de-duplication by prefix — because every one of these
+operates on attacker-supplied data whose size the attacker chooses.
+Known image prefixes are skipped before decoding rather than after, so
+a page full of inline JPEGs costs nothing.
+
+The decoded bytes never leave the module. Blob descriptors carry a
+SHA256, a size and a type; the raw payload is held only long enough to
+hash it and to feed the nested scan, and the internal key holding it is
+stripped before the result is returned.
 """
 
 import base64
@@ -108,7 +138,19 @@ _MECH_PATTERNS: dict[str, re.Pattern] = {
 
 
 def detect_mechanisms(html_text: str) -> dict:
-    """Return a dict of smuggling-mechanism boolean flags for the full HTML text."""
+    """Return a dict of smuggling-mechanism boolean flags.
+
+    Args:
+        html_text: The full page text, not just script blocks.
+
+    Returns:
+        One boolean per mechanism pattern.
+
+    Matched against the whole document rather than the parsed script
+    blocks, deliberately: the assembly machinery is frequently split
+    across an inline handler, an attribute and a block, and a page that
+    defeats the structural parser still has its text searched here.
+    """
     return {key: bool(pat.search(html_text)) for key, pat in _MECH_PATTERNS.items()}
 
 
@@ -118,10 +160,22 @@ def find_base64_blobs(
 ) -> tuple[list[dict], list[str], bool]:
     """Find and characterise large base64 blobs in script content.
 
+    Args:
+        script_blocks: Inline script bodies from the structural parse.
+        html_text:     The full page, scanned as a source in its own
+                       right so a blob outside any ``<script>`` — in an
+                       attribute, or in a page the parser could not
+                       tokenise — is still found.
+
     Returns:
-        blobs:           list of blob descriptor dicts (metadata only, no raw bytes)
-        dangerous_exts:  distinct dangerous extensions found in download filenames
-        has_double_ext:  True if any filename has a double extension (.pdf.exe)
+        ``(blobs, dangerous_exts, has_double_ext)``. Blob descriptors
+        carry metadata only; the decoded bytes are stripped before
+        returning.
+
+    The two passes are ordered and the second depends on the first: only
+    blobs that decoded to JavaScript are expanded, and only those still
+    holding their decoded bytes. The cap is re-checked between them so a
+    page cannot use nesting to exceed the blob budget.
     """
     all_blobs: list[dict] = []
     dangerous_exts: list[str] = []
@@ -167,7 +221,27 @@ def _scan_source(
     nested: bool,
     limit: int,
 ) -> None:
-    """Scan a text source for base64 blobs and append findings to blobs."""
+    """Scan one text source for base64 blobs, appending what it finds.
+
+    Args:
+        text:           The source to scan.
+        blobs:          Accumulator, mutated in place.
+        seen_prefixes:  Shared across sources so the same blob found in
+                        both a script block and the raw HTML counts once.
+        dangerous_exts: Accumulator for extensions seen on download names.
+        nested:         Marks findings recovered from a decoded blob, so
+                        the report can say a payload was two layers deep.
+        limit:          Blob budget, checked per iteration.
+
+    Returns:
+        None.
+
+    The filename is looked for in a 600-byte window either side of the
+    blob rather than anywhere in the document. A page carrying several
+    payloads has several ``download =`` assignments, and searching
+    globally would attribute the first one to all of them — naming the
+    wrong file in the report.
+    """
     for m in _B64_RE.finditer(text):
         if len(blobs) >= limit:
             return
@@ -219,11 +293,30 @@ def _scan_source(
 
 
 def _characterise_blob(raw_b64: str) -> dict | None:
-    """Decode a base64 string and return its characteristics, or None if invalid.
+    """Decode a base64 string and characterise it, or None if invalid.
 
-    The returned dict includes an internal ``_decoded`` key (bytes | None)
-    used for the nested-scan second pass; callers strip it before returning
-    to the reporter layer.
+    Args:
+        raw_b64: A whitespace-stripped candidate string.
+
+    Returns:
+        A descriptor dict, or None when the string is not decodable.
+        The dict includes an internal ``_decoded`` key that callers strip
+        before the result reaches the reporter layer.
+
+    The head is decoded first and the whole blob only afterwards. A
+    24-character prefix is enough for every magic in the table, so a
+    blob too large to decode still gets a type and a size — and the
+    expensive path is not entered for something that was never a
+    payload.
+
+    ``validate=False`` throughout. The strings come from JavaScript
+    source and routinely carry stray characters a strict decoder
+    rejects outright; refusing them would lose real payloads for a
+    cosmetic reason.
+
+    ``_decoded`` is retained only for JavaScript, since that is the one
+    type the nested pass can expand. Keeping a decoded PE would mean
+    holding the payload in memory for no purpose.
     """
     # Validate: length must be ≥ min and modular remainder must allow padding.
     stripped = raw_b64.rstrip("=")
@@ -276,6 +369,19 @@ def _characterise_blob(raw_b64: str) -> dict | None:
 
 
 def _identify_magic(data: bytes) -> str | None:
+    """Match the leading bytes against the magic table.
+
+    Args:
+        data: The first bytes of a decoded blob.
+
+    Returns:
+        The type label, or None.
+
+    The table is ordered longest-prefix-first, which is what makes a
+    linear scan correct: ``MZ\x90\x00`` must be tried before the generic
+    ``MZ``, and the three ZIP spellings before anything shorter could
+    shadow them.
+    """
     for magic_bytes, label in _MAGIC_MAP:
         if data[:len(magic_bytes)] == magic_bytes:
             return label
@@ -283,7 +389,19 @@ def _identify_magic(data: bytes) -> str | None:
 
 
 def _probe_text_type(decoded: bytes) -> str | None:
-    """Try to detect JavaScript or other text payload."""
+    """Identify a text payload when no magic matched.
+
+    Args:
+        decoded: The decoded blob.
+
+    Returns:
+        ``"JavaScript"`` or None.
+
+    Strict UTF-8 decoding is the gate, not ``errors="replace"``: binary
+    data will usually fail to decode strictly, and that failure is the
+    cheapest available "this is not text" test. Only the first 300 bytes
+    are examined, which is where a script's opening declarations are.
+    """
     try:
         sample = decoded[:300].decode("utf-8", errors="strict")
         js_keywords = ("var ", "function", "const ", "let ", "window.", "document.")
@@ -295,6 +413,19 @@ def _probe_text_type(decoded: bytes) -> str | None:
 
 
 def _extract_download_name(context: str) -> str:
+    """The filename the page intends to save, from nearby source.
+
+    Args:
+        context: The window of text around a blob.
+
+    Returns:
+        The filename, or ``""``.
+
+    The JavaScript property form is tried before the HTML attribute
+    form. Smuggling assembles the anchor in script, so when both appear
+    the scripted one is the operative assignment and the markup one is
+    often a decoy or a leftover.
+    """
     m = _DOWNLOAD_ATTR_RE.search(context)
     if m:
         return m.group(1)
@@ -305,5 +436,17 @@ def _extract_download_name(context: str) -> str:
 
 
 def _last_extension(filename: str) -> str:
+    """The final extension of a filename, including the dot.
+
+    Args:
+        filename: A suggested download name.
+
+    Returns:
+        The extension, or ``""`` when there is no dot.
+
+    The last one is what Windows executes, which is the only one that
+    matters for the dangerous-extension test. The separate
+    double-extension check is what reads the one before it.
+    """
     idx = filename.rfind(".")
     return filename[idx:] if idx != -1 else ""
