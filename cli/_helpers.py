@@ -7,6 +7,26 @@ ThreatLens separates two axes that other tools keep confused:
 
 Nothing in this module touches the second axis; verbosity is a plain count
 passed straight to the reporter.
+
+Design notes
+------------
+Order of application is fixed and load-bearing: profile first, then
+``--modules``, then ``--skip``. The profile has to come first: it rewrites
+``enabled_modules`` wholesale, so applying it after a selection would
+reinstate exactly what the user had just removed, and ``-p deep --skip
+capa`` would run capa. ``--skip`` comes last so that it subtracts from
+whichever list ``--modules`` settled on.
+
+The two selection surfaces are deliberately asymmetric. A name typed on the
+command line is explicit intent, so an unknown one is a usage error (exit 2)
+— a typo must not quietly change what ran. A name in ``config.yaml`` only
+warns and is skipped, because a stale config file written against an older
+version must not make the tool unrunnable.
+
+Every path here guards the same invariant, stated in design rule 10: a scan
+that ran no analysis module must never report a verdict. An empty
+``--modules``, an unknown name, and a selection whose modules are all
+skipped are all refused rather than allowed to produce a confident LOW.
 """
 
 import copy
@@ -38,16 +58,34 @@ _DEEP_OVERRIDES = {
 def _apply_scan_profile(config: dict, profile: str) -> dict:
     """Override config values based on the selected scan profile.
 
-    ``standard`` means "whatever ``enabled_modules`` says", so it only fills
-    in the built-in list when the config supplied none — overwriting from
-    ``DEFAULTS`` would silently drop modules a user enabled in config.yaml.
+    ``standard`` and ``deep`` both mean "whatever ``enabled_modules``
+    says", so they only fill in the built-in list when the config supplied
+    none — overwriting from ``DEFAULTS`` would silently drop modules a user
+    enabled in config.yaml. ``quick`` is the one that replaces the list
+    outright, which is what makes it cheap.
+
+    Args:
+        config: Loaded config, mutated in place.
+        profile: One of :data:`PROFILES`. An unrecognised value is a no-op
+                 rather than an error, since ``click.Choice`` has already
+                 rejected anything else on the CLI path.
+
+    Returns:
+        The same dict, for chaining with :func:`_apply_module_overrides`.
     """
     if profile == "quick":
         config["enabled_modules"] = list(_QUICK_MODULES)
-    elif profile == "standard":
+        return config
+
+    # `deep` is `standard` plus a longer capa budget, so it takes the same
+    # fill-in. Applying only the override left a config that named no
+    # modules running none, which made the more thorough profile the one
+    # that refused to run. Named explicitly rather than written as "not
+    # quick", so an unrecognised profile stays the no-op this promises.
+    if profile in ("standard", "deep"):
         if not config.get("enabled_modules"):
             config["enabled_modules"] = copy.deepcopy(DEFAULTS["enabled_modules"])
-    elif profile == "deep":
+    if profile == "deep":
         config.update(_DEEP_OVERRIDES)
     return config
 
@@ -134,6 +172,7 @@ def _apply_module_overrides(
     ``enabled_modules`` in config.yaml stays permissive (the pipeline warns
     and skips) so a stale config file cannot make the tool unrunnable.
     """
+    # ── --modules: replace the list outright ────────────────────────────
     if modules is not None:
         names = _resolve_list(modules, "--modules")
         # Removed and re-inserted rather than only inserted when absent:
@@ -143,6 +182,7 @@ def _apply_module_overrides(
         names.insert(0, _MANDATORY_MODULE)
         config["enabled_modules"] = names
 
+    # ── --skip: subtract, after the profile and after --modules ─────────
     if skip is not None:
         to_skip = set(_resolve_list(skip, "--skip"))
         if _MANDATORY_MODULE in to_skip:
@@ -155,6 +195,10 @@ def _apply_module_overrides(
             m for m in config["enabled_modules"] if m not in to_skip
         ]
 
+    # ── Design rule 10: nothing ran is not a clean verdict ──────────────
+    # file_intake is excluded from the count deliberately — it is metadata
+    # only and always scores 0, so a list holding it alone is a scan that
+    # analysed nothing while still producing a report.
     remaining = [m for m in config["enabled_modules"] if m != _MANDATORY_MODULE]
     if not remaining:
         raise click.UsageError(
@@ -193,5 +237,9 @@ def _setup_logging(log_level: str | None = None, verbosity: int = 0) -> None:
 
 
 def _detail_level(verbosity: int) -> int:
-    """Clamp a ``-v`` count to the reporter's 0/1/2 detail levels."""
+    """Clamp a ``-v`` count to the reporter's 0/1/2 detail levels.
+
+    Click counts every repetition, so ``-vvvv`` arrives as 4. Clamping
+    rather than rejecting keeps a harmless habit harmless.
+    """
     return min(max(verbosity, 0), 2)

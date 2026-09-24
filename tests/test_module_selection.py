@@ -216,3 +216,49 @@ def test_file_intake_leads_however_it_was_typed():
     config = apply(base(), modules="vt,file_intake")
 
     assert config["enabled_modules"][0] == "file_intake"
+
+
+# ---------------------------------------------------------------- profiles
+
+
+def test_deep_runs_at_least_what_standard_runs():
+    """`deep` is `standard` plus a longer capa timeout, so it cannot run less.
+
+    `standard` fills `enabled_modules` from DEFAULTS when the config
+    supplied none; `deep` only applied its timeout override, so the same
+    config gave standard the full thirteen modules and deep an empty
+    list — a usage error for asking for the *more* thorough profile.
+    """
+    from cli._helpers import _apply_scan_profile
+
+    standard = _apply_scan_profile({"enabled_modules": []}, "standard")
+    deep = _apply_scan_profile({"enabled_modules": []}, "deep")
+
+    assert deep["enabled_modules"] == standard["enabled_modules"]
+    assert deep["capa_timeout_seconds"] == 180
+
+
+def test_deep_keeps_a_configured_module_list():
+    """Filling in must not mean overwriting what a user enabled."""
+    from cli._helpers import _apply_scan_profile
+
+    config = _apply_scan_profile(
+        {"enabled_modules": ["file_intake", "pe_analysis"]}, "deep"
+    )
+
+    assert config["enabled_modules"] == ["file_intake", "pe_analysis"]
+
+
+def test_an_unrecognised_profile_is_a_no_op():
+    """click.Choice guards the CLI; the library path must not mutate.
+
+    The `deep` fix un-indented the fill-in out of its `elif`, which made
+    it run for every profile that was not `quick` — so an unknown name
+    silently behaved like `standard` while the function documented itself
+    as leaving the config alone.
+    """
+    from cli._helpers import _apply_scan_profile
+
+    config = _apply_scan_profile({"enabled_modules": []}, "nonsense")
+
+    assert config["enabled_modules"] == []
