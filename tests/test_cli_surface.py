@@ -623,3 +623,120 @@ def test_hash_only_rejects_html_before_running_anything(sample, stub_config):
 
     assert result.exit_code == EXIT_USAGE
     assert called is False
+
+
+# ── rules update ────────────────────────────────────────────────────
+
+
+def _rules_report(*actions: str) -> dict:
+    return {
+        "git_available": True,
+        "sources": [
+            {
+                "name": f"src{i}",
+                "action": action,
+                "error": "fatal: could not read from remote repository"
+                if action == "error"
+                else None,
+                "rule_count": 0,
+            }
+            for i, action in enumerate(actions)
+        ],
+        "validation": None,
+    }
+
+
+def test_a_failed_rule_update_does_not_exit_zero(stub_config, monkeypatch):
+    """Every source failing to clone reported success.
+
+    The CLI formatted the per-source error panels and returned normally,
+    so `rules update` in a scheduled job exited 0 with no rules fetched —
+    and the next scan ran against whatever was already on disk, or
+    against nothing.
+    """
+    import core.rule_updater as updater
+
+    monkeypatch.setattr(updater, "check_git_available", lambda: True)
+    monkeypatch.setattr(
+        updater, "update_all_sources", lambda config, **kw: _rules_report("error")
+    )
+
+    result = make_runner().invoke(cli_group, ["rules", "update"])
+
+    assert result.exit_code == EXIT_RUNTIME
+
+
+def test_a_partial_rule_update_also_exits_three(stub_config, monkeypatch):
+    """One source working does not make the run complete."""
+    import core.rule_updater as updater
+
+    monkeypatch.setattr(updater, "check_git_available", lambda: True)
+    monkeypatch.setattr(
+        updater,
+        "update_all_sources",
+        lambda config, **kw: _rules_report("pulled", "error"),
+    )
+
+    result = make_runner().invoke(cli_group, ["rules", "update"])
+
+    assert result.exit_code == EXIT_RUNTIME
+    # The source that did work is still reported.
+    assert "src0" in stdout_of(result) + stderr_of(result)
+
+
+def test_a_successful_rule_update_exits_zero(stub_config, monkeypatch):
+    import core.rule_updater as updater
+
+    monkeypatch.setattr(updater, "check_git_available", lambda: True)
+    monkeypatch.setattr(
+        updater,
+        "update_all_sources",
+        lambda config, **kw: _rules_report("pulled", "up_to_date"),
+    )
+
+    result = make_runner().invoke(cli_group, ["rules", "update"])
+
+    assert result.exit_code == EXIT_OK
+
+
+def test_validate_only_rejects_the_flags_it_would_ignore(stub_config):
+    """`--force` silently did nothing, which is the same class of defect
+    as `--hash-only -o` being accepted and ignored."""
+    for extra in ("--force", "--check"):
+        result = make_runner().invoke(
+            cli_group, ["rules", "update", "--validate-only", extra]
+        )
+        assert result.exit_code == EXIT_USAGE, extra
+
+
+def test_validate_only_runs_offline_and_exits_zero(stub_config, monkeypatch):
+    """It returns before the source-failure check, so it needs its own test.
+
+    Nothing in this path touches the network or the per-source report;
+    broken rules are a finding, not a failure to run, so the exit status
+    stays 0 and `yara_scanner` isolates them at scan time.
+    """
+    import core.rule_updater as updater
+
+    called: dict[str, bool] = {"network": False}
+    monkeypatch.setattr(
+        updater,
+        "update_all_sources",
+        lambda *a, **kw: called.__setitem__("network", True) or {},
+    )
+    monkeypatch.setattr(
+        updater,
+        "validate_rules",
+        lambda rules_dir: {
+            "total_files": 3,
+            "valid_count": 2,
+            "broken_count": 1,
+            "broken_files": [{"file": "bad.yar", "error": "syntax error"}],
+        },
+    )
+
+    result = make_runner().invoke(cli_group, ["rules", "update", "--validate-only"])
+
+    assert result.exit_code == EXIT_OK, stdout_of(result) + stderr_of(result)
+    assert called["network"] is False
+    assert "2/3" in stdout_of(result)
