@@ -26,9 +26,12 @@ wholesale, so ``--modules`` and ``--skip`` are accepted and then ignored,
 and it returns before ``--fail-on`` is evaluated — nothing was analysed, so
 there is no risk band to grade.
 
-**Stream discipline (design rule 7).** ``click.echo`` writes the machine
-payload to stdout; every notice, including "Report written to …", goes to
-``err``. A saved-path line on stdout would corrupt ``-f json | jq``.
+**Stream discipline (design rules 6 and 7).** Results reach stdout through
+``print_machine``, which writes the payload byte for byte — unwrapped,
+unstyled and with markup off, so a JSON document longer than the terminal
+survives ``-f json | jq`` and a ``[`` inside a string is not read as a
+style tag. Every notice, including "Report written to …", goes to ``err``:
+a saved-path line on stdout would corrupt the same pipeline.
 """
 
 import logging
@@ -39,7 +42,7 @@ import click
 from core.config_loader import ConfigNotFound, get_config
 from core.pipeline import run_pipeline
 
-from ._console import err, out
+from ._console import err, out, print_machine
 from ._exit import EXIT_THREAT, FAIL_ON_CHOICES, RuntimeFailure, meets_threshold
 from ._helpers import PROFILES, _apply_module_overrides, _apply_scan_profile, _detail_level, _setup_logging
 from ._progress import _make_progress_cb
@@ -240,7 +243,7 @@ def _run_hash_only(
         rendered = json.dumps(payload, indent=None if fmt == "jsonl" else 2,
                               separators=separators, default=str)
         if output_path is None:
-            click.echo(rendered)
+            print_machine(rendered)
         else:
             _write_text(output_path, rendered)
             err.print(f"[dim]Hashes written to {output_path}[/dim]")
@@ -249,12 +252,12 @@ def _run_hash_only(
     # TLSH and ssdeep are conditional: both have minimum-size and backend
     # requirements, and a line reading "ssdeep: N/A" invites the reader to
     # think the file has no fuzzy hash rather than that none was computed.
-    click.echo(f"MD5:    {hashes.get('md5', 'N/A')}")
-    click.echo(f"SHA256: {hashes.get('sha256', 'N/A')}")
+    print_machine(f"MD5:    {hashes.get('md5', 'N/A')}")
+    print_machine(f"SHA256: {hashes.get('sha256', 'N/A')}")
     if hashes.get("tlsh"):
-        click.echo(f"TLSH:   {hashes['tlsh']}")
+        print_machine(f"TLSH:   {hashes['tlsh']}")
     if hashes.get("ssdeep"):
-        click.echo(f"ssdeep: {hashes['ssdeep']}")
+        print_machine(f"ssdeep: {hashes['ssdeep']}")
 
 
 def _emit(
@@ -294,7 +297,7 @@ def _emit(
 
         payload = dumps_json_report(report, compact=fmt == "jsonl")
         if output_path is None:
-            click.echo(payload)
+            print_machine(payload)
         else:
             _write_text(output_path, payload)
             err.print(f"[dim]Report written to {output_path}[/dim]")

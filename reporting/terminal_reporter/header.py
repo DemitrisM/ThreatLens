@@ -55,7 +55,7 @@ def print_file_info(module_results: list[dict], file_path: str) -> None:
         table.add_row("File", Path(file_path).name)
         table.add_row("Path", str(file_path))
         if intake and intake.get("status") == "error":
-            table.add_row("[red]Error[/red]", intake.get("reason", "File intake failed"))
+            table.add_row("[error]Error[/error]", intake.get("reason", "File intake failed"))
 
     console.print()
     console.print(table)

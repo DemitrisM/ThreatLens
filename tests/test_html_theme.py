@@ -51,6 +51,9 @@ def test_rendered_html_carries_every_token(tmp_path):
     path = write_html_report(load_report("redline"), tmp_path)
     html = path.read_text()
     for name, token in TOKENS.items():
+        # A rich-only token has no colour to carry into the HTML.
+        if token["css"] is None:
+            continue
         assert token["css"] in html, f"{name} missing from rendered HTML"
 
 

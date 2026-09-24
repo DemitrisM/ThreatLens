@@ -62,7 +62,7 @@ def print_capabilities(module_results: list[dict], detail_level: int) -> None:
 
     if scored:
         cats = ", ".join(
-            f"{c['category']} [red](+{c['score']})[/red]"
+            f"{c['category']} [bad](+{c['score']})[/bad]"
             for c in scored
         )
         console.print(f"\n[bold]Scored Categories:[/bold] {cats}")
@@ -128,7 +128,7 @@ def print_virustotal(module_results: list[dict], detail_level: int) -> None:
     table.add_column("Value", overflow="fold")
 
     if not data.get("found"):
-        table.add_row("Status", "[yellow]Hash not found in VirusTotal database[/yellow]")
+        table.add_row("Status", "[warn]Hash not found in VirusTotal database[/warn]")
         table.add_row("SHA256", data.get("sha256", "N/A"))
         console.print()
         console.print(table)
@@ -149,7 +149,7 @@ def print_virustotal(module_results: list[dict], detail_level: int) -> None:
     table.add_row("Detection", f"[{ratio_style}]{ratio} engines[/{ratio_style}]")
 
     if data.get("threat_label"):
-        table.add_row("Threat Label", f"[bold red]{data['threat_label']}[/bold red]")
+        table.add_row("Threat Label", f"[critical]{data['threat_label']}[/critical]")
 
     if detail_level >= 1:
         table.add_row("Malicious", str(data.get("malicious", 0)))

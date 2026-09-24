@@ -48,7 +48,7 @@ def print_raw_modules(
         name = result.get("module", "unknown")
         status = result.get("status", "unknown")
         con.print()
-        con.print(f"  [bold cyan]{name}[/bold cyan] [dim]({status})[/dim]")
+        con.print(f"  [brand]{name}[/brand] [dim]({status})[/dim]")
         con.print(
             Syntax(
                 module_json(result),

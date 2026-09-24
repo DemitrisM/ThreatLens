@@ -106,7 +106,7 @@ def update(
         ) from exc
     _setup_logging(config["log_level"], verbosity)
 
-    out.print("\n[bold cyan]ThreatLens[/bold cyan]  [dim]Rule Update[/dim]\n")
+    out.print("\n[brand]ThreatLens[/brand]  [dim]Rule Update[/dim]\n")
 
     rules_dir = Path(config.get("yara_rules_dir", "./rules/yara"))
 
@@ -115,7 +115,7 @@ def update(
         err.print("[dim]Validating existing rules…[/dim]")
         vr = validate_rules(rules_dir)
         if vr.get("skipped_reason"):
-            err.print(f"[yellow]Validation skipped: {vr['skipped_reason']}[/yellow]")
+            err.print(f"[warn]Validation skipped: {vr['skipped_reason']}[/warn]")
         else:
             _print_validation(vr, verbosity > 0)
         return
@@ -168,16 +168,16 @@ def _print_validation(vr: dict, verbose: bool) -> None:
 
     if broken == 0:
         out.print(
-            f"[bold green]Validation:[/bold green] {valid}/{total} rules compile successfully"
+            f"[ok_strong]Validation:[/ok_strong] {valid}/{total} rules compile successfully"
         )
     else:
         out.print(
-            f"[bold yellow]Validation:[/bold yellow] {valid}/{total} rules compile "
+            f"[medium]Validation:[/medium] {valid}/{total} rules compile "
             f"successfully ({broken} broken)"
         )
         if verbose and vr["broken_files"]:
             for bf in vr["broken_files"]:
-                out.print(f"  [dim red]{bf['file']}:[/dim red] {bf['error']}")
+                out.print(f"  [error_dim]{bf['file']}:[/error_dim] {bf['error']}")
 
 
 def _print_check_results(report: dict) -> None:
@@ -201,17 +201,17 @@ def _print_check_results(report: dict) -> None:
                 "(will be cloned on next update)"
             )
         elif src.get("error"):
-            out.print(f"  [bold]{name}:[/bold] [red]error — {src['error']}[/red]")
+            out.print(f"  [bold]{name}:[/bold] [error]error — {src['error']}[/error]")
         elif src["has_updates"]:
             behind = src["commits_behind"]
             local = src.get("local_commit", "?")
             remote = src.get("remote_commit", "?")
             out.print(
-                f"  [bold]{name}:[/bold] [cyan]{behind} new commit(s) available[/cyan] "
+                f"  [bold]{name}:[/bold] [accent]{behind} new commit(s) available[/accent] "
                 f"(local: {local}, remote: {remote})"
             )
         else:
-            out.print(f"  [bold]{name}:[/bold] [green]up to date[/green]")
+            out.print(f"  [bold]{name}:[/bold] [success]up to date[/success]")
 
 
 def _print_update_results(report: dict, verbose: bool) -> None:
@@ -233,11 +233,11 @@ def _print_update_results(report: dict, verbose: bool) -> None:
     from rich.panel import Panel  # noqa: PLC0415
 
     action_style = {
-        "cloned": ("Cloned", "bold green"),
-        "pulled": ("Updated", "bold cyan"),
-        "up_to_date": ("Up to date", "bold green"),
-        "error": ("Error", "bold red"),
-        "skipped": ("Skipped", "bold yellow"),
+        "cloned": ("Cloned", "ok_strong"),
+        "pulled": ("Updated", "brand"),
+        "up_to_date": ("Up to date", "ok_strong"),
+        "error": ("Error", "critical"),
+        "skipped": ("Skipped", "medium"),
     }
 
     for src in report["sources"]:
@@ -247,7 +247,7 @@ def _print_update_results(report: dict, verbose: bool) -> None:
         lines: list[str] = [f"[{style}]{label}[/{style}]"]
 
         if action == "error" and src.get("error"):
-            lines.append(f"[red]{src['error']}[/red]")
+            lines.append(f"[error]{src['error']}[/error]")
         elif action == "cloned":
             lines.append(f"Commit: {src.get('new_commit', '?')}")
             lines.append(f"Rules:  {src.get('rule_count', 0)} files")
@@ -280,6 +280,6 @@ def _print_update_results(report: dict, verbose: bool) -> None:
     vr = report.get("validation")
     if vr:
         if vr.get("skipped_reason"):
-            err.print(f"\n[yellow]Validation skipped: {vr['skipped_reason']}[/yellow]")
+            err.print(f"\n[warn]Validation skipped: {vr['skipped_reason']}[/warn]")
         else:
             _print_validation(vr, verbose)

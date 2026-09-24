@@ -107,7 +107,7 @@ def compare(
     config = _apply_scan_profile(config, profile.lower())
     config = _apply_module_overrides(config, modules, skip)
 
-    err.print("\n[bold cyan]ThreatLens[/bold cyan]  [dim]Compare Mode[/dim]\n")
+    err.print("\n[brand]ThreatLens[/brand]  [dim]Compare Mode[/dim]\n")
 
     report1 = _analyse(file1, config)
     report2 = _analyse(file2, config)
