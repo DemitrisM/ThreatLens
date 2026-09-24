@@ -9,6 +9,25 @@ Heuristic: a ``<script src>`` URL whose path looks like a random token
 probable C2 callback URL regardless of the domain's reputation.
 
 No external dependencies.
+
+Design notes
+------------
+An allowlist, not a blocklist, and the asymmetry is the point: there is
+no enumerable set of malicious hosts, but there is a small, stable set
+of CDNs that account for most legitimate third-party script tags. The
+cost of an unlisted-but-benign CDN is one noisy row; the cost of a
+blocklist would be silence on everything not yet known.
+
+The random-path heuristic exists because reputation is the wrong
+question for this attack. A ClickFix injection is usually served from a
+compromised legitimate site, so the domain looks fine and the *path*
+does not — a long opaque token with no file extension is a callback
+identifier, not a resource. It is reported alongside the domain rather
+than instead of it.
+
+The beacon checks are matched against script bodies rather than the
+whole page so that a URL merely written in prose cannot raise them; the
+resource checks run on parsed attribute values for the same reason.
 """
 
 import logging
@@ -52,6 +71,11 @@ _CDN_ALLOWLIST: frozenset[str] = frozenset({
 _RANDOM_PATH_RE = re.compile(r"/([A-Za-z0-9_-]{20,})(?:/|\?|$)")
 
 # XHR beacon patterns in script content.
+#: A URL scheme per RFC 3986: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":".
+#: Anchored in the pattern, not merely by the caller using `.match`, so a
+#: later `.search` cannot match a colon further along a path.
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
+
 _XHR_RE = re.compile(
     r"""\.open\s*\(\s*['"](?:GET|POST)['"]\s*,\s*['"]https?://""",
     re.I,
@@ -65,7 +89,21 @@ def detect_external_resources(
     iframe_urls: list[str],
     script_blocks: list[str],
 ) -> dict:
-    """Return a dict of external-resource flags and suspicious URL lists."""
+    """Return a dict of external-resource flags and suspicious URL lists.
+
+    Args:
+        external_script_urls: ``<script src>`` values from the parse.
+        iframe_urls:          ``<iframe src>`` values, local schemes
+                              already excluded by the parser.
+        script_blocks:        Inline script bodies, for the beacon checks.
+
+    Returns:
+        A flat dict suitable for merging into the module data dict.
+
+    Relative URLs are skipped rather than resolved. A relative path is
+    same-origin by definition, so it is the page serving itself — and
+    there is no base URL available here to resolve one against anyway.
+    """
     combined = "\n".join(script_blocks)
 
     suspicious_script_urls: list[str] = []
@@ -106,6 +144,24 @@ def detect_external_resources(
         "has_websocket": has_websocket,
         "num_suspicious_external_scripts": len(suspicious_script_urls),
     }
+
+
+def _fold_separators(url: str) -> str:
+    """Trim a URL and fold backslashes to forward slashes.
+
+    Args:
+        url: A raw attribute value.
+
+    Returns:
+        The form a browser would resolve.
+
+    The WHATWG URL parser treats ``\\`` as ``/`` for special schemes, so
+    ``\\evil.test/c2.js`` fetches from evil.test exactly as
+    ``//evil.test/c2.js`` does. Comparing the raw string missed every
+    backslash spelling, and those URLs were classified as same-origin
+    paths and skipped entirely.
+    """
+    return url.strip().replace("\\", "/")
 
 
 def _normalise_host(host: str) -> str:
@@ -179,7 +235,7 @@ def _extract_domain(url: str) -> str:
     Returns:
         The normalised hostname, or ``""`` when none can be read.
     """
-    url = url.strip()
+    url = _fold_separators(url)
     if url.startswith("//"):
         url = "https:" + url
     try:
@@ -189,13 +245,70 @@ def _extract_domain(url: str) -> str:
 
 
 def _is_relative(url: str) -> bool:
-    return not url.startswith(("http://", "https://", "//", "ftp://"))
+    """True for a URL with no scheme and no authority.
+
+    Args:
+        url: A raw attribute value.
+
+    Returns:
+        Whether it resolves against the page's own origin.
+
+    ``//host/path`` counts as absolute: it is protocol-relative, not
+    path-relative, and names a different host.
+
+    Tested for a scheme rather than against a list of them. The check was
+    once four literal prefixes, which made every other scheme read as a
+    same-origin path — ``ws://``, ``file://`` and ``mailto:`` were all
+    skipped before any check ran. A scheme is
+    ``ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"`` per RFC 3986, and
+    that is also how a browser decides, so it is what is matched.
+
+    The pattern is anchored and case-insensitive: schemes are
+    case-insensitive per RFC 3986 and browsers fetch ``HTTP://`` without
+    complaint, so a literal lowercase comparison meant one character of
+    case hid an absolute URL entirely.
+    """
+    url = _fold_separators(url)
+    return not (_SCHEME_RE.match(url) or url.startswith("//"))
 
 
 def _is_same_site_url(url: str) -> bool:
-    """True for same-site paths that happen to start with http (rare but possible)."""
+    """Whether an absolute URL points back at the page's own site.
+
+    Args:
+        url: An absolute URL.
+
+    Returns:
+        Always False.
+
+    A deliberate stub, kept as a named seam rather than deleted. The
+    question is real — a page absolutely-linking its own host is not an
+    external resource — but it cannot be answered here: nothing in this
+    module knows the page's origin, because a file on disk has none. It
+    could be answered if the caller ever passes one down, and the call
+    site reads correctly in the meantime.
+
+    Returning False means every absolute URL is treated as external,
+    which is the safe direction: the cost is a noisy row for a
+    self-referencing page, against a missed injection the other way.
+    """
     return False  # conservative — flag everything that's absolute
 
 
 def _is_local_scheme(url: str) -> bool:
-    return url.startswith(("javascript:", "data:", "about:", "blob:"))
+    """True for schemes that name inline content rather than a host.
+
+    Args:
+        url: A raw attribute value.
+
+    Returns:
+        Whether the URL carries its content instead of fetching it.
+
+    These are excluded from the *external* checks because there is no
+    external party involved. They are not benign — a ``data:`` iframe is
+    a smuggling primitive — which is why the smuggling pass looks at
+    them separately.
+
+    Case-folded, for the same reason as :func:`_is_relative`.
+    """
+    return url.lower().startswith(("javascript:", "data:", "about:", "blob:"))
