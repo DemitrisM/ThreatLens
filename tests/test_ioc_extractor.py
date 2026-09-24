@@ -251,3 +251,106 @@ def test_per_category_cap_is_enforced(tmp_path):
 
 def test_cap_constant_matches_the_documented_fifty():
     assert _MAX_IOCS_PER_CATEGORY == 50
+
+
+# ── windows_path false positives ────────────────────────────────────
+
+
+def test_binary_noise_is_not_reported_as_a_file_path():
+    """`X:\\` plus two random bytes matched the path regex.
+
+    Any byte sequence of the shape `<letter>:\\<junk>` satisfies it, and
+    compressed or encrypted data produces them constantly. Measured
+    across 100 corpus samples: 33 of 85 distinct `windows_path` IOCs
+    were noise of this shape — 38% of a headline table that is capped at
+    five rows per type, so real paths were being pushed out of the
+    report by it.
+    """
+    from modules.static.ioc_extractor import _filter_path_fps
+
+    noise = {
+        "B:\\4b", "G:\\`=t", "H:\\]j", "I:\\V{", "J:\\W#", "K:\\YT",
+        "L:\\%6", "f:\\O^", "g:\\-7-", "m:\\(v", "q:\\!{", "s:\\Hg",
+        "o:\\ag,t", "v:\\s ", "y:\\-Li",
+    }
+
+    assert _filter_path_fps(noise) == set()
+
+
+def test_some_noise_is_accepted_to_protect_recall():
+    """The rule is deliberately loose, and these two are the price.
+
+    A stricter version required a vowel in the name and an opening
+    letter. It removed these as well, and would have taken `C:\\tmp`,
+    `C:\\src`, `C:\\bin`, `C:\\123456` and `C:\\_sandbox` with them — all
+    real staging shapes this corpus happens not to contain. The standing
+    preference for this tool is noise over a missed indicator.
+    """
+    from modules.static.ioc_extractor import _filter_path_fps
+
+    # `)` and `$` are legal in a Windows filename, so excluding them
+    # would put real names at risk for one more piece of noise.
+    survivors = {"G:\\8sv_", "w:\\cyYT", "n:\\R)R$"}
+
+    assert _filter_path_fps(survivors) == survivors
+
+
+def test_the_shapes_the_loose_rule_exists_to_protect():
+    from modules.static.ioc_extractor import _filter_path_fps
+
+    real = {"C:\\tmp", "C:\\src", "C:\\bin", "C:\\123456", "C:\\_sandbox"}
+
+    assert _filter_path_fps(real) == real
+
+
+def test_a_real_drive_root_directory_survives():
+    """The corpus's genuine single-component paths, all kept."""
+    from modules.static.ioc_extractor import _filter_path_fps
+
+    real = {"C:\\Temp", "C:\\ProgramData\\", "C:\\Windows)"}
+
+    assert _filter_path_fps(real) == real
+
+
+def test_a_path_with_a_directory_or_a_file_is_always_kept():
+    """Anything past the drive root is exempt — that is the common case.
+
+    The extra test only applies to a bare `X:\\name`, because that is
+    the only shape binary noise reaches. A path naming a directory or a
+    file is evidence on its own.
+    """
+    from modules.static.ioc_extractor import _filter_path_fps
+
+    real = {
+        "D:\\Projects\\WinRAR\\SFX\\build\\sfxrar64\\Release\\sfxrar.pdb",
+        "E:\\x.js",
+        "Z:\\9\\9",
+    }
+
+    assert _filter_path_fps(real) == real
+
+
+def test_the_system_root_filter_still_applies():
+    """The pre-existing rule must not be lost to the new one."""
+    from modules.static.ioc_extractor import _FP_PATH_PREFIXES, _filter_path_fps
+
+    assert _FP_PATH_PREFIXES, "no prefixes configured"
+    sample = next(iter(_FP_PATH_PREFIXES))
+
+    assert _filter_path_fps({sample + "notepad.exe"}) == set()
+
+
+def test_a_trailing_separator_is_evidence_of_a_directory():
+    """Stripping it first destroyed the thing being tested for.
+
+    `C:\\a\\` becomes `a` and then fails the three-character rule, and
+    `C:\\Temp{123}\\` becomes `Temp{123}` and fails the name rule on its
+    braces. Both name a directory and say so with the trailing
+    separator, so the separator is looked for before anything is
+    stripped.
+    """
+    from modules.static.ioc_extractor import _filter_path_fps
+
+    real = {"C:\\a\\", "C:\\Temp{123}\\", "D:\\x\\"}
+
+    assert _filter_path_fps(real) == real
