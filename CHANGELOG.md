@@ -17,12 +17,74 @@ Everything before it is a step toward that.
 | 0.5.7 | html_analysis complete — a Windows-1252 page decoded to mojibake and reported clean |
 | 0.5.8 | onenote_analysis complete — one wrong byte had disabled the module's headline rule |
 | 0.5.9 | cli/ complete — eight fixes, three of them exit codes that reported success on a run that had not worked |
-| 0.5.10 | *(current)* The reporting defect sweep — eight fixes found by running the tool, not the tests |
+| 0.5.10 | The reporting defect sweep — eight fixes found by running the tool, not the tests |
+| 0.5.11 | *(current)* Design rules 6 and 8 made true — the palette is enforced, machine output is exact |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.11 — 2026-09-24
+
+Two design rules that the code did not actually obey, made true rather
+than softened.
+
+### Fixed — rule 8 was aspirational
+
+"**One palette.** All colour comes from `reporting/theme.py`. Never write
+a colour literal in a reporter." Twenty-nine call sites did: `[red]`,
+`[bold cyan]`, `[dim red]` and the like across `reporting/` and `cli/`,
+plus five style values in the rules-update renderer.
+
+The rule had never held, which matters because a rule nothing checks is a
+rule that drifts — the `"white"` fallback fixed in 0.5.10 is what drift
+looks like, and it had a real consequence: rich reads `"white"` as ANSI
+colour 7, which disappears on a light background.
+
+The palette is now registered as a `rich.Theme` on both console
+singletons, so markup names a meaning rather than a hue — `[bad]`,
+`[brand]`, `[error_dim]`. Three composed styles that had no token gained
+one, in the same table rather than a second map: their CSS half is None
+and `css_root()` skips those, so the HTML `:root` block is unchanged.
+
+Two tests enforce it by parsing every string constant under `reporting/`
+and `cli/`. One rejects a hue in markup. The other rejects a style name
+that is not a registered token, because a typo renders as literal
+brackets and a CSS-only name such as `[code_bg]` renders as nothing at
+all while the author believes a colour was applied — the same silent
+no-op the rule exists to prevent. Both were checked against deliberate
+violations rather than assumed to work. `[dim]` and `[bold]` stay legal;
+they carry no colour.
+
+Rendered output is byte-identical across five real scans including every
+escape sequence. This changes what the code says, not what it does.
+
+### Fixed — rule 6 forbade the path rule 7 requires
+
+Rule 6 read "`logging` throughout, never `print()`". The CLI writes
+machine output to stdout, which rule 7 requires, so a literal reading of
+rule 6 condemned it. Rule 6 now separates diagnostics, which go through
+`logging`, from results, which go to stdout.
+
+That path is a single `print_machine()` helper in `reporting/console.py`
+rather than a convention, because four rich behaviours each corrupt a
+payload and each is easy to forget on its own:
+
+- without `soft_wrap`, a JSON document longer than the terminal is folded
+  across lines and `threatlens scan … -f json | jq` fails;
+- `markup=False` stops a `[` inside a string being read as a style tag;
+- `highlight=False` keeps escape sequences out of a redirected file;
+- `emoji=False` stops a colon-delimited run being substituted for a
+  character. A sample named `report:100:final:x:.exe` rendered with two
+  emoji in place of those runs. A malware filename is attacker-controlled,
+  so this is the one of the four that can be triggered deliberately.
+
+All four are pinned by a parametrised test.
+
+### Tests
+
+**1048 → 1054.**
 
 ## 0.5.10 — 2026-09-24
 
