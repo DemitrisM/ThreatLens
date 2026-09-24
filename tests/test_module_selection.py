@@ -171,3 +171,48 @@ def test_no_overrides_leaves_the_list_untouched():
     config = base()
     before = list(config["enabled_modules"])
     assert apply(config)["enabled_modules"] == before
+
+
+# ------------------------------------------------------------ execution order
+
+
+def test_modules_run_in_pipeline_order_not_the_order_typed():
+    """`--modules vt,onenote` must not run the lookup before the producer.
+
+    The pipeline executes `enabled_modules` in sequence and hands each
+    module its predecessors' results through `_module_results_so_far`.
+    `virustotal` reads that list to look up hashes the container modules
+    surfaced, so running it first means it finds none — the forward
+    lookup for every embedded payload is silently skipped and the scan
+    still reports success.
+
+    Nothing about a comma-separated allowlist suggests to a user that its
+    order is a correctness constraint, so the order typed is discarded in
+    favour of the pipeline's own.
+    """
+    config = apply(base(), modules="vt,onenote")
+
+    assert config["enabled_modules"] == [
+        "file_intake",
+        "onenote_analysis",
+        "virustotal",
+    ]
+
+
+def test_the_canonical_order_covers_every_registered_module():
+    """A module missing from the order table would sort to the end.
+
+    That is the safe direction for an unknown name, but for a registered
+    one it is a silent demotion past `virustotal` — so the table has to
+    stay complete as modules are added.
+    """
+    from core.config_loader import DEFAULTS
+
+    assert set(DEFAULTS["enabled_modules"]) == set(_MODULE_REGISTRY)
+
+
+def test_file_intake_leads_however_it_was_typed():
+    """It is force-added at the front; ordering must not move it."""
+    config = apply(base(), modules="vt,file_intake")
+
+    assert config["enabled_modules"][0] == "file_intake"
