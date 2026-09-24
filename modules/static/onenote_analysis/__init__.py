@@ -24,6 +24,7 @@ skip reason rather than re-implement CAB parsing here.
 from __future__ import annotations
 
 import logging
+import mmap
 import shutil
 import tempfile
 from dataclasses import asdict
@@ -45,6 +46,11 @@ _DEFAULT_MAX_SIZE_MB = 50
 _DEFAULT_MAX_BLOBS = 200
 _DEFAULT_MAX_DEPTH = 2
 
+#: How much of a notebook to read when it cannot be memory-mapped. Only
+#: reached on filesystems that refuse mapping, where the alternative is
+#: an unbounded read of an attacker-sized file.
+_FALLBACK_READ_BYTES = 256 * 1024 * 1024
+
 # Blob kinds that get fed back through run_pipeline when full-recursion is on.
 _RECURSE_KINDS = frozenset({"pe", "elf", "macho", "msi"})
 
@@ -64,14 +70,6 @@ def run(file_path: Path, config: dict) -> dict:
                 ".onepkg bundle — extraction handled by archive_analysis"
             )
 
-        max_size = int(config.get("max_onenote_size_mb", _DEFAULT_MAX_SIZE_MB))
-        max_size_bytes = max_size * 1024 * 1024
-        size = file_path.stat().st_size
-        if size > max_size_bytes:
-            return _skipped(
-                f"File exceeds onenote_analysis size cap ({max_size} MiB)"
-            )
-
         return _analyse(file_path, config)
 
     except Exception as exc:  # noqa: BLE001
@@ -84,7 +82,70 @@ def run(file_path: Path, config: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _analyse(file_path: Path, config: dict) -> dict:
-    data_bytes = file_path.read_bytes()
+    """Map the notebook, walk its blobs, type them and score.
+
+    Args:
+        file_path: The ``.one`` file.
+        config:    Reads ``max_onenote_blobs``, ``max_onenote_size_mb``
+                   and the recursion settings.
+
+    Returns:
+        The standard module dict, always ``"success"``.
+
+    The file is **memory-mapped, never read whole**. It used to be read
+    with ``read_bytes()`` behind a size cap that skipped anything larger,
+    which made padding a notebook past the cap enough to delete this
+    module from a scan and score it 0. Bounding the read the way
+    ``lnk_analysis`` does would not work here: a shell link keeps its
+    structure at the front, while FileDataStoreObject records are
+    scattered throughout a ``.one`` file, so a truncated read loses real
+    payloads rather than just their digests.
+
+    Mapping removes the reason for the cap. The OS pages in only what
+    the scan touches, so a 4 GiB notebook costs the same resident memory
+    as a small one, and ``max_onenote_size_mb`` is repurposed as the
+    per-blob payload ceiling — which is where the remaining risk
+    actually sits, since ``cbLength`` is attacker-controlled and drives
+    the slice that copies bytes out of the mapping.
+    """
+    max_payload = int(
+        config.get("max_onenote_size_mb", _DEFAULT_MAX_SIZE_MB)
+    ) * 1024 * 1024
+
+    with file_path.open("rb") as handle:
+        try:
+            mapped = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+        except (ValueError, OSError):
+            # Not only the empty-file case: FUSE and some network mounts
+            # refuse mapping outright, and a very large file can exhaust
+            # address space. So the fallback read is bounded rather than
+            # trusting that a failure implies a small file — reading
+            # without a limit here would be the whole-file load that
+            # mapping exists to avoid.
+            mapped = None
+        if mapped is None:
+            return _analyse_buffer(
+                file_path, handle.read(_FALLBACK_READ_BYTES), config, max_payload,
+            )
+        try:
+            return _analyse_buffer(file_path, mapped, config, max_payload)
+        finally:
+            mapped.close()
+
+
+def _analyse_buffer(file_path: Path, data_bytes, config: dict, max_payload: int) -> dict:
+    """Run the analysis over a mapped or in-memory buffer.
+
+    Args:
+        file_path:   The notebook, for the recursion's temp naming.
+        data_bytes:  A memory map or ``bytes``; only ``find`` and slicing
+                     are used, so the two are interchangeable here.
+        config:      Pipeline configuration.
+        max_payload: Per-blob ceiling in bytes.
+
+    Returns:
+        The standard module dict.
+    """
 
     # Defensive: if the header GUID isn't at offset 0 but the extension
     # matched (e.g. someone renamed a file to .one), still try to walk
@@ -92,7 +153,9 @@ def _analyse(file_path: Path, config: dict) -> dict:
     onestore_header_present = data_bytes[:16] == ONESTORE_HEADER_GUID
 
     max_blobs = int(config.get("max_onenote_blobs", _DEFAULT_MAX_BLOBS))
-    raw_blobs = walk_file_data_store_objects(data_bytes, max_blobs=max_blobs)
+    raw_blobs = walk_file_data_store_objects(
+        data_bytes, max_blobs=max_blobs, max_payload_bytes=max_payload,
+    )
     typed_blobs: list[EmbeddedBlob] = [
         classify_blob(offset, payload) for offset, payload in raw_blobs
     ]
