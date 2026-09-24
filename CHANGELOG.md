@@ -14,12 +14,92 @@ Everything before it is a step toward that.
 | 0.5.4 | Batches 3–4 — the RAR and 7z/CAB/ISO handlers, three more 7z fixes including a bomb-guard bypass |
 | 0.5.5 | Batch 5 — archive_analysis complete; the OOXML costume bypass and the ADS extension blind spot closed |
 | 0.5.6 | lnk_analysis complete — four fixes including a size-cap bypass that deleted the module from a scan |
-| 0.5.7 | *(current)* html_analysis complete — a Windows-1252 page decoded to mojibake and reported clean |
+| 0.5.7 | html_analysis complete — a Windows-1252 page decoded to mojibake and reported clean |
+| 0.5.8 | *(current)* onenote_analysis complete — one wrong byte had disabled the module's headline rule |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.8 — 2026-09-24
+
+The `onenote_analysis` comment pass, both batches. Three defects, and the
+first had silently removed the rule the module was written for.
+
+### Fixed — one wrong byte disabled the headline rule
+
+`_LNK_SIGNATURE` carried `0x00` at offset 12 where the Shell.Link CLSID
+`00021401-0000-0000-C000-000000000046` has `0xC0`. `_looks_like_lnk` compares
+the first 20 bytes exactly, so it could never return True for a real shortcut:
+every embedded LNK typed as `"other"`.
+
+That removed `{contains_embedded_lnk, contains_embedded_script}` at weight 30
+— the rule the scoring table calls the classic IcedID / Qakbot OneNote TTP —
+along with the standalone flag at 15. The corpus confirms it: `Redline.one`
+carries a genuine embedded shortcut, libmagic had been identifying it
+correctly as `application/x-ms-shortcut` the whole time, and the byte
+comparison overruled it. That sample scored 25; it now scores 60 and fires the
+combo. libmagic's verdict is accepted as a second signal now, because one
+silently wrong constant was enough to disable a rule for the module's whole
+life.
+
+### Fixed — 17 blobs of plainly malicious script typed as "other"
+
+Checking the corpus for the fix above surfaced a larger gap: 12 of the 30
+samples classified CLEAN. `_sniff_script` was narrow in three ways, each
+costing a real sample — `@echo` was anchored to offset 0, so the decoy banner
+IcedID and Gozi print before it defeated the check; `-encodedcommand` was
+matched in full although PowerShell accepts any unambiguous prefix and every
+sample uses `-enc`; and a PowerShell blob had to carry `invoke-`,
+`-encodedcommand` or `iex` as well, which a plain download-and-run command
+line does not.
+
+Rules take two signals each now, because this runs on every blob including
+images and decoy prose — Quakbot3 carries blobs of generated junk words as
+camouflage and must stay untyped. Naming a COM object is not enough on its
+own either: a document *about* malware mentions `WScript.Shell`.
+
+**CLEAN 12 → 5, MALICIOUS 11 → 13, SUSPICIOUS 7 → 12**, script-typed blobs
+16 → 28, and a test asserts no image blob is typed as a script.
+
+### Fixed — padding a notebook deleted the module from a scan
+
+`run()` returned `status="skipped"` and score 0 for any `.one` file over
+`max_onenote_size_mb`, so 51 MiB of nulls removed the module — the same shape
+that was an evasion in `lnk_analysis`, and open since that pass.
+
+The lnk fix does not transfer: a shell link keeps its structure at the front,
+while FileDataStoreObject records are scattered throughout a `.one` file, so a
+truncated read loses real payloads. The file is memory-mapped instead — `mmap`
+supports `find()` and slicing, so the walker works over it unchanged and the OS
+pages in only what the scan touches.
+
+`max_onenote_size_mb` is repurposed as the **cumulative** payload budget, which
+is where the risk actually sits. Cumulative rather than per-record on purpose:
+a per-record ceiling would allow `max_blobs` times that ceiling, and the
+defaults of 200 and 50 MiB are 10 GiB resident — worse than the whole-file cap
+mapping replaced. The fallback when `mmap` fails is bounded too, since `OSError`
+there is not only the empty-file case.
+
+### Documented
+
+All five files, including two invariants nothing in the types enforces and both
+now pinned by tests: that a blob only exists because its payload already fit
+the file and the budget, which is why the recursion's re-slice is safe and
+cannot exhaust memory; and that an inflated `cbLength` yields no blob rather
+than a large one.
+
+### Tests
+
+**940 → 967.**
+
+### Still open
+
+An RTF carrying an OLE Package object, and two large
+`application/octet-stream` blobs, remain untyped — `Quakbot.one`,
+`Quakbot2.one`, `Quakbot3.one`, `kento.one` and `unknown.one` still classify
+CLEAN.
 
 ## 0.5.7 — 2026-09-24
 
