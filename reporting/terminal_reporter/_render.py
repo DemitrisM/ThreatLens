@@ -13,7 +13,7 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from reporting.theme import rich_style
+from reporting.theme import NEUTRAL, rich_style
 
 from ._common import console as default_console
 
@@ -68,7 +68,7 @@ def score_bar(score: int, band: str, *, width: int = 22) -> str:
     """
     clamped = max(0, min(100, int(score)))
     filled = round(clamped * width / 100)
-    style = rich_style(band.lower()) or "white"
+    style = rich_style(band.lower()) or NEUTRAL
     return f"[{style}]{'█' * filled}[/{style}][dim]{'░' * (width - filled)}[/dim]"
 
 
@@ -94,7 +94,7 @@ def module_strip(module_results: list[dict]) -> str:
     for result in module_results:
         status = result.get("status", "error")
         glyph, label = _STATUS_GLYPHS.get(status, ("✗", "error"))
-        style = rich_style(status) or "white"
+        style = rich_style(status) or NEUTRAL
         glyphs.append(f"[{style}]{glyph}[/{style}]")
         tally[label] = tally.get(label, 0) + 1
 
