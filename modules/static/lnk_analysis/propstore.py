@@ -21,6 +21,32 @@ FMTID/PID pairs. Anything unrecognised renders as its raw GUID and integer
 rather than being dropped, so an unmapped property is still visible to an
 analyst and still reaches the report. Extend the map against libfwps'
 documentation or ``EricZimmerman/Lnk``'s property tables — never by guess.
+
+Design notes
+------------
+Two nested size-prefixed walks, storages then values, and both are
+bounded the same way every size-prefixed walk in this package is: a size
+below its structural minimum, or one that overruns its container, ends
+the walk. The input is an attacker-controlled blob, so a size of zero is
+a terminator and a size that does not advance the cursor would otherwise
+spin forever.
+
+A malformed *storage* is skipped and the walk continues, but a malformed
+*size* ends it. The asymmetry is deliberate — a storage whose version
+field is wrong is one bad record among several independently addressable
+ones, while a bad size means every following offset is a guess.
+
+**An unrecognised property is rendered, never dropped.** A raw
+``{FMTID}/PID`` in the report is something an analyst can look up; a
+missing row is invisible. The same principle governs
+:func:`_decode_typed_value`, where an unhandled type reports its
+identifier and byte count rather than a guessed interpretation — a
+wrong value is worse than an honest ``<VT_0x1013, 24 bytes>``.
+
+The map is documented as partial and unverified for a reason: its
+entries have not all been confirmed against libfwps, and an invented
+property name would read as authoritative in a report. Unmapped pairs
+rendering raw is what makes being conservative safe.
 """
 
 from __future__ import annotations
@@ -73,25 +99,55 @@ VT_CLSID = 0x0048
 _FILETIME_EPOCH_DELTA = 116_444_736_000_000_000
 
 
+# ---------------------------------------------------------------------------
+# Bounds-checked reads
+#
+# Each returns None when the read would run past the buffer, and every
+# caller treats that as "this record ends here".
+#
+# The guard is not there to prevent an exception — Python does not raise
+# one. An out-of-range byte slice silently yields a short or empty
+# result, and `int.from_bytes(b"", "little")` is 0. So an unguarded read
+# past the end returns a plausible number instead of failing, and a walk
+# driven by that number keeps stepping through fabricated sizes over
+# attacker-controlled bytes. Returning None is what makes the overrun
+# visible to the caller at all.
+# ---------------------------------------------------------------------------
+
 def _u16(data: bytes, off: int) -> int | None:
+    """Little-endian uint16 at ``off``, or None if it would overrun."""
     if off < 0 or off + 2 > len(data):
         return None
     return int.from_bytes(data[off:off + 2], "little")
 
 
 def _u32(data: bytes, off: int) -> int | None:
+    """Little-endian uint32 at ``off``, or None if it would overrun."""
     if off < 0 or off + 4 > len(data):
         return None
     return int.from_bytes(data[off:off + 4], "little")
 
 
 def _u64(data: bytes, off: int) -> int | None:
+    """Little-endian uint64 at ``off``, or None if it would overrun."""
     if off < 0 or off + 8 > len(data):
         return None
     return int.from_bytes(data[off:off + 8], "little")
 
 
 def _guid(raw: bytes) -> str | None:
+    """Format 16 raw bytes as a canonical GUID string.
+
+    Args:
+        raw: Exactly 16 bytes; anything else returns None.
+
+    Returns:
+        The lowercase ``8-4-4-4-12`` form, or None.
+
+    The first three fields are little-endian integers and the last two
+    are byte sequences — a GUID is not simply hex-dumped, and printing
+    it that way produces a string that looks right and matches nothing.
+    """
     if len(raw) != 16:
         return None
     d1 = int.from_bytes(raw[0:4], "little")
@@ -103,9 +159,17 @@ def _guid(raw: bytes) -> str | None:
 def parse_property_store(data: bytes, *, codepage: str = "cp1252") -> list[dict]:
     """Decode a property-store blob into a list of property dicts.
 
-    Each entry is ``{"format_id", "name", "value"}``. Never raises: a
-    malformed storage ends the walk and whatever was decoded so far is
-    returned.
+    Args:
+        data:     The PropertyStoreDataBlock payload.
+        codepage: Used for ``VT_LPSTR`` values, which carry no encoding
+                  of their own — the shortcut's own ANSI codepage is the
+                  only available answer.
+
+    Returns:
+        ``[{"format_id", "property_id", "name", "value"}, ...]`` in
+        storage order. Never raises: a malformed storage ends the walk
+        and whatever was decoded so far is returned, because a partial
+        property list is still evidence.
     """
     out: list[dict] = []
     cursor = 0
@@ -141,7 +205,22 @@ def parse_property_store(data: bytes, *, codepage: str = "cp1252") -> list[dict]
 
 
 def _parse_values(storage: bytes, format_id: str, codepage: str) -> list[dict]:
-    """Walk the SerializedPropertyValue list inside one storage."""
+    """Walk the SerializedPropertyValue list inside one storage.
+
+    Args:
+        storage:   One SerializedPropertyStorage record.
+        format_id: Its FormatID, which selects the value shape.
+        codepage:  For ``VT_LPSTR`` values.
+
+    Returns:
+        One dict per decoded value.
+
+    The FormatID does double duty: it identifies the property set *and*
+    decides whether names are strings or integer PIDs. There is no flag
+    for it, so a decoder that ignores the FormatID reads the name field
+    at the wrong offset and produces plausible nonsense for every
+    property in the storage.
+    """
     string_named = format_id.lower() == _STRING_NAMED_FMTID
     out: list[dict] = []
     cursor = 24
@@ -243,6 +322,17 @@ def _decode_typed_value(entry: bytes, off: int, codepage: str) -> str:
 
 
 def _filetime(raw: int | None) -> str:
+    """Convert a Windows FILETIME to an ISO 8601 UTC string.
+
+    Args:
+        raw: 100-nanosecond intervals since 1601-01-01, or None.
+
+    Returns:
+        The ISO string, or ``""`` for zero, None, or a value outside the
+        range the platform can represent. Shortcuts routinely carry
+        zeroed or absurd timestamps, and those are data about the
+        shortcut rather than an error to raise on.
+    """
     if not raw:
         return ""
     try:
