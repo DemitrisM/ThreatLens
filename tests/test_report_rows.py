@@ -312,3 +312,56 @@ def test_onenote_rows_severities_are_valid(report_onenote):
 
     data = module_data(report_onenote, "onenote_analysis")
     assert all(r.severity in VALID_SEVERITIES for r in onenote_rows(data, 1))
+
+
+# ── nested archive naming ───────────────────────────────────────────
+
+
+def test_a_nested_archive_with_no_member_name_is_named_by_its_source():
+    """A bare "?" in the Member column reads as a parse failure.
+
+    The nested child of an SFX is the archive carved out of the PE
+    overlay — it has no member name because it is not a member of
+    anything, and `data["sfx"]` records exactly where it came from.
+    Measured on ACRStealer.exe, whose Nested Archives table said "?".
+    """
+    from reporting.terminal_reporter.archive import nested_rows
+
+    rows = nested_rows(
+        {
+            "sfx": {"is_sfx": True, "embedded_format": "rar", "offset": 480768},
+            "nested": [
+                {
+                    "module": "archive_analysis",
+                    "score_delta": 8,
+                    "data": {"detected_format": "rar", "classification": "MALICIOUS"},
+                }
+            ],
+        }
+    )
+
+    assert rows and "480768" in rows[0][0]
+    assert "?" not in rows[0][0]
+
+
+def test_a_nested_archive_with_no_name_and_no_sfx_says_so():
+    from reporting.terminal_reporter.archive import nested_rows
+
+    rows = nested_rows(
+        {"nested": [{"module": "archive_analysis", "score_delta": 3, "data": {}}]}
+    )
+
+    assert rows[0][0] == "(unnamed)"
+
+
+def test_a_named_nested_member_keeps_its_name():
+    from reporting.terminal_reporter.archive import nested_rows
+
+    rows = nested_rows(
+        {
+            "sfx": {"is_sfx": True, "offset": 1},
+            "nested": [{"nested_member_name": "payload.zip", "data": {}}],
+        }
+    )
+
+    assert rows[0][0] == "payload.zip"
