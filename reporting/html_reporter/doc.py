@@ -5,6 +5,8 @@ outputs surface the same set of indicators.  Each row is
 ``{label, value, severity}`` with severity in {"bad", "warn", "info"}.
 """
 
+from reporting.terminal_reporter.doc import mraptor_summary
+
 
 def doc_indicators(module_results: list[dict]) -> list[dict]:
     doc = next(
@@ -49,12 +51,9 @@ def doc_indicators(module_results: list[dict]) -> list[dict]:
 
         mr = vba.get("mraptor_flags") or {}
         if mr.get("suspicious"):
-            add(
-                "MacroRaptor",
-                f"flagged (A={mr.get('autoexec', False)}, "
-                f"W={mr.get('write', False)}, X={mr.get('execute', False)})",
-                "bad" if mr.get("execute") else "warn",
-            )
+            # Shared with the terminal builder: the two held the same
+            # three wrong key names, copied from one to the other.
+            add("MacroRaptor", *mraptor_summary(mr))
         if vba.get("stomping_detected"):
             add("VBA stomping",
                 "source/p-code divergence detected (EvilClippy signature)",
