@@ -16,7 +16,7 @@ Everything before it is a step toward that.
 | 0.5.6 | lnk_analysis complete — four fixes including a size-cap bypass that deleted the module from a scan |
 | 0.5.7 | html_analysis complete — a Windows-1252 page decoded to mojibake and reported clean |
 | 0.5.8 | onenote_analysis complete — one wrong byte had disabled the module's headline rule |
-| 0.5.9 | *(current)* cli/ complete — seven fixes, three of them exit codes that reported success on a run that had not worked |
+| 0.5.9 | *(current)* cli/ complete — eight fixes, three of them exit codes that reported success on a run that had not worked |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
@@ -25,7 +25,7 @@ Everything before it is a step toward that.
 
 ## 0.5.9 — 2026-09-24
 
-The `cli/` comment pass, all three batches. Seven defects, and the theme
+The `cli/` comment pass, all three batches. Eight defects, and the theme
 running through them is an exit status or an output that claimed a run had
 done something it had not.
 
@@ -86,6 +86,22 @@ the payload went to stdout, no file was created and the exit status was 0;
 and `-f html` was refused only after the file had been hashed, when it is a
 usage error that can be raised before any work.
 
+### Fixed — triage skipped a sample hidden by a leading dot
+
+The exclusion was written for `.git` and `.venv`, which are directories,
+but it tested every component of the path including the file's own name.
+A sample called `.payload.exe` was never analysed and never reported as
+skipped: the sweep silently covered less than the directory held, hidden by
+the oldest trick on the platform. Only directories are skipped now.
+
+Pruning moved into the walk while fixing it, because `rglob("*")` yields
+every path regardless of the filter — a hidden directory was still
+descended and still cost an `is_file()` stat per entry. `os.walk` with an
+in-place delete from `dirnames` stops the descent: measured on a
+20,000-file `.git`, 0.83s against 0.00s. It also stops following symlinked
+directories, so a link pointing at an ancestor or at `/` cannot widen the
+sweep.
+
 ### Fixed — a missing hash rendered as a truncated one
 
 `compare` appended its ellipsis unconditionally, so a file whose
@@ -109,15 +125,7 @@ optional.
 
 ### Tests
 
-**973 → 984.**
-
-### Logged, not fixed
-
-`triage` skips dot-prefixed *files*, not only dot-prefixed directories. The
-rationale is `.git` and `.venv`, which are directories; excluding a file
-named `.payload.exe` is collateral, and such a file is never analysed and
-never reported as skipped. It is pinned by an existing test, so changing it
-inverts a deliberate contract rather than fixing an oversight.
+**973 → 988.**
 
 ## 0.5.8 — 2026-09-24
 
