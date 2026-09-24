@@ -119,3 +119,90 @@ def test_class_severity_holds_no_risk_bands():
 
 def test_class_severity_values_are_valid_severities():
     assert set(CLASS_SEVERITY.values()) <= {"bad", "warn", "info"}
+
+
+# ── Design rule 8: colour comes from the palette ────────────────────
+
+
+#: Every module that resolves a style, plus the one CLI file that builds
+#: a coloured table. `theme.py` is excluded — it owns the colours.
+_COLOUR_OWNERS = tuple(
+    p
+    for p in sorted(Path("reporting").rglob("*.py")) + [Path("cli/compare.py")]
+    if p.name != "theme.py"
+)
+
+
+#: Bare rich colour names. A compound style like "bold red" is out of
+#: scope: those are still written inline in a few section builders and
+#: moving them all is its own job. This guards the *fallbacks*, which is
+#: where the design-rule-8 violation actually was.
+_BARE_COLOURS = frozenset(
+    {"white", "black", "red", "green", "yellow", "blue", "magenta", "cyan"}
+)
+
+
+def _bare_colour_fallbacks(path: Path) -> list[str]:
+    """Every `x.get(k, "red")` and `x or "red"` in one file.
+
+    Parsed rather than grepped: the fix left comments that name the
+    colour while explaining why it is wrong, and a substring search
+    cannot tell those from the code they replaced.
+    """
+    import ast
+
+    offences: list[str] = []
+
+    def _flag(node, value: str) -> None:
+        offences.append(
+            f"{path}:{node.lineno} falls back to the bare colour "
+            f"{value!r} instead of theme.NEUTRAL"
+        )
+
+    for node in ast.walk(ast.parse(path.read_text())):
+        # `styles.get(key, "white")`
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and len(node.args) == 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in _BARE_COLOURS
+        ):
+            _flag(node, node.args[1].value)
+        # `rich_style(name) or "white"` — the other spelling, and the one
+        # that was missed when only `.get` was checked.
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+            for value in node.values[1:]:
+                if isinstance(value, ast.Constant) and value.value in _BARE_COLOURS:
+                    _flag(node, value.value)
+    return offences
+
+
+def test_no_reporter_falls_back_to_a_bare_colour_name():
+    """`.get(key, "white")` is a colour literal outside the palette.
+
+    Design rule 8 puts every colour in theme.py, and nine call sites
+    spelled their fallback inline. Rich reads "white" as ANSI colour 7
+    (#c0c0c0), not as the terminal default, so on a light background it
+    is a real choice and a poor one.
+    """
+    offences = [o for path in _COLOUR_OWNERS for o in _bare_colour_fallbacks(path)]
+
+    assert not offences, "\n".join(offences)
+
+
+def test_the_neutral_style_is_the_terminal_default():
+    """Not "white", which is a colour; not "", which rich refuses in markup."""
+    from reporting.theme import NEUTRAL
+
+    assert NEUTRAL == "default"
+
+
+def test_an_unknown_ioc_type_renders_neutrally():
+    from reporting.theme import NEUTRAL, ioc_style
+
+    label, style = ioc_style("no_such_type")
+
+    assert label == "no_such_type"
+    assert style == NEUTRAL

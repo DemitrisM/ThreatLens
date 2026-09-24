@@ -9,7 +9,7 @@ from rich import box
 from rich.table import Table
 
 from reporting.shared import human_size
-from reporting.theme import CLASS_SEVERITY, rich_style
+from reporting.theme import CLASS_SEVERITY, NEUTRAL, rich_style
 
 from ._common import LIMITS, console
 from ._render import Row, render_hash_list, render_indicators
@@ -148,7 +148,7 @@ def _nested_tree(data: dict) -> None:
         # Colour by risk band. This used to index a map keyed by
         # MALICIOUS/SUSPICIOUS/..., which a LOW/MEDIUM/HIGH/CRITICAL band
         # could never match, so every row rendered white.
-        style = rich_style(band.lower()) or "white"
+        style = rich_style(band.lower()) or NEUTRAL
         offset = child.get("source_offset")
         offset_str = f"0x{offset:08x}" if isinstance(offset, int) else "-"
         table.add_row(

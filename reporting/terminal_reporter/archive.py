@@ -9,7 +9,7 @@ from rich import box
 from rich.table import Table
 
 from reporting.shared import human_size
-from reporting.theme import CLASS_SEVERITY, rich_style
+from reporting.theme import CLASS_SEVERITY, NEUTRAL, rich_style
 
 from ._common import LIMITS, console
 from ._render import Row, more_hint, render_hash_list, render_indicators
@@ -170,7 +170,7 @@ def _nested_tree(data: dict) -> None:
         classification = cdata.get("classification") or "-"
         # Colour by classification token (MALICIOUS -> "bold red"), not by
         # severity — "bad" is not a rich style.
-        style = rich_style(classification.lower()) or "white"
+        style = rich_style(classification.lower()) or NEUTRAL
         score = child.get("score_delta")
         table.add_row(
             str(name),
