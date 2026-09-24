@@ -20,6 +20,8 @@ field under test is explicit and the malformed cases are readable.
 
 from __future__ import annotations
 
+import pathlib
+
 import base64
 import copy
 
@@ -869,14 +871,47 @@ def test_missing_file_is_an_error(tmp_path):
     assert result["score_delta"] == 0
 
 
-def test_size_cap_skips_without_reading(tmp_path):
+def test_size_cap_bounds_the_read_rather_than_skipping_the_file(tmp_path, monkeypatch):
+    """Inverted deliberately: this used to assert the skip that was the bug.
+
+    Skipping on size meant appending padding — no understanding of the
+    format required — removed the module from the analysis and returned a
+    score of 0. The cap now bounds how much is read. This test asserts
+    both halves: the file is analysed, and no more than the cap is read.
+    """
     path = tmp_path / "huge.lnk"
     path.write_bytes(build_lnk(arguments="x") + b"\x00" * (2 * 1024 * 1024))
+    cap_bytes = 1 * 1024 * 1024
+
+    reads: list[int] = []
+    real_open = pathlib.Path.open
+
+    class _CountingHandle:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def read(self, size=-1):
+            chunk = self._handle.read(size)
+            reads.append(len(chunk))
+            return chunk
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return self._handle.__exit__(*exc)
+
+    def counting_open(self, *args, **kwargs):
+        return _CountingHandle(real_open(self, *args, **kwargs))
+
+    monkeypatch.setattr(pathlib.Path, "open", counting_open)
 
     result = run(path, {"max_lnk_size_mb": 1})
 
-    assert result["status"] == "skipped"
-    assert "size cap" in result["reason"]
+    assert result["status"] == "success"
+    assert max(reads) <= cap_bytes, f"read {max(reads)} bytes past a {cap_bytes} cap"
+    assert result["data"]["file_size"] == path.stat().st_size
+    assert result["data"]["overlay"]["truncated"] is True
 
 
 def test_config_codepage_is_honoured(tmp_path):
@@ -1079,3 +1114,129 @@ def test_zeroed_and_identical_timestamps_are_still_forgery():
         write_time_raw=128920014993141220,
     ))
     assert _timestamps_fabricated(identical) is True
+
+
+# ---------------------------------------------------------------------------
+# Oversized shortcuts must not be skipped
+# ---------------------------------------------------------------------------
+
+_CORPUS_LNK = pathlib.Path(
+    "/home/pmafma/Documents/Malware/lnk test malware/Grandoreiro.lnk"
+)
+
+
+@pytest.mark.skipif(not _CORPUS_LNK.exists(), reason="corpus sample unavailable")
+def test_padding_a_shortcut_past_the_size_cap_does_not_skip_it(tmp_path):
+    """Appending nulls turned a MALICIOUS sample into a skip worth nothing.
+
+    The size cap returned status="skipped" and score 0 for anything over
+    10 MiB, so eleven megabytes of padding — requiring no understanding of
+    the format at all — removed the module from the analysis entirely.
+    Measured before the fix: the sample scores 60 and classifies MALICIOUS
+    untouched, and 0 with padding appended.
+
+    The shell-link structure sits at the front of the file, so a bounded
+    prefix is always enough to parse it. The cap now bounds how much is
+    read, not whether the file is looked at.
+    """
+    from modules.static.lnk_analysis import run
+
+    original = run(_CORPUS_LNK, {})
+    assert original["status"] == "success"
+    assert original["data"]["classification"] == "MALICIOUS"
+
+    padded = tmp_path / "padded.lnk"
+    padded.write_bytes(_CORPUS_LNK.read_bytes() + b"\x00" * (11 * 1024 * 1024))
+
+    result = run(padded, {})
+
+    assert result["status"] == "success"
+    assert result["data"]["classification"] == "MALICIOUS"
+    assert result["score_delta"] == original["score_delta"]
+
+
+@pytest.mark.skipif(not _CORPUS_LNK.exists(), reason="corpus sample unavailable")
+def test_an_oversized_shortcut_reports_its_real_size(tmp_path):
+    """The truncated read must not become a truncated fact.
+
+    file_size drives the large_file indicator and is printed in the
+    report, so reporting the prefix length would understate the file by
+    however much was appended — and being carried by a payload is the
+    reason the file is oversized in the first place.
+    """
+    from modules.static.lnk_analysis import run
+
+    padded = tmp_path / "padded.lnk"
+    real_size = len(_CORPUS_LNK.read_bytes()) + 11 * 1024 * 1024
+    padded.write_bytes(_CORPUS_LNK.read_bytes() + b"\x00" * (11 * 1024 * 1024))
+
+    data = run(padded, {})["data"]
+
+    assert data["file_size"] == real_size
+    assert "large_file" in data["indicator_flags"]
+    assert data["overlay"] is not None
+    assert data["overlay"]["size"] == real_size - data["parsed_end"]
+
+
+@pytest.mark.skipif(not _CORPUS_LNK.exists(), reason="corpus sample unavailable")
+def test_an_oversized_overlay_is_not_given_a_hash_of_a_fragment(tmp_path):
+    """A hash of the part that was read is worse than no hash.
+
+    It would be forwarded to VirusTotal as though it identified the
+    payload, and it identifies a prefix of it. The overlay is reported
+    with its size and offset and no digests, and it is not forwarded.
+    """
+    from modules.static.lnk_analysis import run
+
+    padded = tmp_path / "padded.lnk"
+    padded.write_bytes(_CORPUS_LNK.read_bytes() + b"\x00" * (11 * 1024 * 1024))
+
+    data = run(padded, {})["data"]
+
+    assert data["overlay"]["truncated"] is True
+    assert data["overlay"]["sha256"] is None
+    assert data["embedded_executables"] == []
+
+
+@pytest.mark.skipif(not _CORPUS_LNK.exists(), reason="corpus sample unavailable")
+def test_a_shortcut_within_the_cap_is_hashed_as_before(tmp_path):
+    """The ordinary path must be unchanged: full read, real digests."""
+    from modules.static.lnk_analysis import run
+
+    data = run(_CORPUS_LNK, {})["data"]
+    overlay = data["overlay"]
+    if overlay is not None:
+        assert overlay["truncated"] is False
+        assert overlay["sha256"] is not None
+        assert len(overlay["sha256"]) == 64
+
+
+def test_an_overlay_beginning_exactly_at_the_read_cap_is_still_reported(tmp_path):
+    """Padding the structure to the cap boundary hid the payload entirely.
+
+    The overlay is derived from what the parser saw. When the read stops
+    exactly where the shell-link structure ends, the prefix has no
+    trailing bytes, so overlay_size is 0 and the description is dropped —
+    even though the real file continues for as long as the attacker
+    likes. Padding the structure out to the cap is the only work needed.
+
+    The overlay bounds are recomputed from the true file size on any
+    truncated read, so the payload is reported with its real size and
+    offset whether or not a single byte of it was read.
+    """
+    from modules.static.lnk_analysis import _analyse
+
+    structure = build_lnk(arguments="/c echo hi")
+    payload = b"MZ" + b"\x90\x00" * 64
+    path = tmp_path / "boundary.lnk"
+    path.write_bytes(structure + payload)
+
+    # Read exactly the structure and not one byte of the payload.
+    result = _analyse(path, "cp1252", len(structure))
+
+    overlay = result["data"]["overlay"]
+    assert overlay is not None, "overlay dropped when it began at the cap"
+    assert overlay["offset"] == len(structure)
+    assert overlay["size"] == len(payload)
+    assert overlay["truncated"] is True
+    assert "overlay_present" in result["data"]["indicator_flags"]
