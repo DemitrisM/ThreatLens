@@ -1004,3 +1004,78 @@ def test_full_path_is_empty_when_link_info_carries_nothing():
     from modules.static.lnk_analysis.parser import LinkInfoData
 
     assert LinkInfoData().full_path == ""
+
+
+# ---------------------------------------------------------------------------
+# Padding evasion against the basename, and a false forgery premise
+# ---------------------------------------------------------------------------
+
+def test_a_padded_target_still_resolves_to_its_lolbin_basename():
+    """Leading spaces before the executable name defeated the LOLBin check.
+
+    `_basename` stripped trailing separators and spaces but not leading
+    ones, so `C:\\Windows\\System32\\   cmd.exe` yielded `'   cmd.exe'`,
+    which is not in LOLBINS. Windows ignores leading spaces when it
+    executes, so the shortcut runs cmd.exe while the module reports no
+    LOLBin target — and lolbin_target is a component of the two heaviest
+    rules in the engine, including the ZDI padding combination.
+
+    Whitespace padding is the central technique this module exists to
+    detect, which makes the basename the last place it should have been
+    able to hide.
+    """
+    from modules.static.lnk_analysis.command import LOLBINS, _basename
+
+    padded = _basename("C:\\Windows\\System32\\   cmd.exe")
+
+    assert padded == "cmd.exe"
+    assert padded.lower() in LOLBINS
+
+
+def test_basename_strips_padding_on_both_sides():
+    """Tabs and the exotic padding characters count too."""
+    from modules.static.lnk_analysis.command import _basename
+
+    assert _basename("C:\\dir\\\tpowershell.exe ") == "powershell.exe"
+    assert _basename("\\\\host\\share\\  mshta.exe") == "mshta.exe"
+
+
+def test_a_write_time_before_the_creation_time_is_not_forgery():
+    """Windows produces that ordering every time a file is copied.
+
+    A copy gives the new file a fresh creation time and preserves the
+    original's write time, so write < creation is ordinary rather than
+    impossible. APT28.lnk in the corpus shows exactly this — creation and
+    access at 2009-07-13, the Windows 7 RTM date, with a write time a
+    month earlier — and was flagged as fabricated on that basis alone.
+
+    The two conditions that remain describe things a filesystem does not
+    do: all three stamps zero, or all three identical to the
+    100-nanosecond tick.
+    """
+    from modules.static.lnk_analysis.indicators import _timestamps_fabricated
+    from modules.static.lnk_analysis.parser import ParsedLnk, ShellLinkHeader
+
+    copied = ParsedLnk(header=ShellLinkHeader(
+        creation_time_raw=128920014993141220,
+        access_time_raw=128920014993141220,
+        write_time_raw=128891405397018009,
+    ))
+
+    assert _timestamps_fabricated(copied) is False
+
+
+def test_zeroed_and_identical_timestamps_are_still_forgery():
+    """The conditions that describe impossible filesystem states remain."""
+    from modules.static.lnk_analysis.indicators import _timestamps_fabricated
+    from modules.static.lnk_analysis.parser import ParsedLnk, ShellLinkHeader
+
+    zeroed = ParsedLnk(header=ShellLinkHeader())
+    assert _timestamps_fabricated(zeroed) is True
+
+    identical = ParsedLnk(header=ShellLinkHeader(
+        creation_time_raw=128920014993141220,
+        access_time_raw=128920014993141220,
+        write_time_raw=128920014993141220,
+    ))
+    assert _timestamps_fabricated(identical) is True
