@@ -12,6 +12,7 @@ never touch the network or a real sample.
 import importlib
 import json
 from pathlib import Path
+from unittest import mock
 
 import click
 import pytest
@@ -552,3 +553,73 @@ def test_min_score_does_not_shrink_the_reported_sweep_time(
     )
 
     assert seen["elapsed"] == 8.0, "both files were analysed"
+
+
+# ── --hash-only ─────────────────────────────────────────────────────
+
+
+def test_hash_only_does_not_reach_the_dynamic_provider(sample, stub_config):
+    """Restricting `enabled_modules` does not restrict detonation.
+
+    The dynamic provider is gated by `config["dynamic_provider"]` alone,
+    entirely independently of `enabled_modules`. `--hash-only` set the
+    module list and left that key untouched, so a config naming a provider
+    would have detonated the sample for a request that only ever wanted
+    four hashes. Harmless while every provider is a stub, and a live one
+    is the point at which it stops being harmless.
+    """
+    seen: dict[str, object] = {}
+
+    def _spy(file, config, **kw):
+        seen["provider"] = config.get("dynamic_provider")
+        seen["modules"] = list(config.get("enabled_modules", []))
+        return fake_report(file)
+
+    scan_mod = importlib.import_module("cli.scan")
+
+    with mock.patch.object(scan_mod, "run_pipeline", _spy):
+        result = make_runner().invoke(
+            cli_group, ["scan", str(sample), "--hash-only"]
+        )
+
+    assert result.exit_code == EXIT_OK, stdout_of(result)
+    assert seen["modules"] == ["file_intake"]
+    assert seen["provider"] == "none"
+
+
+def test_hash_only_honours_the_output_path(sample, stub_config, stub_pipeline, tmp_path):
+    """`-o` was accepted and silently ignored, writing to stdout instead.
+
+    No file was created and the exit status was 0, so a caller redirecting
+    into a pipeline of its own got an empty path and no indication why.
+    """
+    target = tmp_path / "hashes.json"
+
+    result = make_runner().invoke(
+        cli_group,
+        ["scan", str(sample), "--hash-only", "-f", "json", "-o", str(target)],
+    )
+
+    assert result.exit_code == EXIT_OK, stdout_of(result)
+    assert json.loads(target.read_text())["hashes"]["sha256"] == "0" * 64
+    assert stdout_of(result).strip() == ""
+
+
+def test_hash_only_rejects_html_before_running_anything(sample, stub_config):
+    """A known-invalid invocation must not hash the file first."""
+    called = False
+
+    def _spy(file, config, **kw):
+        nonlocal called
+        called = True
+        return fake_report(file)
+
+    scan_mod = importlib.import_module("cli.scan")
+
+    with mock.patch.object(scan_mod, "run_pipeline", _spy):
+        result = make_runner().invoke(
+            cli_group, ["scan", str(sample), "--hash-only", "-f", "html"]
+        )
+
+    assert result.exit_code == EXIT_USAGE
+    assert called is False

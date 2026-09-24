@@ -4,6 +4,31 @@ Two axes, no third: ``--profile`` selects which modules run, ``-v``/``-vv``
 select how much prints. Machine formats go to stdout (or to ``-o FILE``),
 diagnostics go to stderr, and the exit status reflects the risk band when
 ``--fail-on`` is given.
+
+Design notes
+------------
+**The docstrings here are user-facing.** Click builds every ``--help`` string
+from the docstring of the function it decorates, so the one-line summary on
+:func:`scan` is what a user reads, not an internal note. That also defeats
+the AST proof used to verify a comment pass, since it strips docstrings
+before comparing — a rewritten help text is invisible to it. Diff the
+rendered help instead.
+
+**Validation order is deliberate.** The two usage errors are raised before
+the config is read and before any module runs, so a wrong invocation costs
+nothing. Everything after that point can fail only at runtime, which is
+exit 3. The one exception is ``--hash-only -f html``, which is refused
+after hashing — the check sits with the other format branches rather than
+beside the argument checks, and hashing is the cheapest thing the tool does.
+
+**``--hash-only`` is not a scan.** It replaces ``enabled_modules``
+wholesale, so ``--modules`` and ``--skip`` are accepted and then ignored,
+and it returns before ``--fail-on`` is evaluated — nothing was analysed, so
+there is no risk band to grade.
+
+**Stream discipline (design rule 7).** ``click.echo`` writes the machine
+payload to stdout; every notice, including "Report written to …", goes to
+``err``. A saved-path line on stdout would corrupt ``-f json | jq``.
 """
 
 import logging
@@ -95,9 +120,14 @@ def scan(
     config_path: Path | None,
 ) -> None:
     """Analyse FILE and report a threat score with transparent scoring."""
+    # click.Choice(case_sensitive=False) matches case-insensitively but hands
+    # back what the user typed, so downstream comparisons need the fold.
     fmt = fmt.lower()
     profile = profile.lower()
 
+    # ── Usage errors, before any work ───────────────────────────────────
+    # `exists=True` has already confirmed the path; this separates the two
+    # verbs rather than letting a directory reach the pipeline.
     if file.is_dir():
         raise click.UsageError(
             "scan takes a single file; use 'threatlens triage' for a directory"
@@ -106,6 +136,10 @@ def scan(
         raise click.UsageError(
             "-o/--output needs a machine format; use -f json, -f jsonl, or -f html"
         )
+    # Refused here rather than where the hashes are formatted, so a
+    # known-invalid invocation does not hash the file first.
+    if hash_only and fmt == "html":
+        raise click.UsageError("--hash-only supports -f text, json, or jsonl")
 
     # Logging first, so config-loading warnings reach the configured handler.
     _setup_logging(verbosity=verbosity)
@@ -117,11 +151,13 @@ def scan(
         ) from exc
     _setup_logging(config["log_level"], verbosity)
 
+    # Profile before overrides: the profile rewrites `enabled_modules`
+    # wholesale, so applying it second would reinstate what --skip removed.
     config = _apply_scan_profile(config, profile)
     config = _apply_module_overrides(config, modules, skip)
 
     if hash_only:
-        _run_hash_only(file, config, fmt)
+        _run_hash_only(file, config, fmt, output_path)
         return
 
     report = _run_pipeline(file, config)
@@ -150,9 +186,39 @@ def _run_pipeline(file: Path, config: dict) -> dict:
         progress_fin()
 
 
-def _run_hash_only(file: Path, config: dict, fmt: str) -> None:
-    """Print hashes only, in text or machine form."""
+def _run_hash_only(
+    file: Path, config: dict, fmt: str, output_path: Path | None = None
+) -> None:
+    """Print hashes only, in text or machine form.
+
+    Args:
+        file:        The file to hash. Already known to exist and not be a
+                     directory.
+        config:      Loaded config. Both ``enabled_modules`` and
+                     ``dynamic_provider`` are replaced here.
+        fmt:         Output format. ``html`` has already been refused by
+                     the caller — there is no report to render, only four
+                     lines of text.
+        output_path: Destination for a machine format, or None for stdout.
+                     ``-f text`` with a path is a usage error the caller
+                     has already rejected.
+
+    Raises:
+        RuntimeFailure: When ``file_intake`` did not succeed, since the
+            hashes are the entire output and an empty result is not one,
+            or when the output path cannot be written.
+
+    The pipeline is still used rather than hashing inline, so that the type
+    detection, the size guards and the ssdeep backend selection behave
+    identically to a real scan — ``--hash-only`` is meant to answer "what
+    would that scan call this file", not to be a second implementation.
+    """
+    # Both keys, because they are separate gates. The dynamic provider is
+    # selected by `dynamic_provider` alone and is not listed in
+    # `enabled_modules`, so restricting the module list does not restrict
+    # detonation — a request for four hashes would have run a sandbox.
     config["enabled_modules"] = ["file_intake"]
+    config["dynamic_provider"] = "none"
     report = _run_pipeline(file, config)
 
     intake = next(
@@ -163,18 +229,26 @@ def _run_hash_only(file: Path, config: dict, fmt: str) -> None:
 
     hashes = intake["data"].get("hashes", {})
 
+    # ── Machine formats ─────────────────────────────────────────────────
+    # jsonl is one line, so it takes the compact separators and no indent;
+    # json is read by a person as often as by a program and stays indented.
     if fmt in _MACHINE_FORMATS:
         import json  # noqa: PLC0415
 
         payload = {"file": str(file), "hashes": hashes}
         separators = (",", ":") if fmt == "jsonl" else None
-        click.echo(json.dumps(payload, indent=None if fmt == "jsonl" else 2,
-                              separators=separators, default=str))
+        rendered = json.dumps(payload, indent=None if fmt == "jsonl" else 2,
+                              separators=separators, default=str)
+        if output_path is None:
+            click.echo(rendered)
+        else:
+            _write_text(output_path, rendered)
+            err.print(f"[dim]Hashes written to {output_path}[/dim]")
         return
 
-    if fmt == "html":
-        raise click.UsageError("--hash-only supports -f text, json, or jsonl")
-
+    # TLSH and ssdeep are conditional: both have minimum-size and backend
+    # requirements, and a line reading "ssdeep: N/A" invites the reader to
+    # think the file has no fuzzy hash rather than that none was computed.
     click.echo(f"MD5:    {hashes.get('md5', 'N/A')}")
     click.echo(f"SHA256: {hashes.get('sha256', 'N/A')}")
     if hashes.get("tlsh"):
@@ -191,7 +265,24 @@ def _emit(
     *,
     detail_level: int,
 ) -> None:
-    """Route the finished report to the requested destination."""
+    """Route the finished report to the requested destination.
+
+    Args:
+        report:       The pipeline's result dict.
+        fmt:          ``text``, ``json``, ``jsonl`` or ``html``.
+        output_path:  Destination file, or None for stdout. Already refused
+                      for ``-f text`` by the caller.
+        config:       Read only for ``output_dir``, the default HTML
+                      destination.
+        detail_level: Clamped ``-v`` count, used by the terminal reporter.
+
+    Raises:
+        RuntimeFailure: On any failure to write or render — exit 3.
+
+    Reporters are imported inside the branch that uses them. Each pulls in
+    rich or jinja2, and a ``-f jsonl`` sweep over a directory should not pay
+    for a template engine it never renders with.
+    """
     if fmt == "text":
         from reporting.terminal_reporter import print_terminal_report  # noqa: PLC0415
 
@@ -209,7 +300,12 @@ def _emit(
             err.print(f"[dim]Report written to {output_path}[/dim]")
         return
 
-    # fmt == "html"
+    # ── HTML ────────────────────────────────────────────────────────────
+    # `write_html_report` names the file itself, from a timestamp, so that
+    # two scans of the same sample cannot overwrite each other. With `-o`
+    # the caller has named it instead: it is written into the destination's
+    # own directory first and then renamed onto the requested path, which
+    # keeps the rename within one filesystem and therefore atomic.
     from reporting.html_reporter import write_html_report  # noqa: PLC0415
 
     try:
