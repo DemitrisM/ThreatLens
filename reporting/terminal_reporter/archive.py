@@ -147,6 +147,53 @@ def _embedded_execs(data: dict, detail_level: int) -> None:
     )
 
 
+def nested_member_label(child: dict, parent: dict) -> str:
+    """Name a nested archive for the Member column.
+
+    Args:
+        child:  One entry of the parent's ``nested`` list — a full module
+                result, which carries no member name of its own when the
+                archive was carved rather than extracted.
+        parent: The parent module's ``data``, read for its ``sfx`` record.
+
+    Returns:
+        The member name when there is one, else where the archive came
+        from, else ``"(unnamed)"``.
+
+    A bare ``"?"`` was the old fallback and it reads as a parse failure.
+    The common case that reached it is not a failure at all: the nested
+    child of a self-extracting PE is the archive carved out of the
+    overlay, so it has no member name because it is not a member of
+    anything. ``sfx`` records the offset it was taken from, which is both
+    true and useful — it is where to look with a hex editor.
+    """
+    name = child.get("nested_member_name") or child.get("name")
+    if name:
+        return str(name)
+
+    sfx = parent.get("sfx") or {}
+    if sfx.get("is_sfx") and sfx.get("offset") is not None:
+        return f"SFX overlay @ {sfx['offset']}"
+    return "(unnamed)"
+
+
+def nested_rows(data: dict) -> list[tuple[str, str, str, str]]:
+    """``(member, format, classification, score)`` per nested archive."""
+    rows: list[tuple[str, str, str, str]] = []
+    for child in data.get("nested") or []:
+        cdata = child.get("data") or child.get("report") or {}
+        score = child.get("score_delta")
+        rows.append(
+            (
+                nested_member_label(child, data),
+                (cdata.get("detected_format") or "").upper(),
+                cdata.get("classification") or "-",
+                str(score) if score is not None else "-",
+            )
+        )
+    return rows
+
+
 def _nested_tree(data: dict) -> None:
     """Child archives found inside this one."""
     nested = data.get("nested") or []
@@ -163,20 +210,17 @@ def _nested_tree(data: dict) -> None:
     table.add_column("Classification", no_wrap=True)
     table.add_column("Score", justify="right", no_wrap=True)
 
-    for child in nested:
-        name = child.get("nested_member_name") or child.get("name") or "?"
-        cdata = child.get("data") or child.get("report") or {}
-        fmt = (cdata.get("detected_format") or "").upper()
-        classification = cdata.get("classification") or "-"
-        # Colour by classification token (MALICIOUS -> "bold red"), not by
-        # severity — "bad" is not a rich style.
+    for name, fmt, classification, score in nested_rows(data):
+        # Coloured by the classification token (MALICIOUS -> "bold red"),
+        # not by the severity token the indicator rows use: "bad" is a
+        # severity name, and the hue that belongs to a verdict word is
+        # the one the rest of the report gives that same word.
         style = rich_style(classification.lower()) or NEUTRAL
-        score = child.get("score_delta")
         table.add_row(
-            str(name),
+            name,
             fmt,
             f"[{style}]{classification}[/{style}]",
-            str(score) if score is not None else "-",
+            score,
         )
 
     console.print()

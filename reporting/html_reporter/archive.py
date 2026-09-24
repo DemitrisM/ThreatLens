@@ -6,6 +6,7 @@ and nested-archive summary rows. Severity values follow the same
 convention as ``doc.py`` ({"bad", "warn", "info"}).
 """
 
+from reporting.terminal_reporter.archive import nested_member_label
 from reporting.shared import human_size
 
 
@@ -88,7 +89,9 @@ def archive_indicators(module_results: list[dict]) -> dict | None:
     for child in data.get("nested") or []:
         cdata = child.get("data") or child.get("report") or {}
         nested_rows.append({
-            "name": child.get("nested_member_name") or child.get("name") or "?",
+            # Shared with the terminal builder so the two reports cannot
+            # disagree about what an unnamed nested archive is called.
+            "name": nested_member_label(child, data),
             "format": (cdata.get("detected_format") or "").upper(),
             "classification": cdata.get("classification") or "-",
             "score_delta": child.get("score_delta"),
