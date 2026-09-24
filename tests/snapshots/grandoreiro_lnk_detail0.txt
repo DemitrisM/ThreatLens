@@ -33,7 +33,7 @@ executable target, known malware-hosting infrastructure, built on host 'laptop-p
  Module           Δ   Reason                                                                        
  ────────────────────────────────────────────────────────────────────────────────────────────────── 
  lnk_analysis   +60   LOLBin target launching a Base64-encoded PowerShell command (+35); LOLBin     
-                      target fetching a remote URL (+28); Documen...                                
+                      target fetching a remote URL (+28) … 8 more findings — use -vv                
                                                                                                     
 
   Windows Shortcut Indicators

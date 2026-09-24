@@ -29,7 +29,7 @@ unsigned binary
  pe_analysis       +15   No digital signature found; Compile timestamp is in the future             
                          (2097-08-14) — likely forged                                               
  string_analysis   +38   Suspicious strings: .NET stealer rule class, .NET stealer scan-routine,    
-                         Crypto wallet artefact, PowerShell download/e...                           
+                         Crypto wallet artefact, PowerShell download/exec, Base64 reference         
  ioc_extractor     +15   Network IOCs found: 4 URLs/IPs; Domains: ipinfo.io                         
                                                                                                     
 

@@ -19,7 +19,7 @@ from reporting.theme import NEUTRAL, rich_style
 
 from ._common import LIMITS, BAND_COLOURS
 from ._common import console as default_console
-from ._render import module_strip, score_bar
+from ._render import module_strip, score_bar, truncate_reason
 
 
 def print_score_banner(
@@ -73,8 +73,8 @@ def print_findings(
         colour = rich_style("bad") if delta > 0 else rich_style("success")
         reason = item.get("reason", "")
         # -vv exists to show the whole thing; below that, cap it.
-        if detail_level < 2 and len(reason) > cap:
-            reason = reason[: cap - 3] + "..."
+        if detail_level < 2:
+            reason = truncate_reason(reason, cap)
         table.add_row(
             item.get("module", "unknown"),
             f"[{colour}]{sign}{delta}[/{colour}]",
@@ -149,8 +149,8 @@ def print_module_table(
         else:
             delta_cell = "[dim]—[/dim]"
 
-        if detail_level < 2 and len(reason) > cap:
-            reason = reason[: cap - 3] + "..."
+        if detail_level < 2:
+            reason = truncate_reason(reason, cap)
 
         table.add_row(
             result.get("module", "unknown"),

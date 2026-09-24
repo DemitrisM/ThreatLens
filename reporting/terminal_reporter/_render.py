@@ -60,6 +60,116 @@ def more_hint(hidden: int) -> str:
     return f"(+{hidden} more — use -v to show all)" if hidden > 0 else ""
 
 
+#: Appended to a reason that lost whole clauses. ``-vv`` rather than
+#: ``-v``, because only detail level 2 prints a reason in full.
+#:
+#: Deliberately *not* the ``(+N more)`` shape :func:`more_hint` uses. The
+#: scoring modules already end a clause with their own ``(+1 more)`` for
+#: an elided API or domain, and the two parentheticals rendered side by
+#: side — ``LoadLibraryW (+1 more) (+5 more — use -vv)`` — where the
+#: first counts imports and the second counts findings. The ellipsis and
+#: the noun keep them apart.
+_MORE_CLAUSES = "… {n} more finding{s} — use -vv"
+
+#: Separator the scoring modules join their clauses with. Every module
+#: builds its reason this way, so cutting here keeps whole findings
+#: rather than whole words.
+_CLAUSE_SEP = "; "
+
+#: How far past the cap a reason may run before it is worth cutting.
+#:
+#: The cap exists to stop a long reason dominating the table, and a
+#: reason half again as long as the cap costs one extra wrapped line.
+#: Cutting it costs a finding, which is the thing the table is for. Two
+#: real reasons sit in this band — 125 and 138 characters against a cap
+#: of 120 — and cutting them dropped "Dangerous extension inside
+#: archive" and "PowerShell download/exec, Base64 reference" to save
+#: five and thirty-one characters. The reason that motivated the cap is
+#: 404 characters, comfortably past it.
+_OVERFLOW_TOLERANCE = 1.5
+
+
+def _cut_on_word(text: str, cap: int) -> str:
+    """Cut *text* at the last space at or before *cap*.
+
+    Falls back to a hard slice when there is no space to cut at — a
+    single unbroken token, such as a base64 blob or a very long path.
+    """
+    head = text[:cap].rsplit(" ", 1)[0]
+    return head or text[:cap]
+
+
+def truncate_reason(reason: str, cap: int) -> str:
+    """Shorten a module reason without lying about what it contained.
+
+    Args:
+        reason: The module's ``reason`` string, clauses joined by ``"; "``.
+        cap:    Soft character budget. Soft because the announcement is
+                allowed past it, and because a reason is left whole when
+                cutting it would not pay for itself.
+
+    Returns:
+        *reason* unchanged when it fits or when cutting would not pay,
+        otherwise whole clauses, a word-boundary cut, or both, followed by
+        a count of the findings that were dropped.
+
+    A reason is a list of findings, not prose, so it is cut at clause
+    boundaries. Cutting at a character offset landed mid-word —
+    ACRStealer.exe rendered ``LoadLibraryW (+1 mor...``, which reads as a
+    mangled count rather than a truncation, and silently dropped five
+    findings including "No digital signature found" while the verdict
+    line above still named them.
+
+    The first clause is kept even when it alone overruns the budget,
+    because returning nothing would be worse; it is then cut on a word
+    boundary, so one enormous clause cannot push the line out on its own.
+
+    Whether to cut at all is a judgement about value, not arithmetic. A
+    reason within :data:`_OVERFLOW_TOLERANCE` of the cap costs at most
+    one extra wrapped line, while cutting it costs a finding — so it is
+    left whole. Past that the reason is dominating the table and the
+    trade reverses. The finished string still has to be shorter than the
+    original by more than the announcement costs, which is a floor, not
+    the decision.
+    """
+    if len(reason) <= cap * _OVERFLOW_TOLERANCE:
+        return reason
+
+    # ── Take whole clauses while they fit ───────────────────────────────
+    clauses = reason.split(_CLAUSE_SEP)
+    kept: list[str] = []
+    for clause in clauses:
+        candidate = _CLAUSE_SEP.join([*kept, clause])
+        if kept and len(candidate) > cap:
+            break
+        kept.append(clause)
+
+    dropped = len(clauses) - len(kept)
+    head = _CLAUSE_SEP.join(kept)
+
+    # ── A single clause can still overrun on its own ────────────────────
+    # The loop takes the first clause unconditionally, so `head` is not
+    # bounded by `cap` yet. Without this a 300-character opening clause
+    # would print in full whenever a second clause existed, which is the
+    # opposite of what dropping the second one was for.
+    elided = len(head) > cap
+    if elided:
+        head = _cut_on_word(head, cap)
+
+    # ── Say what went missing ───────────────────────────────────────────
+    # The clause hint opens with its own ellipsis, so a reason that was
+    # both shortened and truncated needs only one mark.
+    if dropped:
+        suffix = " " + _MORE_CLAUSES.format(n=dropped, s="" if dropped == 1 else "s")
+    elif elided:
+        suffix = "…"
+    else:
+        return reason
+
+    out = head + suffix
+    return out if len(reason) - len(out) > len(suffix) else reason
+
+
 def score_bar(score: int, band: str, *, width: int = 22) -> str:
     """A filled/empty bar for a 0-100 score, coloured by risk band.
 

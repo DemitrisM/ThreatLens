@@ -26,7 +26,8 @@
  Module           Δ   Reason                                                                        
  ────────────────────────────────────────────────────────────────────────────────────────────────── 
  doc_analysis   +18   AutoExec + Shell call — macro launches an OS command on open (+10); VBA       
-                      macros present (+3); oleid reported HIGH-risk...                              
+                      macros present (+3); oleid reported HIGH-risk indicator (+3); Embedded OLE    
+                      object stream (+2)                                                            
                                                                                                     
 
   Office Document Indicators
@@ -46,7 +47,8 @@
 ├──────────────┼─────────┼─────────┼───────────────────────────────────────────────────────────────┤
 │ file_intake  │ success │       — │ File intake provides metadata only — no score contribution.   │
 │ doc_analysis │ success │     +18 │ AutoExec + Shell call — macro launches an OS command on open  │
-│              │         │         │ (+10); VBA macros present (+3); oleid reported HIGH-risk...   │
+│              │         │         │ (+10); VBA macros present (+3); oleid reported HIGH-risk      │
+│              │         │         │ indicator (+3); Embedded OLE object stream (+2)               │
 ╰──────────────┴─────────┴─────────┴───────────────────────────────────────────────────────────────╯
 
 Analysis complete  2026-01-01 00:00:00 UTC
