@@ -22,6 +22,35 @@ Grandoreiro needs all three, chained. Nothing here is specific to it.
 Everything is bounded: a fixed transform set, a depth cap, an output cap
 and a size cap, so a crafted argument string cannot turn this into a
 decompression bomb or an exponential search.
+
+Design notes
+------------
+The search is breadth-first, not depth-first, and that is a correctness
+choice rather than a performance one. Each transform is a guess; most
+guesses produce garbage that yields more garbage. Breadth-first reaches
+every 1-step decode before any 2-step one, so the shallowest explanation
+of a string is found first and the depth cap truncates the least likely
+branches rather than an arbitrary one.
+
+``seen`` is what makes the bound real. Transforms are not independent —
+reversing twice is the identity, and a quoted literal often re-derives
+its parent — so without de-duplication the frontier cycles and the caps
+are all that stop it. With it, the walk terminates on its own for every
+corpus sample.
+
+**Nothing here decides anything.** Every output is a *candidate*
+decoding, and the only ones kept are those yielding a URL, routable IP
+or plausible host. That is why the chain string is returned alongside
+the IOC: a recovered C2 with no visible derivation is an assertion, and
+an analyst has to be able to check the working. A wrong guess costs a
+discarded string; a silent wrong guess would cost the report's
+credibility.
+
+The false-positive filters lean on how code differs from C2 rather than
+on a blocklist — ``System.IO`` matches a hostname shape and a malware
+domain does not carry capitals. Cheap, and it fails in the safe
+direction: an upper-case domain still survives inside a full URL, which
+is matched separately.
 """
 
 from __future__ import annotations
@@ -79,10 +108,22 @@ _HOST_RE = re.compile(
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
-#: Reserved / non-routable ranges. A loopback or RFC1918 address in a
-#: command line is a sleep trick (`ping 127.0.0.1 -n 2`) or a local bind,
-#: never a C2 worth reporting as an indicator.
 def _is_routable_ip(value: str) -> bool:
+    """True if the dotted quad could be a real external address.
+
+    Args:
+        value: A candidate IPv4 string as matched by the regex.
+
+    Returns:
+        False for anything malformed, reserved or non-routable.
+
+    A loopback or RFC1918 address in a command line is a sleep trick
+    (``ping 127.0.0.1 -n 2``) or a local bind, never a C2 worth
+    reporting. The ranges are checked by arithmetic rather than by
+    string prefix, which is the mistake that once let the whole of
+    172.16/12 through in ``ioc_extractor``: ``"172.16."`` and
+    ``"172.31."`` are two prefixes out of sixteen.
+    """
     parts = value.split(".")
     if len(parts) != 4 or not all(p.isdigit() and len(p) <= 3 for p in parts):
         return False
@@ -131,7 +172,21 @@ def _looks_doubled(text: str) -> bool:
 
 
 def _decode_b64(token: str) -> list[str]:
-    """Decode a base64 run as both UTF-16LE and UTF-8. Never raises."""
+    """Decode a base64 run as both UTF-16LE and UTF-8. Never raises.
+
+    Args:
+        token: The matched run, possibly line-wrapped.
+
+    Returns:
+        Zero, one or two decodings, filtered to those that look like
+        text. Both encodings are tried because the run itself does not
+        say which it is — PowerShell's ``-EncodedCommand`` is UTF-16LE
+        while most other uses are UTF-8, and guessing wrong yields
+        convincing-looking garbage rather than an error.
+
+    Padding is recomputed rather than trusted: a run extracted from the
+    middle of a command line frequently has its ``=`` stripped.
+    """
     token = re.sub(r"\s+", "", token)
     if len(token) < _MIN_B64_CHARS:
         return []
@@ -161,7 +216,25 @@ def _is_texty(text: str) -> bool:
 
 
 def _transforms(text: str) -> list[tuple[str, str]]:
-    """One step of expansion: every applicable primitive, once."""
+    """One step of expansion: every applicable primitive, once.
+
+    Args:
+        text: The string to expand.
+
+    Returns:
+        ``[(transform_name, produced)]`` for each primitive that applied.
+
+    Reverse and de-double are guarded before being spent, because both
+    produce plausible-looking output from any input — a reversal is only
+    offered when it reveals a scheme or host, and de-doubling only when
+    the string actually looks doubled. Base64, quoted literals and
+    replace chains are self-selecting: they simply find nothing when
+    absent.
+
+    The replace chain is applied in source order because that is the
+    order the runtime applies it; reordering the pairs changes the
+    result whenever one substitution's output feeds another's input.
+    """
     out: list[tuple[str, str]] = []
 
     reversed_text = text[::-1]
@@ -195,8 +268,19 @@ def _transforms(text: str) -> list[tuple[str, str]]:
 def expand(text: str) -> list[tuple[str, str]]:
     """Breadth-first expansion of ``text`` under the transform set.
 
-    Returns ``[(chain, decoded)]`` where ``chain`` names the transforms
-    applied, e.g. ``"base64 → quoted → base64 → de-double → reverse"``.
+    Args:
+        text: The command line, or any string recovered from one.
+
+    Returns:
+        ``[(chain, decoded)]`` where ``chain`` names the transforms
+        applied, e.g. ``"base64 → quoted → base64 → de-double →
+        reverse"``. Empty for an empty or oversized input.
+
+    Three independent bounds, each closing a different runaway: the
+    depth cap bounds chain length, the output cap bounds total results,
+    and ``seen`` stops the frontier cycling through transforms that
+    re-derive their own inputs. The size cap keeps any single decode
+    from ballooning.
     """
     if not text or len(text) > MAX_TEXT:
         return []
@@ -227,9 +311,20 @@ def expand(text: str) -> list[tuple[str, str]]:
 def recover_iocs(command_line: str) -> tuple[list[str], list[str]]:
     """Pull IOCs out of the obfuscated forms of a command line.
 
-    Returns ``(iocs, chains)`` — the network indicators recovered, and a
-    human-readable description of how each layer was undone, so the
-    report can show its working rather than asserting a URL from nowhere.
+    Args:
+        command_line: The raw arguments, still obfuscated.
+
+    Returns:
+        ``(iocs, chains)`` — the network indicators recovered, and a
+        human-readable description of how each layer was undone, so the
+        report can show its working rather than asserting a URL from
+        nowhere.
+
+    Indicators already visible in the plaintext are excluded. This
+    function answers "what was hidden", and repeating what the command
+    line says outright would make a recovered C2 indistinguishable from
+    one that needed no recovery — which is exactly the distinction that
+    makes the finding worth its weight.
     """
     iocs: list[str] = []
     chains: list[str] = []
@@ -260,8 +355,16 @@ def recover_iocs(command_line: str) -> tuple[list[str], list[str]]:
 def bare_hosts(text: str) -> list[str]:
     """Hostnames present in plaintext but without a URL scheme.
 
+    Args:
+        text: A command line. Falsy input yields an empty list.
+
+    Returns:
+        Plausible hostnames, de-duplicated case-insensitively, capped.
+
     ``iex(irm 'noventis8.com' -useb)`` carries no ``http://``, so a
-    scheme-anchored URL regex walks straight past the C2.
+    scheme-anchored URL regex walks straight past the C2. This is the
+    plaintext counterpart to :func:`recover_iocs`, which deliberately
+    reports only what was hidden.
     """
     out: list[str] = []
     for match in _HOST_RE.finditer(text or ""):
