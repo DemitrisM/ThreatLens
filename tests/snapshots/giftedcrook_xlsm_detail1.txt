@@ -34,7 +34,7 @@
                                                                                                     
  Format / Classification   OPENXML — MALICIOUS                                                      
  VBA macros                2 stream(s), auto-exec: Workbook_Open, 11 suspicious keyword(s)          
- MacroRaptor               flagged (A=False, W=False, X=False)                                      
+ MacroRaptor               flagged — runs on open, writes a file, executes a command                
  XLM macros                none detected                                                            
  oleid HIGH-risk           VBA Macros                                                               
  Indicator flags           auto_exec, ole_object_in_container, oleid_high_risk, shell_keyword,      

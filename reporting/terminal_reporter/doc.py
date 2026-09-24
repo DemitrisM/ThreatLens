@@ -11,6 +11,39 @@ from ._render import Row, render_indicators
 _ALWAYS_SHOW = frozenset({"Format / Classification"})
 
 
+def mraptor_summary(flags: dict) -> tuple[str, str]:
+    """Describe MacroRaptor's verdict, and how serious it is.
+
+    Args:
+        flags: ``mraptor_flags`` as ``doc_analysis`` writes it —
+               ``auto_exec``, ``write_file``, ``execute_command`` and
+               ``suspicious``.
+
+    Returns:
+        ``(value, severity)`` for the MacroRaptor row.
+
+    Both reporters previously read ``autoexec``, ``write`` and
+    ``execute``, which are the attribute names on MacroRaptor's own
+    object rather than the keys the module stores. Every lookup missed,
+    so the row rendered ``flagged (A=False, W=False, X=False)`` on a
+    document flagged for all three, and the severity — keyed on the same
+    absent ``execute`` — could never reach "bad".
+
+    Spelled out in words rather than as ``A=/W=/X=`` for the same
+    reason: three initials against booleans are read past, while a
+    missing clause in a sentence is noticed.
+    """
+    named = (
+        ("auto_exec", "runs on open"),
+        ("write_file", "writes a file"),
+        ("execute_command", "executes a command"),
+    )
+    fired = [label for key, label in named if flags.get(key)]
+    detail = ", ".join(fired) if fired else "no specific capability"
+    severity = "bad" if flags.get("execute_command") else "warn"
+    return f"flagged — {detail}", severity
+
+
 def doc_rows(data: dict, detail_level: int = 0) -> list[Row]:
     """Build the Office indicator rows from a ``doc_analysis`` data dict."""
     if not data:
@@ -43,12 +76,8 @@ def doc_rows(data: dict, detail_level: int = 0) -> list[Row]:
 
         mr = vba.get("mraptor_flags") or {}
         if mr.get("suspicious"):
-            rows.append(Row(
-                "MacroRaptor",
-                f"flagged (A={mr.get('autoexec', False)}, "
-                f"W={mr.get('write', False)}, X={mr.get('execute', False)})",
-                "bad" if mr.get("execute") else "warn",
-            ))
+            value, severity = mraptor_summary(mr)
+            rows.append(Row("MacroRaptor", value, severity))
         if vba.get("stomping_detected"):
             rows.append(Row("VBA stomping",
                          "source/p-code divergence detected (EvilClippy signature)",

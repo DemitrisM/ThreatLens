@@ -365,3 +365,81 @@ def test_a_named_nested_member_keeps_its_name():
     )
 
     assert rows[0][0] == "payload.zip"
+
+
+# ── MacroRaptor flags ───────────────────────────────────────────────
+
+
+_MRAPTOR_DOC = {
+    "module": "doc_analysis",
+    "status": "success",
+    "data": {
+        "format": "OLE",
+        "classification": "MALICIOUS",
+        "macros": {
+            "vba": {
+                "present": True,
+                "count": 2,
+                "mraptor_flags": {
+                    "auto_exec": True,
+                    "write_file": True,
+                    "execute_command": True,
+                    "suspicious": True,
+                },
+            }
+        },
+    },
+}
+
+
+def _mraptor_row(rows):
+    return next((r for r in rows if r[0] == "MacroRaptor"), None)
+
+
+def test_macroraptor_reads_the_keys_the_module_writes():
+    """The row read `autoexec`/`write`/`execute`; none of those exist.
+
+    `vba_macros.py` writes `auto_exec`, `write_file` and
+    `execute_command`, so every lookup missed and the row rendered
+    "flagged (A=False, W=False, X=False)" on a document MacroRaptor had
+    flagged for all three. Measured on AgentTesla.doc, whose real flags
+    are all True.
+    """
+    from reporting.terminal_reporter.doc import doc_rows
+
+    row = _mraptor_row(doc_rows(_MRAPTOR_DOC["data"], 0))
+
+    assert row is not None, "MacroRaptor row missing"
+    assert "False" not in row[1], row[1]
+
+
+def test_macroraptor_execute_is_a_bad_severity():
+    """`mr.get("execute")` was always None, so EXECUTE never read as bad."""
+    from reporting.terminal_reporter.doc import doc_rows
+
+    row = _mraptor_row(doc_rows(_MRAPTOR_DOC["data"], 0))
+
+    assert row[2] == "bad"
+
+
+def test_macroraptor_without_execute_stays_a_warning():
+    from reporting.terminal_reporter.doc import doc_rows
+    import copy
+
+    data = copy.deepcopy(_MRAPTOR_DOC["data"])
+    data["macros"]["vba"]["mraptor_flags"]["execute_command"] = False
+
+    row = _mraptor_row(doc_rows(data, 0))
+
+    assert row[2] == "warn"
+
+
+def test_the_html_mirror_reads_the_same_keys():
+    """The two builders held the same three wrong key names."""
+    from reporting.html_reporter.doc import doc_indicators
+
+    rows = doc_indicators([_MRAPTOR_DOC])
+    row = next(r for r in rows if r["label"] == "MacroRaptor")
+
+    assert "False" not in row["value"], row["value"]
+    assert row["severity"] == "bad"
