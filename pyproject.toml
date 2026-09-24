@@ -57,4 +57,9 @@ include = ["cli*", "core*", "modules*", "reporting*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# The corpus scans that need the network or a two-minute capa run are
+# deselected by default; `-m corpus_slow` runs them on their own.
+addopts = "-q -m 'not corpus_slow'"
+markers = [
+    "corpus_slow: real scans with virustotal and capa_analysis enabled",
+]
