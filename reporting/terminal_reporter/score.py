@@ -57,8 +57,9 @@ def print_score_banner(
         body = Text(verdict, style="dim italic")
         for line in body.wrap(con, max(1, con.width - 2)):
             # Wrapping keeps the separator space at the fold. `rstrip`
-            # on a Text edits in place and returns None, so it cannot be
-            # chained the way the str method can.
+            # on a Text edits in place and returns None (rich 14.3.3), so
+            # it is called as a statement rather than chained the way the
+            # str method would be.
             line.rstrip()
             con.print(Text("  ") + line)
 
