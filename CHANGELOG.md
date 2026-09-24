@@ -11,12 +11,92 @@ Everything before it is a step toward that.
 | 0.5.1 | Comment passes 4 and 5, eleven defects fixed, three document evasion paths closed |
 | 0.5.2 | The archive_analysis defect sweep — twelve fixes, four archive evasion paths closed, the 227s intake stall |
 | 0.5.3 | The archive_analysis comment pass, batches 1–2 — four fixes, five ZIP header-differential evasions closed |
-| 0.5.4 | *(current)* Batches 3–4 — the RAR and 7z/CAB/ISO handlers, three more 7z fixes including a bomb-guard bypass |
+| 0.5.4 | Batches 3–4 — the RAR and 7z/CAB/ISO handlers, three more 7z fixes including a bomb-guard bypass |
+| 0.5.5 | *(current)* Batch 5 — archive_analysis complete; the OOXML costume bypass and the ADS extension blind spot closed |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.5 — 2026-09-24
+
+Batch 5 completes the `archive_analysis` comment pass: the indicator set and
+the orchestrator. Documenting them turned up the two most serious defects of
+the whole pass.
+
+### Fixed — `routing`
+
+- **A ZIP in an OOXML costume was analysed by nothing at all.** The module
+  defers a ZIP to `doc_analysis` when it looks like an Office package, and the
+  test was two forgeable name checks. Add `[Content_Types].xml` and a `word/`
+  entry to any ZIP and `archive_analysis` skipped it as a document while
+  `doc_analysis` declined it as not an Office document. Verified end to end:
+  both returned `skipped` and a PE sitting beside the two dummy parts was
+  examined by nothing. Three strings bought a clean report.
+
+  The fix rests on an asymmetry that had never been written down. This
+  predicate decides only whether `archive_analysis` *adds* its analysis; it
+  routes nothing away from `doc_analysis`, which is a separate pipeline entry
+  applying its own test. A false negative therefore costs a document a
+  redundant second analysis, while a false positive costs a payload all
+  analysis — so every condition now fails towards "analyse it", and a test
+  pins that against a real macro-bearing sample.
+
+  Three conditions were added, each measured against the 57 real OOXML
+  packages in the corpus. Every top-level component must be a package
+  component. Every part's extension must be on an allow-list of markup,
+  metadata and image types — a blocklist was tried first and could not be
+  completed, since naming the payload `word/payload` with no extension walked
+  straight through, and nothing macro-capable is listed because an
+  unreferenced `word/payload.xls` would defer, be ignored as unreferenced, and
+  still run when a user unpacked the ZIP. And `[Content_Types].xml` must open
+  as XML, read as a stream rather than with `zf.read()` — routing runs before
+  the bomb guard, so a whole-member read there would let a content-types part
+  that inflates to gigabytes exhaust memory before the tool had even decided
+  which module owned the file.
+
+  Corpus effect: 43 of 57 packages still defer, 14 now get archive analysis as
+  well — 13 of those carry an embedded `.rtf`, `.xls` or `.xlsx` and every one
+  is a malware sample using the embedded-object delivery shape. `doc_analysis`
+  still succeeds on **57 of 57**, so no macro analysis is lost.
+
+### Fixed — `indicators`
+
+- **The extension indicators never read the recovered raw name.** The path
+  indicators have always inspected both the sanitised member name and the
+  `raw_name` recovered from the NTFS ADS suffix; the extension and character
+  indicators did not, and that gap was the whole of CVE-2025-8088. In the
+  corpus sample `rarfile` reports a `.pdf` while the archive really drops a
+  `.lnk` two directories up, so `detect_dangerous_members` returned nothing
+  and an archive whose entire purpose is dropping a shortcut never raised
+  `dangerous_member` — costing the report its row and the scoring engine a
+  flag that `persistence_path` and `embedded_pe` both combine with. That
+  sample scored 9 on `path_traversal` alone; it now scores **18**.
+  `Crafted8088.rar` goes 9 → 15.
+
+  The entropy check needed one thing the others did not. `.suffix` and the
+  double-extension regex anchor to the end of the string, so a Windows-style
+  ADS path gives them the right answer on POSIX unaided. Entropy is an average
+  over the whole stem and `pathlib` does not split on backslashes here, so the
+  unnormalised stem of a traversal path is the entire string — measured at
+  4.728 against a 4.5 threshold, firing on the path rather than the payload,
+  whose real stem scores 3.322. Separators are normalised first.
+
+### Documented
+
+Comment passes over `indicators.py` and `__init__.py`, completing the package.
+The orchestrator's notes record why the phase order is the security property,
+why `extracted` cannot simply mean "did extraction run", and two gaps in
+archive-only recursion that are recorded rather than fixed: a nested OOXML
+container's macros go unread in that mode, and a nested PE is not carved as an
+SFX dropper.
+
+### Tests
+
+**837 → 868.** The OOXML fixtures are built byte by byte, including one that
+patches a central-directory compression method to prove the unsupported-method
+path really did escape before the fix.
 
 ## 0.5.4 — 2026-09-24
 
