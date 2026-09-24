@@ -5,6 +5,31 @@ This module knows the domain types (``ParsedLnk``, ``CommandAnalysis``);
 as ``onenote_analysis.indicators``, and for the same reason — it keeps
 the weights readable and lets the scoring engine be tested against
 literal flag sets with no parsing involved.
+
+Design notes
+------------
+The flag vocabulary is a **superset** of what ``scoring.py`` has rules
+for. Every command category is forwarded wholesale, so names like
+``lolbin_reference`` and ``overlay_extraction`` reach the flag set
+without a rule of their own. That is deliberate: a flag with no rule
+scores nothing but still lands in the report's indicator list, which
+keeps a new detection visible before it is weighted, and keeps adding a
+weight a one-line change in one file.
+
+Nothing here reads a threshold from config. Every constant is a
+published figure with a citation next to it, and pushing them into
+config.yaml would invite tuning against a single sample — the
+end-of-project calibration sweep is where they move, together, against
+the whole corpus.
+
+Two pairs are deliberately exclusive where it would be easy to make
+them additive. A shortcut with no TrackerDataBlock at all and one whose
+block has a blanked MachineID are different claims — absence is how a
+builder writes a file, blanking is a deliberate act on a file that was
+built normally — so they are an if/elif and score differently. The
+padding tiers work the same way: ``strong`` and the lesser tiers are
+mutually exclusive, because grading the same string twice would double
+a single observation.
 """
 
 from __future__ import annotations
@@ -34,7 +59,29 @@ def derive_flags(
     *,
     overlay_kind: str = "",
 ) -> frozenset[str]:
-    """Map one shortcut onto the flag vocabulary used by ``scoring.py``."""
+    """Map one shortcut onto the flag vocabulary used by ``scoring.py``.
+
+    Args:
+        parsed:       The parsed shortcut.
+        cmd:          Its command-line analysis; the target must already
+                      be resolved.
+        overlay_kind: What the carved overlay typed as, or ``""`` when
+                      there is no overlay. ``"unknown"`` is treated as
+                      no identification rather than as a type, so an
+                      unrecognised blob raises ``overlay_present`` but
+                      not ``overlay_executable``.
+
+    Returns:
+        A frozenset of flag names. Frozen because ``scoring.py`` tests
+        subset containment against it and must not be able to mutate the
+        caller's evidence.
+
+    The function is a flat sequence of independent checks by design.
+    Every condition reads only ``parsed`` and ``cmd``, never another
+    flag, so the flag set cannot depend on the order the checks run in
+    — which is what lets the scoring rules be written as combinations
+    without worrying about how a combination came to be.
+    """
     flags: set[str] = set()
 
     # --- what it runs ---------------------------------------------------
@@ -124,8 +171,27 @@ def _timestamps_fabricated(parsed: ParsedLnk) -> bool:
     Zero is spec-legal ("no time set") but an Explorer-created shortcut
     essentially always populates all three, so all-zero means a builder
     wrote the header. Three identical values to the 100-nanosecond tick
-    means one programmatic assignment. A write time before the creation
-    time is simply impossible.
+    means one programmatic assignment.
+
+    Both conditions describe states a filesystem does not produce. A
+    third once sat beside them — a write time earlier than the creation
+    time — on the reasoning that it is impossible. It is not: Windows
+    produces exactly that ordering every time a file is copied, since
+    the copy takes a fresh creation time and keeps the original's write
+    time. APT28.lnk in the corpus showed it, with creation and access at
+    the Windows 7 RTM date and a write time a month earlier, and was
+    flagged as fabricated on that basis alone.
+
+    Args:
+        parsed: The parsed shortcut.
+
+    Returns:
+        True if any of the three conditions holds.
+
+    The raw integers are compared rather than the rendered strings.
+    Rendering returns None for both a zero and an out-of-range value, so
+    comparing the strings would make "no time set" and "nonsense time"
+    indistinguishable — and they are different findings.
     """
     header = parsed.header
     times = (header.creation_time_raw, header.access_time_raw, header.write_time_raw)
@@ -133,9 +199,6 @@ def _timestamps_fabricated(parsed: ParsedLnk) -> bool:
     if all(t == 0 for t in times):
         return True
     if len(set(times)) == 1 and times[0] != 0:
-        return True
-    if header.write_time_raw and header.creation_time_raw \
-            and header.write_time_raw < header.creation_time_raw:
         return True
     return False
 
@@ -147,6 +210,27 @@ def _timestamp_sources_disagree(parsed: ParsedLnk) -> bool:
     builder that populates one rarely gets the other consistent. Compared
     at day resolution because DOS timestamps have 2-second granularity
     and carry no timezone, so anything finer would fire on real files.
+
+    Args:
+        parsed: The parsed shortcut.
+
+    Returns:
+        True when both sources exist and disagree on the date. Absence
+        of either is not a mismatch — plenty of legitimate shortcuts
+        carry only one.
+
+    Day resolution is generous and still leaves a structural false
+    positive that is larger than it first looks. DOS timestamps are
+    local time and FILETIMEs are UTC, so the two disagree for a window
+    each day equal to the host's UTC offset — not merely around
+    midnight. On a machine at UTC+9 every file written before 09:00
+    local time carries the previous UTC date.
+
+    Its real rate is unmeasured, because measuring it needs benign
+    shortcuts and there are none in the corpus. On the 30 malicious
+    samples it fires zero times, so it currently contributes nothing in
+    either direction. Both facts belong with the benign-control gap
+    recorded in the project notes; do not read the zero as accuracy.
     """
     header_write = parsed.header.write_time
     if not header_write:
