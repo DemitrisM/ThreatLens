@@ -382,7 +382,7 @@ which is why they score the lower rule alone.
 
 | Required flags (frozenset) | Weight | Reason |
 |---|---|---|
-| `zip_header_mismatch` | +10 | LFH/CD disagree — AV evasion trick |
+| `zip_header_mismatch` | +10 | Local header and central directory disagree on a name, either size, the compression method, or whether a data descriptor exists — AV evasion trick |
 | `sfx_dropper` | +10 | PE with archive payload in overlay |
 | `path_traversal` | +9 | ZipSlip / CVE-2025-8088 class |
 | `symlink_attack` | +9 | Symlink to /etc/, /root/, C:\Windows, etc. |
@@ -476,10 +476,26 @@ rather than inventing a fourth.
 | `vm_oui_mac` | 10 | Build NIC MAC belongs to VMware/VirtualBox/QEMU/Hyper-V |
 | `header_anomaly` | 10 | [MS-SHLLINK] MUST-violations |
 | `script_payload` | 9 | Script extension in the command line |
-| `timestamps_fabricated` | 8 | Zeroed, identical, or write-before-creation |
+| `timestamps_fabricated` | 8 | All three header FILETIMEs zeroed, or all three identical to the tick |
 | `many_arguments` | 6 | More than four tokens (Intezer heuristic) |
 | `args_padding_light` | 5 | 8–99 consecutive whitespace characters |
 | `lolbin_target` | 5 | **Deliberately low** — see below |
+
+**On `timestamps_fabricated`.** A third condition once sat beside the two
+listed — a write time earlier than the creation time, on the reasoning that it
+is impossible. It is not: Windows produces exactly that ordering every time a
+file is copied, since the copy takes a fresh creation time and keeps the
+original's write time. `APT28.lnk` in the corpus showed it, with creation and
+access at the Windows 7 RTM date and a write time a month earlier, and was
+flagged as fabricated on that basis alone. Removed in 0.5.6.
+
+The two that remain are strong signals rather than impossibilities, and the
+difference is worth keeping straight. All three stamps zero is spec-legal
+"not set" but is what a builder writes rather than what Explorer does. All
+three identical to the 100-nanosecond tick is one programmatic assignment —
+but a target created and never touched can legitimately show it, since NTFS
+last-access updates have been off by default since Vista. The flag is worth 8
+and reaches no verdict alone, which is the level of confidence it deserves.
 
 **Why `lolbin_target` alone is only worth 5.** The Windows Start Menu
 ships `Windows PowerShell.lnk`, whose target *is* `powershell.exe`. A
