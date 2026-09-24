@@ -17,6 +17,20 @@ Code    Meaning
 
 Without ``--fail-on`` a scan never exits 1, so adding these codes cannot
 silently change the meaning of an existing invocation.
+
+Design notes
+------------
+**A runtime error outranks a threat verdict.** ``triage`` exits 3 when any
+file failed to analyse, even when another file tripped ``--fail-on``,
+because 1 asserts that the run was complete and the answer is "threat". A
+partial run cannot make that claim, and a CI job that treats 1 as "quarantine
+this batch" would otherwise act on a directory it never finished reading.
+
+:func:`meets_threshold` is deliberately asymmetric about bad input. An
+unknown *risk_band* sorts to the lowest severity and returns False, since a
+malformed band arriving from a report must not manufacture a nonzero exit on
+its own; an unknown *fail_on* raises, because that value came from the caller
+and silently ignoring it would mean the gate they asked for never ran.
 """
 
 import click
