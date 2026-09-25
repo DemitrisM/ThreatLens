@@ -19,7 +19,8 @@
 
   ████░░░░░░░░░░░░░░░░░░  18/100  LOW
 
-  Low-risk file with auto-executing macro
+  Low-risk file with auto-executing macro, macro launching an OS command, embedded OLE object
+  stream, oleid HIGH-risk indicator
 
   FINDINGS
                                                                                                     
