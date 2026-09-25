@@ -74,6 +74,18 @@ DEFAULTS = {
     "log_level": "WARNING",
     "module_timeout_seconds": 60,
     "capa_timeout_seconds": 120,
+    # FLOSS gets its own budget rather than the generic one. 300s is
+    # measured, not copied: the slowest of the 30 corpus PEs emulated in
+    # 271.1s, so 300 covers all of them. It is also harmless on the
+    # standard profile, where `--only static` finishes in about a second —
+    # which is why there is no per-profile override and no floor logic
+    # fighting a value the user set deliberately.
+    "floss_timeout_seconds": 300,
+    # Emulation off by default. Measured over those 30 samples it costs
+    # 26x wall clock and produced zero suspicious-category matches; what it
+    # does buy is the +10 structural bonus on 13 of them. That is a cost
+    # decision, so it lives on the -p axis and `deep` turns it on.
+    "floss_emulation": False,
     # Mirrors _MODULE_REGISTRY in core/pipeline.py, in execution order.
     # Order matters: virustotal trails archive_analysis so it can look up
     # the hashes archive extraction surfaced.
@@ -353,6 +365,16 @@ def _validate(config: dict) -> None:
             "Invalid capa_timeout_seconds %r — falling back to 120", capa_timeout
         )
         config["capa_timeout_seconds"] = 120
+
+    # Same three-part guard again.
+    floss_timeout = config.get("floss_timeout_seconds", 300)
+    if not isinstance(floss_timeout, (int, float)) or isinstance(
+        floss_timeout, bool
+    ) or floss_timeout <= 0:
+        logger.warning(
+            "Invalid floss_timeout_seconds %r — falling back to 300", floss_timeout
+        )
+        config["floss_timeout_seconds"] = 300
 
     # ------------------------------------------------------------------
     # Step 3: rule_sources, the one structured setting.

@@ -17,7 +17,10 @@ def print_suspicious_strings(module_results: list[dict], detail_level: int) -> N
     if not str_result or str_result.get("status") != "success":
         return
 
-    matches = str_result.get("data", {}).get("suspicious_matches", [])
+    data = str_result.get("data", {}) or {}
+    _print_extraction_note(data, detail_level)
+
+    matches = data.get("suspicious_matches", [])
     if not matches:
         return
 
@@ -41,6 +44,71 @@ def print_suspicious_strings(module_results: list[dict], detail_level: int) -> N
 
     if remaining > 0:
         console.print(f"  [dim](+{remaining} more — use -v to show all)[/dim]")
+
+
+def _print_extraction_note(data: dict, detail_level: int) -> None:
+    """Say how the strings were obtained, when that changes their meaning.
+
+    Args:
+        data:         ``string_analysis`` module data.
+        detail_level: 0 prints only what is load-bearing; 1 and above
+                      always name the extractor.
+
+    Returns:
+        None, and prints nothing for the common quiet case — a clean file
+        extracted with ``--only static`` has nothing to say, and a line on
+        every scan announcing that nothing happened is noise.
+
+    Two cases are printed regardless of detail level:
+
+    * A **downgraded** run. If emulation timed out and the retry fell back
+      to static strings, the report shows no decoded or stack strings —
+      which reads as "this sample does not obfuscate its strings" when
+      what actually happened is that ThreatLens stopped looking. That is a
+      skip rendering as a finding, the same defect class as the lnk and
+      onenote size-cap bypasses.
+    * **Hidden strings that scored.** Decoded, stack and tight counts earn
+      the +10 obfuscation bonus, so the report has to show the evidence
+      the score was built on.
+
+    No colour literals here: ``[dim]`` and ``[warn]`` are a weight and a
+    palette token, per design rule 8.
+    """
+    if data.get("source") != "floss":
+        return
+
+    hidden = sum(
+        data.get(key, 0) or 0
+        for key in ("floss_decoded_strings", "floss_stack_strings",
+                    "floss_tight_strings")
+    )
+    timed_out = bool(data.get("floss_emulation_timed_out"))
+    if not (hidden or timed_out or detail_level >= 1):
+        return
+
+    if timed_out:
+        console.print()
+        console.print(
+            "  [warn]FLOSS emulation timed out — static strings only[/warn]"
+        )
+        return
+
+    parts = [
+        f"{data.get(key, 0)} {label}"
+        for key, label in (("floss_decoded_strings", "decoded"),
+                           ("floss_stack_strings", "stack"),
+                           ("floss_tight_strings", "tight"))
+        if data.get(key, 0)
+    ]
+    console.print()
+    if parts:
+        console.print(
+            f"  [dim]FLOSS recovered hidden strings: {', '.join(parts)}[/dim]"
+        )
+    else:
+        mode = data.get("floss_mode", "static")
+        hint = " — use -p deep to emulate" if mode == "static" else ""
+        console.print(f"  [dim]Strings extracted by FLOSS ({mode}){hint}[/dim]")
 
 
 def print_capabilities(module_results: list[dict], detail_level: int) -> None:
