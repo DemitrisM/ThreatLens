@@ -5,6 +5,30 @@ built a 2-column table from ``(label, value, severity)`` tuples, while
 ``archive.py`` and ``onenote.py`` baked rich markup into hand-space-padded
 strings inside a ``Panel`` — labels padded to column 17, and to 19 in two
 OneNote rows. Everything now flows through :func:`render_indicators`.
+
+Design notes
+------------
+Every primitive here takes an optional ``console`` and falls back to the
+context-local proxy from ``_common``. That is what lets a test render to a
+pinned console without threading a parameter through all nine section
+modules, and why none of them holds a ``Console`` of its own.
+
+Two things are rendered *outside* a bordered table on purpose, and both
+were defects first. A SHA256 is 64 characters and box borders plus cell
+padding cost six or more columns, so a boxed hash must break mid-string at
+80 columns — which defeats the double-click copy that is the only reason
+to print one; :func:`render_hash_list` is flat for that reason, guarded at
+66/80/100/120 columns by ``tests/test_report_width.py``. The VirusTotal
+permalink lost the same argument in a cell with ``overflow="fold"`` and now
+prints below its table.
+
+The value column here keeps ``overflow="fold"`` deliberately: an indicator
+value is prose or a short token, and folding is right for it. It is only
+wrong for a string whose whole purpose is to be copied in one piece.
+
+Severity is a closed set of three, not a free string, because
+:func:`render_indicators` looks it up as a palette token — design rule 8
+means a typo would render as a literal ``[typo]`` tag rather than fail.
 """
 
 from typing import Literal, NamedTuple
@@ -173,6 +197,21 @@ def truncate_reason(reason: str, cap: int) -> str:
 def score_bar(score: int, band: str, *, width: int = 22) -> str:
     """A filled/empty bar for a 0-100 score, coloured by risk band.
 
+    Args:
+        score: 0-100. Clamped rather than trusted: the pipeline clamps
+               once after summing, but this also renders a triage row and
+               a compare column, and a bar that overruns its own width
+               would corrupt the line.
+        band:  Risk band name, used as a palette token once lowercased.
+               An unknown band falls back to :data:`theme.NEUTRAL`, which
+               is the terminal's own foreground rather than a hue that
+               would imply a severity nobody computed.
+        width: Cells in the bar, not characters of score.
+
+    Returns:
+        Rich markup, not plain text — the caller prints it, it does not
+        print itself.
+
     The score was a text chip before this, so 12 and 98 rendered
     identically except in hue — unreadable at a glance.
     """
@@ -192,6 +231,20 @@ _STATUS_GLYPHS = {
 
 def module_strip(module_results: list[dict]) -> str:
     """One-line summary of which modules ran.
+
+    Args:
+        module_results: The pipeline's per-module results, in execution
+                        order. The glyph order follows it, so the strip
+                        doubles as a reading of where a scan spent itself.
+
+    Returns:
+        Rich markup, or ``""`` for an empty list so the caller prints
+        nothing rather than a bare label with no glyphs after it.
+
+    A status this function has never heard of counts as an error rather
+    than being dropped. Silently ignoring it would shorten the strip and
+    make a module that returned something malformed indistinguishable
+    from one that never ran.
 
     Replaces a block of per-module "Not applicable" rows — the RedLine
     baseline spent six of its 116 lines on them.
@@ -220,7 +273,25 @@ def render_indicators(
     always_show: frozenset[str] = frozenset(),
     console: Console | None = None,
 ) -> None:
-    """Render a severity-ranked 2-column indicator table."""
+    """Render a severity-ranked 2-column indicator table.
+
+    Args:
+        title:        Section heading, printed above the table.
+        rows:         Indicators in the order the section built them.
+                      Source order is preserved; only filtering removes
+                      rows, never reordering.
+        detail_level: 0 hides ``info`` rows when anything louder fired,
+                      1 and above show everything. See :func:`filter_rows`.
+        always_show:  Labels exempt from that filter — the whitelist rows
+                      (``Imphash``, ``Compiled language``) that are quiet
+                      by nature but wanted even in a noisy report.
+        console:      Target console; the context-local one when omitted.
+
+    Returns:
+        None. Nothing is printed at all when every row is filtered out, so
+        a section with no surviving indicators leaves no empty heading
+        behind.
+    """
     con = console or default_console
     kept = filter_rows(rows, detail_level, always_show=always_show)
     if not kept:
@@ -253,6 +324,22 @@ def render_hash_list(
     console: Console | None = None,
 ) -> None:
     """Render ``(name, meta, sha256)`` triples, each hash on its own line.
+
+    Args:
+        title:   Section heading, printed above the entries.
+        entries: ``(name, meta, sha256)`` per row — what it is, a dim
+                 qualifier such as a size or an offset, and the digest. An
+                 empty ``sha`` prints the entry without a hash line rather
+                 than an empty one, since a member can be listed from a
+                 central directory without ever being read.
+        limit:   Rows to show; ``None`` shows all. The count of what was
+                 dropped is printed through :func:`more_hint`, because a
+                 truncation that does not announce itself reads as a
+                 complete list.
+        console: Target console; the context-local one when omitted.
+
+    Returns:
+        None, and prints nothing at all for an empty list.
 
     Flat rather than boxed, deliberately. A SHA256 is 64 characters; box
     borders and cell padding consume 6 or more columns, so at an 80-column

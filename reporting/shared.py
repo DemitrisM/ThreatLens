@@ -4,6 +4,43 @@ Kept minimal on purpose — only formatting helpers and the verdict
 sentence builder live here.  Rich-specific constants (colour maps,
 the ``Console`` instance) stay inside the terminal package; HTML/CSS
 classes stay inside the HTML package.
+
+Design notes
+------------
+:func:`build_verdict` is the only place the two reporters are guaranteed
+to agree on what a file *is*. Everything else they share is formatting,
+so a divergence there is cosmetic; a divergence here would mean the
+terminal and the HTML report named different threats for one scan.
+
+Three properties hold it together, and each replaced a defect:
+
+* **A module that scored is always narrated.** Design rule 1 makes every
+  module return a human-readable ``reason``, so a blank sentence under a
+  non-zero score never means "nothing to say" — only that no branch
+  recognised the shape. Before the fallback existed, 23 of 311 corpus
+  samples scored above zero and rendered no verdict at all, including
+  eleven Formbook/RemcosRAT ``.docx`` and CVE-2023-36884.docx.
+* **Weight decides what leads, not module order.** The sentence lists
+  four indicators, so what wins those slots matters more than what is in
+  the list. ``unsigned binary`` fires for every unsigned PE in existence
+  and used to take the first slot on the RedLine baseline, ahead of the
+  .NET stealer strings that identified it.
+* **Order is reproducible.** The sort is stable and every collection fed
+  into it is ordered, so one file always produces one sentence. An
+  earlier version iterated a ``set`` of flags: five ``PYTHONHASHSEED``
+  values gave five sentences for one document, each hiding a different
+  finding behind ``(+N more)``.
+
+The branches read whatever their module actually publishes, which is not
+always the tidiest field. Three read a raw sweep or a flag list in
+preference to a parsed structure, because the optional parser behind the
+tidy field — peepdf, oleid — is the part that fails on malformed input,
+and malicious files are malformed.
+
+``sanitise_secrets`` lives here rather than in either reporter because
+``-vv`` prints raw module data to the terminal and the HTML report
+embeds it in a collapsible block. Two copies of a credential filter is
+one copy that can be forgotten.
 """
 
 import re
@@ -17,12 +54,25 @@ SECRET_KEYS: frozenset[str] = frozenset({"api_key", "virustotal_api_key"})
 def sanitise_secrets(obj):
     """Recursively drop credential keys from a nested structure.
 
+    Args:
+        obj: Any JSON-shaped value. Dicts and sequences are walked;
+             anything else is returned as-is.
+
+    Returns:
+        A new structure with every :data:`SECRET_KEYS` entry removed at
+        every depth. The input is never mutated — a reporter must not
+        change the results a later reporter will read, and ``scan -f json
+        -o`` runs two of them over the same dict.
+
+    A tuple comes back as a list. That is a serialisation change rather
+    than a loss: the destination is JSON or a rich table, neither of
+    which distinguishes them, and preserving the type would mean
+    rebuilding namedtuples this cannot reconstruct.
+
     The strip used to apply only to the top level of a module's ``data``
     dict, so ``{"request": {"api_key": ...}}`` survived into the report.
     Terminal ``-vv`` now prints raw module data, so every reporter routes
     through this instead.
-
-    Returns a new structure; the input is never mutated.
     """
     if isinstance(obj, dict):
         return {
@@ -35,6 +85,13 @@ def sanitise_secrets(obj):
     return obj
 
 
+#: IOC type -> ``(display label, CSS class suffix)``, for the HTML report.
+#:
+#: The labels are the same six strings as ``theme.IOC_TYPE_LABELS``, and
+#: the second element is the key repeated — so this whole table is
+#: derivable from that one. It stays separate only because the HTML
+#: reporter wants the pair, and ``tests/test_theme.py`` pins the two into
+#: agreement so they cannot drift the way the five colour maps did.
 IOC_LABELS: dict[str, tuple[str, str]] = {
     "ipv4":         ("IP Address",   "ipv4"),
     "url":          ("URL",          "url"),
@@ -46,7 +103,24 @@ IOC_LABELS: dict[str, tuple[str, str]] = {
 
 
 def human_size(nbytes: int | float | None) -> str:
-    """Format byte count as a human-readable string (1.5 MiB, etc.)."""
+    """Format byte count as a human-readable string (1.5 MiB, etc.).
+
+    Binary units, not decimal: the sizes here come from archive members
+    and file stats, which every other tool an analyst will cross-check
+    against reports the same way.
+
+    ``None`` reads as zero rather than raising. The case is a key that is
+    *present and null*, not a missing one — a missing key raises before
+    this is ever called. Module data round-trips through JSON, where an
+    absent size is ``null``, and ``web.py`` reaches one of these by
+    subscript with no default. Six other call sites already write
+    ``or 0`` at the call, which is the callers agreeing a size can be
+    absent.
+
+    So the annotation said ``int | float`` while the body guarded with
+    ``nbytes or 0``: either the guard was dead or the signature was
+    wrong. It was the signature.
+    """
     n = float(nbytes or 0)
     for unit in ("B", "KiB", "MiB", "GiB"):
         if n < 1024:
@@ -55,11 +129,21 @@ def human_size(nbytes: int | float | None) -> str:
     return f"{n:.1f} TiB"
 
 
-# Indicator weights, highest first. The sentence lists only four
-# indicators, so what wins those slots matters: "unsigned binary" fires for
-# every unsigned PE in existence and used to take the first slot on the
-# RedLine baseline, ahead of the .NET stealer strings that actually
-# identified it.
+# ── Indicator weights, highest first ───────────────────────────────────
+#
+# The sentence lists only four indicators, so what wins those slots
+# matters more than what is in the list: "unsigned binary" fires for every
+# unsigned PE in existence and used to take the first slot on the RedLine
+# baseline, ahead of the .NET stealer strings that actually identified it.
+#
+# These rank indicators against each other; they are not the scoring
+# engine's weights and must not be confused with them. A module's
+# score_delta decides the band, this decides the wording. The two can
+# legitimately disagree — a YARA hit worth few points still leads the
+# sentence, because a named rule tells an analyst more than a number.
+#
+# The ladder is semantic, so a new indicator picks the rung that describes
+# it rather than a number that happens to sort correctly.
 W_VT = 100
 W_YARA = 90
 W_CAPA_SEVERE = 80
@@ -209,6 +293,23 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
     This is the single source of truth shared by the terminal and HTML
     reporters so both outputs surface the same sentence.
 
+    Args:
+        module_results: Per-module results from the pipeline, in execution
+                        order. Only ``success`` results with a non-zero
+                        ``score_delta`` are read: a module that scored
+                        nothing has no opinion, and one that errored has
+                        no findings to report even if it left data behind.
+        scoring:        The pipeline's scoring dict. Only ``risk_band`` is
+                        used, and only to choose the opening words — the
+                        indicators themselves are derived from the module
+                        data, so the band cannot talk the sentence into
+                        naming something no module found.
+
+    Returns:
+        One sentence, or ``""`` when no module scored. Both callers render
+        nothing for an empty string, and the terminal layout depends on
+        that: an empty line would leave a gap under the score bar.
+
     Indicators carry a weight and are sorted before the four-item slice, so
     the strongest signal leads regardless of module execution order.
     """
@@ -217,6 +318,13 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
     def add(weight: int, text: str) -> None:
         indicators.append((weight, text))
 
+    # ── Per-module dispatch ─────────────────────────────────────────────
+    # One branch per module, reading that module's own published shape.
+    # Duplicate wording between branches is fine and expected — two
+    # modules can legitimately find the same thing, and the dedupe below
+    # collapses them into one slot rather than letting a document that is
+    # both an archive and an OOXML package say "embedded executable"
+    # twice.
     for result in module_results:
         if result.get("status") != "success" or result.get("score_delta", 0) == 0:
             continue
@@ -519,8 +627,12 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
             if data.get("machine_id"):
                 add(W_WEAK, f"built on host '{data['machine_id']}'")
 
-    # Strongest signal first, then dedupe. Sorting is stable, so equal
-    # weights keep module execution order.
+    # ── Rank, then dedupe ───────────────────────────────────────────────
+    # Sort before dedupe, not after: deduping first would keep whichever
+    # copy a module happened to emit earliest and could drop the
+    # higher-weighted spelling of the same finding. Sorting is stable, so
+    # equal weights keep module execution order — which is why every
+    # collection feeding `add` is itself ordered.
     indicators.sort(key=lambda pair: pair[0], reverse=True)
     seen: set[str] = set()
     unique: list[str] = []
@@ -556,6 +668,11 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
     if not unique:
         return ""
 
+    # ── Assemble ────────────────────────────────────────────────────────
+    # Three joins rather than one, because "a, b" reads as a truncated
+    # list where "a and b" reads as a complete one, and the whole value of
+    # this line is that it can be read at a glance. Past four the count is
+    # printed instead: the cap is what makes the weights matter.
     if len(unique) == 1:
         body = unique[0]
     elif len(unique) == 2:
@@ -565,6 +682,9 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
         if len(unique) > 4:
             body += f" (+{len(unique) - 4} more)"
 
+    # The prefix is band vocabulary, not file vocabulary. It used to read
+    # "Suspicious binary", which is wrong on a .docx — and doc, pdf and
+    # html findings have reached this sentence since Pass 4.
     band = scoring.get("risk_band", "LOW")
     prefix = {
         "CRITICAL": "High-confidence threat",

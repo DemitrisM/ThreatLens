@@ -318,3 +318,22 @@ def test_an_unknown_ioc_type_renders_neutrally():
 
     assert label == "no_such_type"
     assert style == NEUTRAL
+
+
+def test_the_two_ioc_label_tables_agree():
+    """``shared.IOC_LABELS`` and ``theme.IOC_TYPE_LABELS`` hold the same six
+    labels for the HTML and terminal reports respectively.
+
+    One table would be better and the second is fully derivable from the
+    first — ``IOC_LABELS[k] == (IOC_TYPE_LABELS[k], k)`` for every key. It
+    is pinned rather than merged because merging is a code change and this
+    is what the merge would have to preserve; until then, drift is what
+    the five separate colour maps taught this package to prevent.
+    """
+    from reporting.shared import IOC_LABELS
+    from reporting.theme import IOC_TYPE_LABELS
+
+    assert IOC_LABELS.keys() == IOC_TYPE_LABELS.keys()
+    for key, (label, css_key) in IOC_LABELS.items():
+        assert label == IOC_TYPE_LABELS[key], f"label drift for {key!r}"
+        assert css_key == key, f"{key!r} carries a CSS suffix that is not its key"
