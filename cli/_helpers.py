@@ -52,6 +52,19 @@ _QUICK_MODULES = ["file_intake", "pe_analysis", "lnk_analysis"]
 
 _DEEP_OVERRIDES = {
     "capa_timeout_seconds": 180,
+    # FLOSS emulation — the one part of string extraction that is not
+    # nearly free. Measured over the 30 corpus PEs: 30.0 minutes against
+    # 69 seconds for static-only extraction, and it produced no suspicious
+    # -category match on any of them. What it buys is the +10 structural
+    # bonus, which fires on 13 of the 30: a binary that builds its strings
+    # on the stack has paid to hide them whether or not they match a
+    # pattern, and no static extractor can see that. A 26x cost for one
+    # signal is exactly what `deep` is for.
+    #
+    # No timeout override beside it: `floss_timeout_seconds` defaults to
+    # 300, which already covers the slowest sample measured (271.1s), and
+    # costs nothing on the profiles that do not emulate.
+    "floss_emulation": True,
 }
 
 
