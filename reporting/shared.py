@@ -6,6 +6,8 @@ the ``Console`` instance) stay inside the terminal package; HTML/CSS
 classes stay inside the HTML package.
 """
 
+import re
+
 
 #: Keys whose values are credentials and must never reach a report.
 #: Matched case-insensitively at every depth.
@@ -68,7 +70,136 @@ W_CAPA = 55
 W_NETWORK = 50
 W_STRUCTURE = 40
 W_CONTAINER = 35
+#: A corroborating detail. Above W_WEAK, which is reserved for signals that
+#: fire across a large benign population, and below a structural finding.
+#: A hardcoded exfil address or a Run-key string is not proof of anything on
+#: its own, but it is not "most software is unsigned" either.
+W_HINT = 25
 W_WEAK = 10
+
+
+# ── doc_analysis: scored flag → (weight, wording) ──────────────────────
+#
+# The archive, onenote and lnk branches all read ``indicator_flags``; the
+# doc branch was the only container module that did not, and doc_analysis
+# publishes 28 of them. Eleven corpus .docx scored +12 for an altChunk and
+# rendered a blank verdict, because the branch read
+# ``template_injection["ooxml"]`` while an altChunk lands in
+# ``template_injection["alt_chunks"]``.
+#
+# Keyed off the flag rather than the parsed structure on purpose: the flag
+# is what the scoring rules pay for, so a test can walk COMBO_RULES and
+# assert this table covers it. The parsed structures cannot be walked that
+# way, which is how the gap survived a pass that was explicitly about
+# verdict coverage.
+_DOC_FLAG_INDICATORS: dict[str, tuple[int, str]] = {
+    "altchunk": (W_EXPLOIT, "altChunk import (template-injection vector)"),
+    "altchunk_absolute_path": (W_STRUCTURE,
+                               "altChunk target resolving outside the document"),
+    "template_inject_high": (W_EXPLOIT, "external template injection"),
+    "template_inject_non_ms": (W_EXPLOIT,
+                               "template injection to a non-Microsoft host"),
+    "equation_editor_ole": (W_EXPLOIT, "Equation Editor exploit object"),
+    "shell_explorer": (W_EXPLOIT,
+                       "embedded WebBrowser control loading remote content"),
+    "htmlfile": (W_EXPLOIT, "htmlfile ActiveX script-execution object"),
+    "packager_shell": (W_EXPLOIT,
+                       "Packager Shell object dropping a bundled file"),
+    "rtf_objupdate": (W_EXPLOIT, r"\objupdate forcing object load on open"),
+    "ole_package_exec_ext": (W_EXPLOIT, "OLE package dropping an executable"),
+    "url_downloader_keyword": (W_NETWORK, "macro downloading a remote payload"),
+    "xlm_url": (W_NETWORK, "XLM macro reaching a URL"),
+    "xlm_exec_call": (W_EXPLOIT, "XLM macro calling EXEC/CALL"),
+    "auto_exec": (W_EXPLOIT, "auto-executing macro"),
+    "shell_keyword": (W_EXPLOIT, "macro launching an OS command"),
+    "vba_stomping": (W_EXPLOIT, "VBA stomping"),
+    "vba_present": (W_STRUCTURE, "VBA macros"),
+    "heavy_vba_obfuscation": (W_STRUCTURE, "heavily obfuscated VBA"),
+    "dangerous_embedded_file": (W_CONTAINER,
+                                "dangerous file extension inside the container"),
+    "ole_package": (W_CONTAINER, "OLE package embedding a file"),
+    "ole_object_in_container": (W_HINT, "embedded OLE object stream"),
+    "oleid_high_risk": (W_HINT, "oleid HIGH-risk indicator"),
+    "encryption_only": (W_HINT,
+                        "password-protected document with no macros"),
+    "decompression_bomb": (W_STRUCTURE, "decompression bomb inside the container"),
+    "rels_oversize": (W_EXPLOIT,
+                      "relationship part padded past the parse cap"),
+    "rels_size_mismatch": (W_STRUCTURE,
+                           "relationship part understating its own size"),
+}
+
+#: Scored doc flags deliberately left out of the sentence, and why. The
+#: completeness test reads this, so leaving one out is a decision that has
+#: to be written down rather than an omission that goes unnoticed.
+#:
+#: Both are parse-failure signals. They say ThreatLens could not read the
+#: file cleanly, which is worth a point and worth a row in the module's own
+#: table, but it is not a finding about the sample — and a four-slot
+#: sentence that spends a slot saying "parsing was untidy" has spent it
+#: badly.
+_VERDICT_EXEMPT_DOC_FLAGS: frozenset[str] = frozenset({
+    "malformed_openxml",
+    "rtf_parse_failed",
+})
+
+# ── string_analysis: severity tier → weight ────────────────────────────
+#
+# The branch used to substring-match category names for credentials,
+# base64 and the stealer/RAT family words, which left eight scored ``high``
+# categories unnarrated — Anti-debug API reference, Code injection API
+# string, Encoded command payload, LOLBin reference, PowerShell
+# download/exec, PowerShell evasion flag, VM/sandbox check, Analysis tool
+# name. The module tags every match with a severity, and that tier is the
+# same field its own scoring reads, so it cannot drift from what scored.
+#
+# ``low`` is absent deliberately, not forgotten: it scores zero points by
+# design, and "Crypto algorithm reference" alone fires on 60 of the 311
+# corpus samples — any binary that speaks TLS.
+_STRING_SEVERITY_WEIGHTS: dict[str, int] = {
+    "critical": W_STEALER,
+    "high": W_STRUCTURE,
+    "medium": W_HINT,
+}
+
+#: Social-engineering patterns are the other half of ClickFix. The copied
+#: command is built at runtime — ClickFix2 carries the template literal
+#: ``Video call link: ${url}`` — so a static page frequently has the
+#: clipboard write and the paste lure without a LOLBin yet in the text.
+#: Requiring the LOLBin required the one part that is not there, and
+#: ClickFix2/3 and unknown.html scored +15 to +30 in silence.
+_CLICKFIX_LURE = "clipboard paste lure (ClickFix)"
+
+
+def _first_clause(reason: str) -> str:
+    """The leading finding of a module reason, without its score.
+
+    Modules join findings with ``"; "`` and several append their own
+    ``(+N)`` weight to each one. That parenthetical is correct in the
+    FINDINGS table, where a column of deltas is the point, and wrong in a
+    sentence, where it reads as part of the prose.
+    """
+    head = reason.split(_REASON_SEP, 1)[0].strip()
+    head = _SCORE_SUFFIX.sub("", head).strip()
+    if not head:
+        return ""
+    # The clause follows "… file with ", so a leading capital reads as a
+    # sentence starting mid-sentence. Only fold it when the first word is
+    # ordinary prose: modules open reasons with "RTF uses \objupdate",
+    # "VBA stomping detected" and "AutoExec + Shell call", and lowercasing
+    # the first letter of those gives "rTF", "vBA" and "autoExec".
+    first = head.split(" ", 1)[0]
+    if first[1:].islower() or first[1:] == "":
+        return head[:1].lower() + head[1:]
+    return head
+
+
+#: How modules join the findings inside one ``reason``. Shared with
+#: ``terminal_reporter._render``, which cuts on the same boundary.
+_REASON_SEP = "; "
+
+#: A trailing ``(+6)`` or ``(+12)`` weight appended to a single finding.
+_SCORE_SUFFIX = re.compile(r"\s*\(\+\d+\)\s*$")
 
 
 def build_verdict(module_results: list[dict], scoring: dict) -> str:
@@ -140,11 +271,41 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
                     add(W_CAPA, "privilege escalation")
 
         elif module == "ioc_extractor":
+            # Every one of these scores in ioc_extractor.run(); only the
+            # first two were read. CVE-2026-21509.doc scored +10 for a
+            # domain and an address and rendered a blank verdict line.
+            # windows_path is deliberately absent — it is extracted and
+            # reported but never scored, so narrating it would spend a slot
+            # on a category the scoring engine itself ignores.
             iocs = data.get("iocs", {}) or {}
             if iocs.get("url") or iocs.get("ipv4"):
                 add(W_NETWORK, "network IOC indicators")
+            if iocs.get("domain"):
+                add(W_NETWORK, "suspicious domain references")
+            if iocs.get("registry_key"):
+                add(W_HINT, "registry key references")
+            if iocs.get("email"):
+                add(W_HINT, "email addresses")
 
         elif module == "virustotal":
+            # A payload flagged inside a container VirusTotal has never
+            # seen. _lookup_embedded_hashes adds its delta onto this same
+            # result, including on the 404 path where the primary starts
+            # at -5 and `found` is False — so gating the whole branch on
+            # `found` hid the only thing VirusTotal did know. This is the
+            # shape the archive forward-lookup exists for.
+            worst = None
+            for inner in data.get("embedded_hash_lookups") or []:
+                if not (inner or {}).get("found"):
+                    continue
+                hits = (inner.get("malicious") or 0) + (inner.get("suspicious") or 0)
+                if hits and (worst is None or hits > worst[0]):
+                    worst = (hits, inner.get("name") or "an embedded payload")
+            if worst:
+                hits, name = worst
+                add(W_VT if hits > 10 else W_NETWORK,
+                    f"VirusTotal: {hits} engines flagged {name}")
+
             if data.get("found"):
                 detections = (data.get("malicious", 0) or 0) + (
                     data.get("suspicious", 0) or 0
@@ -160,22 +321,53 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
                     add(W_NETWORK, "low VirusTotal detections")
 
         elif module == "string_analysis":
-            # Family categories are collapsed into one indicator. RedLine
-            # matches both ".NET stealer rule class" and ".NET stealer
+            # Keyed on the severity the module itself scored by, not on
+            # substrings of the category name. The substring map covered
+            # credentials, base64 and the family words and missed eight
+            # scored `high` categories outright — anti-debug, code
+            # injection, encoded command payload, LOLBin, PowerShell
+            # download/exec, PowerShell evasion, VM/sandbox check,
+            # analysis tool name.
+            #
+            # One indicator per tier, not per category. RedLine matches
+            # both ".NET stealer rule class" and ".NET stealer
             # scan-routine", which as separate entries ate two of the four
             # slots to say the same thing twice.
-            families: list[str] = []
-            for cat in data.get("suspicious_categories", []) or []:
-                cat_l = cat.lower()
-                if "password" in cat_l or "credential" in cat_l:
-                    add(W_STEALER, "credential references")
-                elif "base64" in cat_l:
-                    add(W_STRUCTURE, "encoded data")
-                elif any(k in cat_l for k in ("stealer", "rat", "c2", "wallet")):
-                    families.append(cat)
-            if families:
-                extra = f" (+{len(families) - 1})" if len(families) > 1 else ""
-                add(W_STEALER, f"{families[0]} strings{extra}")
+            by_tier: dict[str, list[str]] = {}
+            for match in data.get("suspicious_matches", []) or []:
+                tier = (match or {}).get("severity")
+                category = (match or {}).get("category")
+                if tier not in _STRING_SEVERITY_WEIGHTS or not category:
+                    continue
+                bucket = by_tier.setdefault(tier, [])
+                if category not in bucket:
+                    bucket.append(category)
+            for tier, weight in _STRING_SEVERITY_WEIGHTS.items():
+                # Sorted, not in match order: suspicious_matches is in the
+                # order patterns hit the string table, so which of a tier's
+                # categories leads would otherwise depend on where in the
+                # binary a string happened to sit.
+                names = sorted(by_tier.get(tier) or [])
+                if not names:
+                    continue
+                extra = f" (+{len(names) - 1})" if len(names) > 1 else ""
+                add(weight, f"{names[0]} strings{extra}")
+
+            # A flat +10 for strings the binary builds on the stack or
+            # decodes at runtime — scored on their existence rather than
+            # their content, and the module's whole argument for carrying
+            # the FLOSS dependency. Invisible to the corpus sweep that
+            # found the other gaps here, because bin/floss is not installed
+            # on this machine and the keys are absent without it.
+            # Truthiness, not a sum. Both keys are counts today
+            # (string_analysis.py sets them from len()), so adding them
+            # works — but nothing here needs the total, and a shape change
+            # upstream would turn a sum into a TypeError inside a reporter,
+            # which design rule 2 says must never happen. Raised in review
+            # as a live crash; it is not one, and the check is written this
+            # way so the question cannot come back.
+            if data.get("floss_decoded_strings") or data.get("floss_stack_strings"):
+                add(W_STRUCTURE, "runtime-decoded or stack-built strings")
 
         elif module == "yara_scanner":
             matches = data.get("matches") or []
@@ -207,13 +399,48 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
             if any((p or {}).get("exec_ext") for p in ole.get("package_objects") or []):
                 add(W_EXPLOIT, "OLE package dropping an executable")
 
+            # The flags, which is what doc_analysis actually scores, and
+            # what archive/onenote/lnk have always been read through. The
+            # parsed structures above stay: they carry detail the flags do
+            # not (which macro auto-executes, which OLE class), and the
+            # dedupe below collapses the overlap.
+            flags = set(data.get("indicator_flags") or [])
+            if "auto_exec" in flags:
+                # "auto-executing macro" already says macros are present.
+                # The structured branch above spells this as an elif; the
+                # flag table has no ordering of its own to express it.
+                flags.discard("vba_present")
+            # Sorted by weight, then by name. Iterating the set directly
+            # made the sentence non-reproducible: the sort below is stable,
+            # so equal weights keep insertion order, and insertion order was
+            # set-iteration order — measured across five PYTHONHASHSEED
+            # values, one document produced five different sentences and hid
+            # a different finding behind "(+1 more)" each time.
+            mapped = [
+                _DOC_FLAG_INDICATORS[f] for f in flags if f in _DOC_FLAG_INDICATORS
+            ]
+            for weight, text in sorted(mapped, key=lambda m: (-m[0], m[1])):
+                add(weight, text)
+
         elif module == "pdf_analysis":
             hits = data.get("raw_keyword_hits") or {}
             if data.get("header_mismatch"):
                 add(W_EXPLOIT, "content is not a PDF despite the extension")
             if any(hits.get(k) for k in ("/OpenAction", "/AA", "/Launch")):
                 add(W_EXPLOIT, "PDF auto-action")
-            if data.get("has_javascript"):
+            # has_javascript is peepdf's answer, and peepdf is optional and
+            # fails on malformed files — which malicious PDFs are. On
+            # pdf-zeroday.pdf it reported parse errors and False while the
+            # raw sweep held /JavaScript and /JS, and the file scored +20
+            # with a blank verdict. The `encrypted: false` defect fixed in
+            # 0.5.x was this same misplaced trust.
+            #
+            # /EmbeddedFile stays singular on the next line. The plural is
+            # the name tree, and reporting an attachment from the tree alone
+            # is exactly the false positive pdf_analysis had removed.
+            if data.get("has_javascript") or any(
+                hits.get(k) for k in ("/JavaScript", "/JS")
+            ):
                 add(W_STRUCTURE, "embedded JavaScript")
             if hits.get("/EmbeddedFile"):
                 add(W_STEALER, "embedded file")
@@ -229,6 +456,8 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
                 )
             if data.get("clipboard_contains_lolbin"):
                 add(W_EXPLOIT, "clipboard injection (ClickFix)")
+            elif data.get("has_clipboard_write") and data.get("social_eng_patterns"):
+                add(W_EXPLOIT, _CLICKFIX_LURE)
             if len(data.get("obfuscation_indicators") or []) >= 2:
                 add(W_STRUCTURE, "obfuscated script")
             if data.get("num_suspicious_external_scripts"):
@@ -299,6 +528,30 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
         if ind not in seen:
             seen.add(ind)
             unique.append(ind)
+
+    # ── Floor: a module that scored must always be narrated ─────────────
+    # Design rule 1 makes every module return a `reason` defined as "a
+    # human-readable explanation of score contribution", so a scoring
+    # module can always be described — a blank line under a non-zero score
+    # never means "nothing to say", only that no branch above recognised
+    # the shape. Measured before this existed: 23 of 311 corpus samples
+    # scored above zero and rendered no verdict at all, including eleven
+    # Formbook/RemcosRAT .docx and CVE-2023-36884.docx.
+    #
+    # The module's own reason rather than a phrase table here, because a
+    # second vocabulary is a second thing to drift: this one cannot fall
+    # behind a module it does not know about, including the Phase 5
+    # providers that do not exist yet.
+    if not unique:
+        scored = [
+            r for r in module_results
+            if r.get("status") == "success" and (r.get("score_delta") or 0) > 0
+        ]
+        if scored:
+            top = max(scored, key=lambda r: r.get("score_delta") or 0)
+            clause = _first_clause(top.get("reason") or "")
+            if clause:
+                unique = [clause]
 
     if not unique:
         return ""

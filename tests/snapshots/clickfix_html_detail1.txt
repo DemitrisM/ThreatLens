@@ -18,7 +18,8 @@
 
   ███████████████░░░░░░░  70/100  HIGH
 
-  Likely malicious with external C2 scripts, network IOC indicators, obfuscated script
+  Likely malicious with external C2 scripts, network IOC indicators, suspicious domain references,
+  obfuscated script (+1 more)
 
   FINDINGS
                                                                                                     
