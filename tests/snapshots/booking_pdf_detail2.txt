@@ -19,7 +19,8 @@
 
   ██████████████░░░░░░░░  65/100  HIGH
 
-  Likely malicious with PDF auto-action, network IOC indicators, embedded JavaScript
+  Likely malicious with PDF auto-action, network IOC indicators, suspicious domain references,
+  embedded JavaScript
 
   FINDINGS
                                                                                                     
