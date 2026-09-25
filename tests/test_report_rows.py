@@ -443,3 +443,17 @@ def test_the_html_mirror_reads_the_same_keys():
 
     assert "False" not in row["value"], row["value"]
     assert row["severity"] == "bad"
+
+
+def test_human_size_accepts_an_absent_size():
+    """The body guards with ``nbytes or 0`` while the signature said
+    ``int | float``, so either the guard was dead or the annotation was
+    wrong. It is the annotation: six call sites defend with ``or 0``
+    before calling — which is the callers agreeing a size can be absent —
+    and two do not, one of them indexing the key directly.
+    """
+    from reporting.shared import human_size
+
+    assert human_size(None) == "0.0 B"
+    assert human_size(0) == "0.0 B"
+    assert human_size(1536) == "1.5 KiB"

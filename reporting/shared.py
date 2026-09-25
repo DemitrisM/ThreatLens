@@ -45,7 +45,7 @@ IOC_LABELS: dict[str, tuple[str, str]] = {
 }
 
 
-def human_size(nbytes: int | float) -> str:
+def human_size(nbytes: int | float | None) -> str:
     """Format byte count as a human-readable string (1.5 MiB, etc.)."""
     n = float(nbytes or 0)
     for unit in ("B", "KiB", "MiB", "GiB"):
