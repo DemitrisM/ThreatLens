@@ -248,16 +248,49 @@ def run(file_path: Path, config: dict) -> dict:
     # not inferred by the reporters.
     # ------------------------------------------------------------------
     floss_path = Path(config.get("floss_binary", "./bin/floss"))
-    timeout = config.get("module_timeout_seconds", 60)
 
-    # Try FLOSS first, fall back to raw extraction.
-    floss_result = _run_floss(file_path, floss_path, timeout)
+    # FLOSS gets its own budget, like capa does. It used to be handed the
+    # generic `module_timeout_seconds` (default 60), which emulation cannot
+    # meet: measured, a 1 MB PE takes 127-170s. So FLOSS timed out on every
+    # sample it was ever given and silently fell back to raw — which is why
+    # `source` read "raw" on 311 of 311 corpus files.
+    timeout = config.get("floss_timeout_seconds", 300)
+    emulation = bool(config.get("floss_emulation", False))
+
+    floss_result, failure = _run_floss(file_path, floss_path, timeout,
+                                       emulation=emulation)
+
+    # ── Two-step fallback, not one, and only for a timeout ──────────────
+    # FLOSS buffers its JSON and writes nothing when killed, so a timed-out
+    # emulation run yields no strings at all. Dropping straight to the
+    # in-tree raw extractor would mean spending the whole budget and then
+    # returning a *worse* result than the one-second static run we could
+    # have had. So a timeout retries with emulation off; only a failure of
+    # that reaches the raw path.
+    #
+    # Gated on the reason, not merely on `floss_result is None`. _run_floss
+    # answers None for five different failures, and the other four must not
+    # take this branch: a crashed emulator would be recorded and rendered
+    # as "timed out", telling the analyst the budget was too small when the
+    # run never got that far, and an absent binary would log a 300-second
+    # wait that never happened and then re-invoke a binary that is still
+    # not there.
+    emulation_timed_out = False
+    if failure == "timeout" and emulation:
+        emulation_timed_out = True
+        logger.warning(
+            "FLOSS emulation exceeded %ds — retrying with static strings only",
+            timeout,
+        )
+        floss_result, _ = _run_floss(file_path, floss_path, timeout,
+                                     emulation=False)
 
     if floss_result is not None:
         all_strings = floss_result["strings"]
         source = "floss"
         floss_data = floss_result
     else:
+        logger.info("Falling back to the in-tree raw string extractor")
         all_strings = _extract_raw_strings(file_path)
         source = "raw"
         floss_data = None
@@ -313,10 +346,19 @@ def run(file_path: Path, config: dict) -> dict:
         "suspicious_matches": suspicious_details,
     }
 
+    # Recorded, not inferred. A reporter must be able to say "static only"
+    # rather than render `0 decoded / 0 stack`, which reads as "this sample
+    # does not obfuscate its strings" — the opposite of what a downgraded
+    # run established. Same defect class as the lnk and onenote size-cap
+    # bypasses, where a skip rendered as a finding.
+    data["floss_emulation_timed_out"] = emulation_timed_out
     if floss_data is not None:
+        data["floss_mode"] = floss_data.get("mode", "static")
         data["floss_static_strings"] = floss_data.get("static_count", 0)
         data["floss_decoded_strings"] = floss_data.get("decoded_count", 0)
         data["floss_stack_strings"] = floss_data.get("stack_count", 0)
+        data["floss_tight_strings"] = floss_data.get("tight_count", 0)
+        data["floss_language_strings"] = floss_data.get("language_count", 0)
 
         # Decoded and stack strings are scored on their *existence*, not
         # their content — a binary that builds strings on the stack or
@@ -326,13 +368,20 @@ def run(file_path: Path, config: dict) -> dict:
         # for carrying the dependency.
         decoded = floss_data.get("decoded_count", 0)
         stack = floss_data.get("stack_count", 0)
-        if decoded > 0 or stack > 0:
+        # Tight strings were computed by _run_floss and read by nothing.
+        # FLOSS documents them as "a special form of stack strings, decoded
+        # on the stack", so a sample using only tight strings hid them just
+        # as thoroughly and earned nothing for it. 45 across the corpus.
+        tight = floss_data.get("tight_count", 0)
+        if decoded > 0 or stack > 0 or tight > 0:
             score_delta += 10
             parts = []
             if decoded > 0:
                 parts.append(f"{decoded} decoded")
             if stack > 0:
                 parts.append(f"{stack} stack")
+            if tight > 0:
+                parts.append(f"{tight} tight")
             reasons.append(
                 f"FLOSS found obfuscated strings: {', '.join(parts)}"
             )
@@ -349,15 +398,19 @@ def run(file_path: Path, config: dict) -> dict:
 
 
 def _run_floss(
-    file_path: Path, floss_path: Path, timeout: int
-) -> dict | None:
+    file_path: Path, floss_path: Path, timeout: int, *, emulation: bool
+) -> tuple[dict | None, str]:
     """Invoke FLOSS and parse its JSON output.
 
-    Returns a dict with string lists and counts, or None if FLOSS
-    is unavailable or fails.
+    Returns the parsed sections and a failure reason, one of which is
+    always empty.
 
     Args:
         file_path:  The sample. Passed to FLOSS unmodified.
+        emulation: When False, run ``--only static``: no emulation, and so
+                   no stack, tight or decoded strings. When True, run
+                   FLOSS's default, which emulates. Set from the scan
+                   profile, never from the file.
         floss_path: Path to the FLOSS binary. Absent on a fresh clone —
                     install.sh downloads it — so that case logs at info.
         timeout:    Wall-clock bound. FLOSS emulates code to recover
@@ -365,15 +418,37 @@ def _run_floss(
                     standard scan, so this bound is load-bearing.
 
     Returns:
-        {"strings", "static_count", "decoded_count", "stack_count",
-        "tight_count"} or None. None is the single failure signal for every
-        failure mode, which is what lets run() have one fallback branch.
+        ``(result, failure)``. On success the parsed sections and ``""``;
+        on failure ``None`` and one of ``missing`` / ``timeout`` /
+        ``oserror`` / ``exit`` / ``badjson``.
+
+        The reason is returned rather than collapsed into a bare ``None``
+        because the caller's response differs by cause. Only a *timeout*
+        is worth retrying without emulation, and only a timeout may be
+        described to the analyst as one — reporting a crashed emulator as
+        "timed out" says the budget was too small when the run never got
+        that far, and reporting an absent binary that way invents a
+        300-second wait that never happened.
     """
     if not floss_path.is_file():
-        logger.info("FLOSS binary not found at %s — falling back to raw strings", floss_path)
-        return None
+        logger.info("FLOSS binary not found at %s", floss_path)
+        return None, "missing"
 
-    cmd = [str(floss_path), "--json", str(file_path)]
+    # `--only static` is the entire cost control. Measured over the 30 PE
+    # samples in the corpus: static extraction is flat at ~1s regardless of
+    # file size, while the default (which emulates the binary under
+    # vivisect to recover stack, tight and decoded strings) ranged from
+    # 0.7s to 271.1s on those same files — 30.0 minutes against 69 seconds
+    # for the corpus, 26x.
+    #
+    # Size is NOT the predictor and must not be used as one: AdwareTechsnab
+    # at 16.6 MB emulates in 10.3s while Amadey3 at 0.6 MB takes 170.8s.
+    # Cost tracks the number of candidate decoding functions. The timeout
+    # is the only honest control, which is why there is no size gate here.
+    cmd = [str(floss_path)]
+    if not emulation:
+        cmd += ["--only", "static"]
+    cmd += ["--json", str(file_path)]
 
     try:
         proc = subprocess.run(
@@ -383,11 +458,12 @@ def _run_floss(
             check=False,
         )
     except subprocess.TimeoutExpired:
-        logger.warning("FLOSS timed out after %ds — falling back to raw strings", timeout)
-        return None
+        logger.warning("FLOSS timed out after %ds (%s mode)", timeout,
+                       "full" if emulation else "static")
+        return None, "timeout"
     except OSError as exc:
-        logger.warning("FLOSS invocation failed: %s — falling back to raw strings", exc)
-        return None
+        logger.warning("FLOSS invocation failed: %s", exc)
+        return None, "oserror"
 
     # Unlike capa, a non-zero FLOSS exit is treated as total failure: FLOSS
     # writes its JSON document as a whole at the end of a successful run, so
@@ -395,17 +471,17 @@ def _run_floss(
     if proc.returncode != 0:
         stderr_snippet = proc.stderr[:500].decode("utf-8", errors="replace") if proc.stderr else ""
         logger.warning(
-            "FLOSS exited with code %d: %s — falling back to raw strings",
+            "FLOSS exited with code %d: %s",
             proc.returncode,
             stderr_snippet,
         )
-        return None
+        return None, "exit"
 
     try:
         floss_json = json.loads(proc.stdout)
     except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("Failed to parse FLOSS JSON output: %s", exc)
-        return None
+        return None, "badjson"
 
     # Extract strings from FLOSS JSON structure.
     # FLOSS v2+ JSON has: strings.static_strings, strings.decoded_strings,
@@ -422,15 +498,27 @@ def _run_floss(
     stack = _extract_floss_strings(strings_section.get("stack_strings", []))
     tight = _extract_floss_strings(strings_section.get("tight_strings", []))
 
-    all_strings = static + decoded + stack + tight
+    # FLOSS 3.x emits this for Go, Rust and .NET binaries, and emits it
+    # even under `--only static` — verified, not assumed: LummaStealer.exe
+    # returned 1487 language strings in 1.3s with emulation disabled.
+    #
+    # Read because discarding a section FLOSS produces is arbitrary, not
+    # because it detects: across the three Go samples where these matched
+    # anything, they matched only categories the raw extractor had already
+    # found, and gained a category on none of them.
+    language = _extract_floss_strings(strings_section.get("language_strings", []))
+
+    all_strings = static + decoded + stack + tight + language
 
     return {
         "strings": all_strings,
+        "mode": "full" if emulation else "static",
         "static_count": len(static),
         "decoded_count": len(decoded),
         "stack_count": len(stack),
         "tight_count": len(tight),
-    }
+        "language_count": len(language),
+    }, ""
 
 
 def _extract_floss_strings(entries: list) -> list[str]:
