@@ -18,12 +18,132 @@ Everything before it is a step toward that.
 | 0.5.8 | onenote_analysis complete — one wrong byte had disabled the module's headline rule |
 | 0.5.9 | cli/ complete — eight fixes, three of them exit codes that reported success on a run that had not worked |
 | 0.5.10 | The reporting defect sweep — eight fixes found by running the tool, not the tests |
-| 0.5.11 | *(current)* Design rules 6 and 8 made true — the palette is enforced, machine output is exact |
+| 0.5.11 | Design rules 6 and 8 made true — the palette is enforced, machine output is exact |
+| 0.5.12 | *(current)* `reporting/` complete — the verdict now narrates every finding the modules scored |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.12 — 2026-09-25
+
+The `reporting/` comment pass, in three batches, and the defect it found:
+the one-line verdict was silent about findings the modules had scored.
+
+### Fixed — a scan could score and say nothing
+
+`build_verdict()` branched on data shapes that several modules do not
+publish. Measured over the 311-sample corpus: **23 files scored above
+zero and rendered no verdict line at all** — eleven Formbook/RemcosRAT
+`.docx`, `CVE-2023-36884.docx`, `pdf-zeroday.pdf` at 20 — and six
+modules had scored results the sentence never mentioned, 126 module
+results in total. The report went straight from the score bar to
+FINDINGS while `doc_analysis`'s own table read "OPENXML — MALICIOUS".
+
+Per branch:
+
+- **`doc_analysis` published 28 `indicator_flags` and the branch read
+  none of them**, alone among the container modules — `archive`,
+  `onenote` and `lnk` have always been read that way. An altChunk lands
+  in `template_injection["alt_chunks"]` while the branch read
+  `["ooxml"]`. Now mapped through a table a test walks `COMBO_RULES`
+  against, so a scored flag must either be narrated or be listed as
+  exempt with a reason. That is the mirror of the test added in 0.5.1
+  for five flags that were emitted and never scored: both failure modes
+  are invisible without a mechanical check, because the list on each
+  side is hand-written.
+- **`pdf_analysis` was read through `has_javascript`**, which is peepdf's
+  answer, and peepdf fails on malformed files — which malicious PDFs
+  are. `pdf-zeroday.pdf` scored +20 with `/JavaScript` and `/JS` in the
+  raw sweep and rendered nothing. The same misplaced trust as the
+  `encrypted: false` defect fixed in 0.5.x. `/EmbeddedFile` stays
+  singular: the plural is the name tree, and reporting an attachment
+  from it is the false positive that was removed.
+- **`html_analysis` required a LOLBin inside the copied clipboard text.**
+  That text is built at runtime — ClickFix2 carries the template literal
+  `Video call link: ${url}` — so a static page has the write and the
+  paste lure without it. ClickFix2/3 and unknown.html scored +15 to +30
+  in silence, on the module's own flagship detection.
+- **`ioc_extractor` scored domains, registry keys and email addresses**
+  and the branch read only URLs and IPs. `windows_path` stays out: it is
+  extracted and reported but never scored.
+- **`string_analysis` matched category names by substring**, missing
+  eight scored `high` categories — anti-debug, code injection, encoded
+  command payload, LOLBin, PowerShell download/exec, PowerShell evasion,
+  VM/sandbox check, analysis tool name. Keyed on the severity the module
+  scores by instead. It also never read the flat +10 **FLOSS obfuscation
+  bonus**, the module's whole argument for carrying that dependency.
+- **`virustotal` gated everything on `data["found"]`**, but
+  `_lookup_embedded_hashes` adds its delta onto the same result
+  *including on the 404 path*, where the primary starts at -5. So a
+  container VirusTotal has never seen, carrying a payload fifty engines
+  flag, scored for those detections and said nothing about them — the
+  exact shape the archive forward-lookup was built for.
+
+Underneath them, an invariant: **a module that scored is always
+narrated.** Design rule 1 guarantees a human-readable `reason`, so a
+blank sentence under a non-zero score never means "nothing to say", only
+that no branch recognised the shape. The fallback is the top-scoring
+module's own first clause rather than a second vocabulary to maintain —
+it cannot fall behind a module it does not know about, including the
+Phase 5 providers. Both corpus measures are now zero.
+
+`W_HINT` joins the weight ladder between `W_WEAK` and `W_CONTAINER`:
+medium string categories and registry/email IOCs ranked level with
+"unsigned binary" otherwise, which the ladder reserves for signals that
+fire across a large benign population.
+
+Two of the fixes were found in the fix itself, by reading rendered
+output: the doc flag loop iterated a `set`, so five `PYTHONHASHSEED`
+values produced five sentences and hid a different finding behind
+`(+N more)` each time; and a +2 qualifier outranked the +6 finding it
+qualifies. Both pinned by tests.
+
+Four golden snapshots moved, each diff read. No strong indicator is lost
+anywhere in the corpus — checked by substring across all 311 samples.
+
+### Fixed — `human_size` accepts an absent size
+
+Its body guarded with `nbytes or 0` while the signature said
+`int | float`, so either the guard was dead or the annotation was wrong.
+It was the annotation: six call sites write `or 0` at the call, which is
+the callers agreeing a size can be absent, and `web.py` reaches one by
+subscript with no default. Module data round-trips through JSON, where an
+absent size is `null`. Split into its own commit because the AST proof
+correctly reports an annotation as executable code.
+
+### Documented
+
+`reporting/` is complete. `theme.py`, `console.py` and `_common.py`
+already carried the standard from the 0.5.11 palette work, so the pass
+ran in two batches rather than three: `_render.py` + `shared.py`, then
+`json_reporter.py` + `triage_reporter.py`.
+
+Three claims written during the pass were wrong and corrected before
+commit — which is the argument for documenting rather than only reading.
+`format_flags` was documented as aligning flag letters into fixed
+columns when it collapses them left; a summary comment said `rows` holds
+everything the table printed when failures are printed too and counted
+separately; and an import note described a circular-dependency
+workaround that belongs to a different import further down the file. A
+`#:` doc-comment above that import described `shared.SECRET_KEYS`, a
+constant the module does not define.
+
+### Logged, not fixed
+
+- **The triage flag vocabulary has the same shape of gap.** Measured on a
+  mixed sweep: `Formbook.docx` carries an altChunk rather than a macro,
+  so it earns no `M` and no `A` and shows no document letter at all while
+  still ranking correctly by score. Widening the eight-letter vocabulary
+  is a design decision about what the column is for, not a bug fix.
+- **`shared.IOC_LABELS` is fully derivable from
+  `theme.IOC_TYPE_LABELS`** — `IOC_LABELS[k] == (IOC_TYPE_LABELS[k], k)`
+  for every key. A test now pins the two into agreement so they cannot
+  drift the way the five colour maps did; merging them is a code change.
+- **`ns.adobe.com` scores +5 as a domain IOC on every PDF and OneNote
+  file** in the corpus. It is the XMP namespace URI, not an indicator.
+  That belongs to `ioc_extractor`'s allowlist.
 
 ## 0.5.11 — 2026-09-24
 
