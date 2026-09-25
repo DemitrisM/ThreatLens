@@ -19,12 +19,100 @@ Everything before it is a step toward that.
 | 0.5.9 | cli/ complete — eight fixes, three of them exit codes that reported success on a run that had not worked |
 | 0.5.10 | The reporting defect sweep — eight fixes found by running the tool, not the tests |
 | 0.5.11 | Design rules 6 and 8 made true — the palette is enforced, machine output is exact |
-| 0.5.12 | *(current)* `reporting/` complete — the verdict now narrates every finding the modules scored |
+| 0.5.12 | `reporting/` complete — the verdict now narrates every finding the modules scored |
+| 0.5.13 | *(current)* FLOSS runs for the first time — emulation moved onto the `-p deep` axis |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.13 — 2026-09-25
+
+FLOSS had never executed once. Installing it and measuring what it is
+worth took a session; the answer changed the design twice.
+
+### Fixed — FLOSS had never run, and installing it was not enough
+
+`bin/floss` was absent and always had been, so `string_analysis` reported
+`source: "raw"` on **311 of 311** corpus samples, no `floss_*` key had
+ever been populated, and roughly 126 lines — `_run_floss`,
+`_extract_floss_strings`, the whole `floss_data is not None` block — had
+never executed and carried **no test**.
+
+Installing the binary changed nothing, because `_run_floss` was handed
+`module_timeout_seconds` (default 60) while emulation takes 127–271s on
+real samples. It timed out on every file and fell back to raw. FLOSS now
+has its own `floss_timeout_seconds`, the way capa has always had
+`capa_timeout_seconds`.
+
+### The measurement that set the design
+
+All 30 corpus PEs, three arms each — the in-tree raw extractor,
+`floss --only static`, and full default FLOSS:
+
+| | full emulation | `--only static` |
+|---|---|---|
+| corpus wall clock | **30.0 min** | **69 s** (26x) |
+| categories gained over the raw extractor | 1/30 | 1/30, same sample |
+| categories matched by emulated strings alone | **0/30** | — |
+
+Emulation is not idle — it produced 342 strings across 14 of 30 samples
+(136 decoded, 161 stack, 45 tight). **None of them matched a single
+suspicious pattern.** The one category FLOSS gained at all came from
+*static* extraction and is `low` severity, worth 0 points, so FLOSS
+static changes no score either.
+
+What emulation does buy is the **+10 structural bonus, firing on 13 of
+30**: a binary that builds strings on the stack has paid to hide them
+whether or not those strings match a regex, and no static extractor can
+observe that. A 26x cost for one signal is precisely what `-p deep` is
+for. So `deep` emulates and `standard` runs `--only static` at a flat
+~1s — which follows the existing rule that `-p` decides cost and `-v`
+decides display, and needed no new axis.
+
+**No size gate, although the plan began with one.** Size does not predict
+cost: AdwareTechsnab at 16.6 MB emulates in 10.3s while Amadey3 at 0.6 MB
+takes 170.8s, because cost tracks the number of candidate decoding
+functions. Assemblyline's production service refuses files over 85 KB,
+which works only by excluding nearly everything — a proxy, not a model.
+The timeout is the honest control, and 300s is measured rather than
+copied: the slowest sample emulated in 271.1s.
+
+### Fixed — six more, each found while building the above
+
+- **`tight_count` was computed and read by nothing.** Not stored in
+  `data`, not tested by the +10 bonus. FLOSS documents tight strings as
+  "a special form of stack strings, decoded on the stack", so a sample
+  hiding strings that way scored nothing for it. 45 across the corpus.
+- **`language_strings` was parsed by nothing.** FLOSS 3.x emits it for
+  Go, Rust and .NET — and emits it even under `--only static`, verified
+  rather than assumed (1487 strings in 1.3s on LummaStealer.exe).
+  Recorded now, but **not** claimed as a detection: on the three Go
+  samples where it matched anything it matched only categories the raw
+  extractor had already found.
+- **A timeout now retries `--only static` before reaching the raw
+  extractor.** FLOSS buffers its JSON and writes nothing when killed, so
+  the old path spent the entire budget and then returned a *worse*
+  result than a one-second static run would have given.
+- **`_run_floss` reports why it failed.** It answered `None` for five
+  distinct causes, and only a timeout may be retried or described as
+  one — otherwise a crashed emulator renders to the analyst as "timed
+  out", and an absent binary logs a 300-second wait that never happened.
+- **Four log lines predicted what the caller would do** ("falling back to
+  raw strings") and became wrong the moment the retry existed.
+- **No reporter displayed any FLOSS field.** A degraded run now says so
+  instead of rendering `0 decoded / 0 stack`, which reads as "this sample
+  does not obfuscate its strings" — a skip rendering as a finding, the
+  same defect class as the lnk and onenote size-cap bypasses.
+
+### Caveat, kept deliberately
+
+30 samples, one corpus, modern commodity malware. FLOSS emulates only the
+top ~10 candidate decoding functions, which plausibly explains junk
+results on packed samples — the real decoder is not in the top 10. The
+claim is that emulation earns nothing measurable *on this corpus*, not
+that FLOSS is useless.
 
 ## 0.5.12 — 2026-09-25
 

@@ -38,7 +38,7 @@ import click
 
 #: Single source of truth for the tool version — read by ``pyproject.toml``
 #: (``dynamic.version``), the JSON reporter, and the HTML reporter.
-__version__ = "0.5.12"
+__version__ = "0.5.13"
 
 CONTEXT_SETTINGS = {
     "help_option_names": ["-h", "--help"],
