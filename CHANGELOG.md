@@ -20,12 +20,133 @@ Everything before it is a step toward that.
 | 0.5.10 | The reporting defect sweep — eight fixes found by running the tool, not the tests |
 | 0.5.11 | Design rules 6 and 8 made true — the palette is enforced, machine output is exact |
 | 0.5.12 | `reporting/` complete — the verdict now narrates every finding the modules scored |
-| 0.5.13 | *(current)* FLOSS runs for the first time — emulation moved onto the `-p deep` axis |
+| 0.5.13 | FLOSS runs for the first time — emulation moved onto the `-p deep` axis |
+| 0.5.14 | *(current)* The bundled tools stop leaking on a timeout; C ssdeep; the defect log split out |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.14 — 2026-09-27
+
+A Docker planning session that turned into three fixes, because reading the
+project for the container decision is a different pass from reading it for
+correctness — the same effect the comment passes had, and for the same
+reason.
+
+### Fixed — a timed-out FLOSS or capa leaked its whole extraction
+
+`bin/floss` and `bin/capa` are **PyInstaller one-file bundles, not native
+binaries**. That was recorded wrongly as "Mandiant Go binaries", and the
+mistake mattered: neither carries a Go section, and each embeds its own
+CPython — `libpython3.8` in FLOSS, `libpython3.10` in capa. A PyInstaller
+bootloader unpacks the entire application into `$TMPDIR/_MEIxxxxxx` at
+startup and removes it on a clean exit.
+
+`subprocess.run(timeout=...)` ends a late child with `Popen.kill()`, which is
+`SIGKILL` and cannot be trapped. So every run that hit its budget leaked the
+extraction. Measured against `bin/floss` with a 3-second budget:
+`TimeoutExpired` raised and **62.5 MB left behind**, per invocation. Not a
+rare path either — `floss_timeout_seconds` is 300 because the slowest corpus
+sample emulates for 271.1 s, and `triage` repeats the loss once per file.
+
+Fixed by containment, not by signal handling. Escalating TERM-then-KILL still
+loses the race whenever the child is wedged inside the emulator, which is
+precisely when a timeout fires. Instead `modules/static/_bundled_tool.py`
+hands the child a private `TMPDIR` it owns and removes unconditionally, so a
+crash, a kill and an `OSError` are covered by one `finally`. Only the child's
+environment is rewritten — mutating `os.environ` would have redirected
+`archive_analysis`'s own `mkdtemp` into a directory this code deletes the
+moment FLOSS returns.
+
+Verified on the real binary: **62.5 MB → 0**, with the success path unchanged
+(a full FLOSS run still returns 583,549 strings).
+
+### Logged, not fixed — the same kill orphans the payload process
+
+The bootloader forks the real application as a child, so `subprocess.run`
+kills only the bootloader. Measured after the fix: one `floss` process left
+running at **100% CPU for ~10 s**, dying only because the cleanup removed the
+`_MEI` tree it was still loading modules from. So the containment bounds the
+orphan as a side effect rather than by design, and before the fix it could
+have run to completion. The correct fix is `start_new_session=True` plus
+`os.killpg`, which means replacing `subprocess.run` with `Popen` at both call
+sites — a restructure of a well-tested path, so it gets its own commit.
+
+### Added — the C ssdeep binding, as an opt-in extra
+
+`string_analysis` was not the only thing that had never run. The C `ssdeep`
+binding had **never been installed**, so `file_intake` had always used the
+pure-Python `ppdeep` fallback — which is what made a 30 MB archive spend
+227 s there in 0.5.2 and forced the `max_ppdeep_size_mb` cap.
+
+Measured on real samples, identical digests on both backends:
+
+| sample | size | ppdeep | C ssdeep | |
+|---|---|---|---|---|
+| Efimer.exe | 13.6 MB | 10.75 s | 0.196 s | 55x |
+| CVE-2025-8088 + UKR,.rar | 30.0 MB | 160.44 s | 0.457 s | **351x** |
+
+The cap applies to the fallback only, so installing the binding also returns
+a fuzzy hash to the **19 of 313 corpus samples** that exceeded it — the large
+archives and packed PEs, which is where fuzzy hashing is most use for
+clustering. The whole test suite dropped from 104 s to 78 s as a side effect.
+
+It is a `fast-hashing` extra rather than part of `analysis`, on purpose: it is
+sdist-only and needs `libfuzzy-dev` plus a compiler, so listing it in
+`analysis` would turn a working `pip install .[analysis]` into a build
+failure. Two install details worth not rediscovering — `--no-build-isolation`
+is required, because ssdeep 3.4's `setup.py` imports `pkg_resources` and
+setuptools 81+ no longer ships it; and the honest case for the binding is
+**ecosystem interop** (MalwareBazaar and VirusTotal key on ssdeep) rather
+than extra detection, since TLSH already provides similarity and is always
+present, fast and uncapped.
+
+### Changed — the fixed-defect history moved out of the project notes
+
+The notes had reached 103 KB while the cross-model review script passes its
+context as a single argument capped at 120,000 bytes. So only 15.5 KB of
+headroom was left, and any diff larger than that was reviewed with the design
+rules **silently dropped** — exactly backwards, since the bigger the change
+the more the gate needs them.
+
+The ten "Findings … all fixed" sections were 40% of the file and are pure
+history. They are now `docs/defect_log.md`, **79 write-ups**, with a summary
+table and working anchors left in their place. The live lists stayed behind,
+because "Logged, not fixed" and "Still open" are tracking rather than
+history. 103.3 KB → 69.1 KB, so headroom went 15.5 KB → 50.9 KB.
+
+Nothing was deleted, and the move was checked mechanically rather than by
+eye: every section byte-identical in the log and absent from the notes, and
+all 135 `[done]` entries accounted for across the two files. Two pre-existing
+errors surfaced in the process — a section opening "Four more" above a list
+of ten (written after batches B1–B3, never revisited when B4 and B5 appended
+six), and a heading reading "the pass" that had been anchored by paragraphs
+which stayed behind.
+
+### Changed — the Docker planning brief is correct for the first time
+
+`docs/docker_session_brief.md` drove Phase 4's container decision on three
+wrong premises: a read-only constraint from a comment pass that closed at
+0.5.12, the Go-binary claim above, and "it never executes a sample" — too
+strong, since `bin/floss` embeds `vivisect` and 0.5.13 turned emulation on
+for `-p deep`. Corrected, and extended with what the decision actually needs:
+only `py-tlsh` and `ssdeep` need a compiler; `git`, `cabextract`, `unrar` and
+`pcodedmp` are process dependencies invisible in `pyproject.toml`;
+`config_loader`'s paths are CWD-relative and nothing resolves them; `/tmp` is
+sized by archive extraction (~1.5 GB worst case) rather than by the bundles;
+only the sample mount is mandatory, because `-f json` goes to stdout; and
+both tools are on PyPI at the pinned versions, which would remove 84.8 MB,
+the extraction and the startup cost altogether.
+
+### Tests
+
+**1101, up from 1095.** `tests/test_bundled_tool_tempdirs.py` covers the
+containment: a killed child leaving nothing behind, the directory being
+private to one invocation, `os.environ` staying untouched, graceful
+degradation when the directory cannot be made, and both call sites passing a
+private `TMPDIR`.
 
 ## 0.5.13 — 2026-09-25
 
