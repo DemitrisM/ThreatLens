@@ -35,6 +35,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from modules.static._bundled_tool import private_extraction_dir
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -287,13 +289,18 @@ def _run_capa(
     # handled below, not exceptional.
     cmd = [str(capa_path), "--json", str(file_path)]
 
+    # capa is a PyInstaller bundle, so a timeout SIGKILLs it before it can
+    # remove the ~70 MB it unpacked into TMPDIR. The private directory is
+    # removed for it — see modules/static/_bundled_tool.py.
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
+        with private_extraction_dir("capa_") as env:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+                env=env,
+            )
     except subprocess.TimeoutExpired:
         logger.warning(
             "capa timed out after %ds on %s — skipping (complex binary or unsupported format)",

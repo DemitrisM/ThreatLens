@@ -36,6 +36,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from modules.static._bundled_tool import private_extraction_dir
+
 logger = logging.getLogger(__name__)
 
 # Minimum printable-ASCII string length for raw extraction.
@@ -450,13 +452,18 @@ def _run_floss(
         cmd += ["--only", "static"]
     cmd += ["--json", str(file_path)]
 
+    # FLOSS is a PyInstaller bundle and a timeout kills it with SIGKILL, so
+    # it cannot remove the ~63 MB it unpacked into TMPDIR. The private
+    # directory is removed for it — see modules/static/_bundled_tool.py.
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
+        with private_extraction_dir("floss_") as env:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+                env=env,
+            )
     except subprocess.TimeoutExpired:
         logger.warning("FLOSS timed out after %ds (%s mode)", timeout,
                        "full" if emulation else "static")
