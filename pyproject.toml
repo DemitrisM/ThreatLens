@@ -32,6 +32,27 @@ analysis = [
     "py7zr>=0.20.8",
     "pycdlib>=1.14.0",
 ]
+# The C ssdeep binding, kept OUT of `analysis` on purpose. It is sdist-only
+# and needs libfuzzy-dev plus a compiler, so listing it there would turn a
+# working `pip install .[analysis]` into a build failure on any machine
+# without them — and `file_intake` already falls back to the pure-Python
+# `ppdeep`, so its absence costs speed, not capability.
+#
+#   sudo apt-get install libfuzzy-dev
+#   pip install --no-build-isolation '.[fast-hashing]'
+#
+# --no-build-isolation is required: ssdeep 3.4's setup.py imports
+# pkg_resources, which setuptools 81+ no longer ships, so an isolated build
+# fails with ModuleNotFoundError before it ever reaches the compiler.
+#
+# Measured on real corpus samples, C against ppdeep, identical digests:
+#   Efimer.exe                13.6 MB   10.75s -> 0.196s   (55x)
+#   CVE-2025-8088 + UKR,.rar  30.0 MB  160.44s -> 0.457s  (351x)
+# It also lifts `max_ppdeep_size_mb`, which applies to the fallback only —
+# 19 of 313 corpus samples get no fuzzy hash at all without it.
+fast-hashing = [
+    "ssdeep>=3.4",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
