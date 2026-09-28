@@ -35,7 +35,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from modules.static._bundled_tool import private_extraction_dir
+from modules.static._bundled_tool import private_extraction_dir, resolve_tool
 
 logger = logging.getLogger(__name__)
 
@@ -183,15 +183,21 @@ def run(file_path: Path, config: dict) -> dict:
     # that omits the capa-specific key still inherits a sane bound rather
     # than running unbounded.
     # ------------------------------------------------------------------
-    capa_path = Path(config.get("capa_binary", "./bin/capa"))
+    # resolve_tool, not Path(...).is_file(): the setting may be a bare
+    # command name now that capa can come from PyPI, and a bare name must be
+    # looked up on PATH rather than against the working directory. See the
+    # Design notes in modules/static/_bundled_tool.py for why that
+    # distinction is a security property and not a convenience.
+    capa_path = resolve_tool(config.get("capa_binary", "capa"))
     timeout = config.get("capa_timeout_seconds",
                          config.get("module_timeout_seconds", 60))
 
-    # A missing binary is the normal case on a fresh clone (install.sh
-    # downloads it), so it logs at info rather than warning.
-    if not capa_path.is_file():
+    # A missing binary is the normal case on a fresh clone, so it logs at
+    # info rather than warning.
+    if capa_path is None:
         logger.info(
-            "capa binary not found at %s — skipping capability detection", capa_path
+            "capa not found (configured as %r) — skipping capability detection",
+            config.get("capa_binary", "capa"),
         )
         return {
             "module": "capa_analysis",
@@ -202,12 +208,43 @@ def run(file_path: Path, config: dict) -> dict:
         }
 
     # ------------------------------------------------------------------
+    # Phase 1b: capa's rule set and FLIRT signatures.
+    #
+    # The PyInstaller bundle embeds both; the PyPI package embeds neither
+    # and exits 10 without them. So they are configurable, and both keys
+    # default to None meaning "not configured" — which is what keeps an
+    # install still using the bundled binary behaving exactly as before.
+    #
+    # A path that is configured but absent is a hard skip, deliberately.
+    # capa would otherwise run and report zero capabilities, which reads
+    # to an analyst as "this sample does nothing interesting" — a skip
+    # rendering as a finding, the same defect class as the degraded FLOSS
+    # run fixed in 0.5.13.
+    # ------------------------------------------------------------------
+    extra_args: list[str] = []
+    for key, flag in (("capa_rules_dir", "-r"), ("capa_signatures_dir", "-s")):
+        configured = config.get(key)
+        if not configured:
+            continue
+        as_path = Path(str(configured))
+        if not as_path.is_dir():
+            logger.warning("%s is set to %s, which does not exist", key, as_path)
+            return {
+                "module": "capa_analysis",
+                "status": "skipped",
+                "data": {},
+                "score_delta": 0,
+                "reason": f"capa {key} not found at {as_path}",
+            }
+        extra_args += [flag, str(as_path)]
+
+    # ------------------------------------------------------------------
     # Phase 2: Run capa. Distinguish a timeout from every other failure
     # only in the reason string — the caller's handling is identical, but
     # "capa timed out" tells the analyst to retry with -p deep, whereas
     # "capa analysis failed" tells them to check the install.
     # ------------------------------------------------------------------
-    capa_json, timed_out = _run_capa(file_path, capa_path, timeout)
+    capa_json, timed_out = _run_capa(file_path, capa_path, timeout, extra_args)
     if capa_json is None:
         reason = "capa timed out" if timed_out else "capa analysis failed"
         return {
@@ -264,7 +301,8 @@ def run(file_path: Path, config: dict) -> dict:
 
 
 def _run_capa(
-    file_path: Path, capa_path: Path, timeout: int
+    file_path: Path, capa_path: Path, timeout: int,
+    extra_args: list[str] | None = None,
 ) -> tuple[dict | None, bool]:
     """Invoke capa with --json and return the parsed JSON output.
 
@@ -277,6 +315,10 @@ def _run_capa(
         timeout:   Hard wall-clock bound in seconds. capa on a large packed
                    binary can run for minutes, and design rule 5 forbids a
                    module that can hang the pipeline.
+        extra_args: Already-validated flags to insert before the target —
+                   ``-r``/``-s`` for a rule set and signatures that the
+                   caller confirmed exist. Empty for the bundled binary,
+                   which carries both internally.
 
     Returns:
         (parsed_json_dict_or_None, timed_out) — timed_out is True only when
@@ -287,7 +329,9 @@ def _run_capa(
     # are captured: letting stderr through would corrupt `-f json | jq`
     # (design rule 7). check=False because a non-zero exit is expected and
     # handled below, not exceptional.
-    cmd = [str(capa_path), "--json", str(file_path)]
+    # extra_args precede the target because capa takes the sample
+    # positionally and argparse stops treating later tokens as options.
+    cmd = [str(capa_path), *(extra_args or []), "--json", str(file_path)]
 
     # capa is a PyInstaller bundle, so a timeout SIGKILLs it before it can
     # remove the ~70 MB it unpacked into TMPDIR. The private directory is

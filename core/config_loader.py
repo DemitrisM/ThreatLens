@@ -65,8 +65,27 @@ class ConfigError(Exception):
 DEFAULTS = {
     "virustotal_api_key": "",
     "yara_rules_dir": "./rules/yara",
+    # Paths, NOT bare command names, and deliberately so. Both settings are
+    # resolved by modules.static._bundled_tool.resolve_tool, which accepts
+    # either — a value containing a separator is used as a path, a bare name
+    # is looked up on PATH. The container sets bare names in its own config
+    # because it installs the tools from PyPI as console scripts.
+    #
+    # The default stays a path because a default must not change existing
+    # behaviour. config.yaml is gitignored, so a fresh clone runs on DEFAULTS
+    # alone; defaulting to "capa" would stop the hand-placed ./bin/capa from
+    # being found and silently drop capability detection and FLOSS. Measured
+    # before this was reverted: capa "skipped — binary not found" and
+    # string_analysis source="raw", with both binaries present in ./bin.
     "floss_binary": "./bin/floss",
     "capa_binary": "./bin/capa",
+    # capa's rule set and FLIRT signatures. None means "not configured", and
+    # that default is load-bearing: capa_analysis treats a configured-but-
+    # absent directory as a hard skip, so naming any path here would make
+    # every install carrying the self-contained bundled binary look
+    # misconfigured and lose capa entirely.
+    "capa_rules_dir": None,
+    "capa_signatures_dir": None,
     "output_dir": "./reports",
     # WARNING, not INFO: the shipped config.yaml and every doc say WARNING,
     # and only the no-config path ever saw INFO — so a user without a

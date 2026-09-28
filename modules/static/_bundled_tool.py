@@ -1,16 +1,30 @@
-"""Shared containment for the PyInstaller one-file binaries in ``bin/``.
+"""Finding and containing the two external tools ThreatLens shells out to.
 
-Both external tools ThreatLens shells out to — FLOSS and capa — are
-PyInstaller one-file bundles rather than native binaries. Verified: neither
-carries a Go section, and each embeds its own interpreter (``libpython3.8``
-in FLOSS, ``libpython3.10`` in capa). The bootloader unpacks the whole
-application into ``$TMPDIR/_MEIxxxxxx`` at startup and removes it on a clean
-exit.
+Two concerns, both belonging to "how do we invoke FLOSS and capa":
+
+``resolve_tool`` finds the executable. ``private_extraction_dir`` contains
+what it leaves behind.
+
+The tools can arrive two ways, and both must keep working. Historically they
+were **PyInstaller one-file bundles** placed by hand in ``bin/`` — a Python
+program plus its own private interpreter (``libpython3.8`` in FLOSS,
+``libpython3.10`` in capa; neither is the 3.12 this project runs on). From
+0.6.0 they are also installable from PyPI as ``flare-floss`` and
+``flare-capa``, which put ordinary console scripts on ``PATH``. Same tools,
+same versions, different delivery.
 
 Design notes
 ------------
-The contract this module exists for: **a bundle that is killed never cleans
-up after itself.** ``subprocess.run(timeout=...)`` ends a late child with
+**Resolution is security-relevant, which is why it lives in one function.**
+A configured value with no path separator is a *command name* and is looked
+up with ``shutil.which`` only — never with ``Path(name).exists()``. The
+reason is concrete: the container sets its working directory to the folder of
+samples under analysis, so a sample named ``capa`` sitting there would
+satisfy an existence check against the CWD and ThreatLens would execute the
+malware instead of the tool. A name is not a path.
+
+**Containment exists because a killed bundle never cleans up after itself.**
+``subprocess.run(timeout=...)`` ends a late child with
 ``Popen.kill()``, which is ``SIGKILL``, and no process can trap that. So the
 extraction directory survives the run. Measured against ``bin/floss`` with a
 3-second budget: ``TimeoutExpired`` raised and 62.5 MB left behind.
@@ -45,8 +59,63 @@ import logging
 import os
 import shutil
 import tempfile
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_tool(name: str | None) -> Path | None:
+    """Resolve a configured tool setting to an executable path.
+
+    Args:
+        name: The configured value — either a command name to look up on
+              ``PATH`` (``"capa"``) or a path to use directly
+              (``"./bin/capa"``). ``None`` or empty means unconfigured.
+
+    Returns:
+        The resolved path, or ``None`` when nothing usable was found. The
+        caller is expected to treat ``None`` as a graceful skip per design
+        rule 2, never as an error.
+
+    Raises:
+        Nothing.
+    """
+    if not name:
+        return None
+
+    # Coerce before inspecting. This value comes from config.yaml, so YAML
+    # decides its type: `capa_binary: true` arrives as a bool and
+    # `capa_binary: 123` as an int, and both make the separator test below
+    # raise `TypeError: argument of type 'bool' is not iterable`. That would
+    # kill the pipeline over a typo, which design rule 2 forbids. A
+    # non-string cannot name a tool, so treating it as unset and letting the
+    # caller skip is the correct outcome for a misconfiguration.
+    if not isinstance(name, str):
+        logger.warning(
+            "tool setting is %s, not a string — treating it as unset",
+            type(name).__name__,
+        )
+        return None
+
+    # A separator makes it a path, and a path is checked directly so that a
+    # hand-placed ./bin/capa keeps working after the PyPI move.
+    separators = [os.sep] + ([os.altsep] if os.altsep else [])
+    if any(s in name for s in separators):
+        candidate = Path(name)
+        # is_file(), not exists(): a directory of that name is not a tool,
+        # and subprocess would fail with a confusing EACCES/EISDIR later.
+        if not candidate.is_file():
+            return None
+        # Absolute, so what will actually be executed is unambiguous and can
+        # be logged as one string. It also means a later change of working
+        # directory cannot redirect an already-resolved tool.
+        return candidate.resolve()
+
+    # No separator: a command name. shutil.which searches PATH and, on
+    # POSIX, does NOT consult the working directory — which is the whole
+    # point. Never substitute an existence check here; see Design notes.
+    found = shutil.which(name)
+    return Path(found).resolve() if found else None
 
 
 @contextlib.contextmanager
