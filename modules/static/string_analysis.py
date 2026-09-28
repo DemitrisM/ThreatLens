@@ -36,7 +36,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from modules.static._bundled_tool import private_extraction_dir
+from modules.static._bundled_tool import private_extraction_dir, resolve_tool
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +249,7 @@ def run(file_path: Path, config: dict) -> dict:
     # one branch rather than five. Which path ran is recorded in the data,
     # not inferred by the reporters.
     # ------------------------------------------------------------------
-    floss_path = Path(config.get("floss_binary", "./bin/floss"))
+    floss_path = resolve_tool(config.get("floss_binary", "floss"))
 
     # FLOSS gets its own budget, like capa does. It used to be handed the
     # generic `module_timeout_seconds` (default 60), which emulation cannot
@@ -413,7 +413,8 @@ def _run_floss(
                    no stack, tight or decoded strings. When True, run
                    FLOSS's default, which emulates. Set from the scan
                    profile, never from the file.
-        floss_path: Path to the FLOSS binary. Absent on a fresh clone —
+        floss_path: Resolved path to FLOSS, or None when it could not be
+                   found. Absent on a fresh clone —
                     install.sh downloads it — so that case logs at info.
         timeout:    Wall-clock bound. FLOSS emulates code to recover
                     decoded strings and is by far the slowest thing in a
@@ -432,8 +433,14 @@ def _run_floss(
         that far, and reporting an absent binary that way invents a
         300-second wait that never happened.
     """
-    if not floss_path.is_file():
-        logger.info("FLOSS binary not found at %s", floss_path)
+    # Two ways to have no tool, and both must read as "missing" rather than
+    # as a launch failure: `run()` hands None when resolution found nothing,
+    # and a direct caller can still pass a path that is not there. Letting
+    # the second fall through to subprocess would report it as "oserror",
+    # which tells the analyst to check their install when the honest answer
+    # is that FLOSS was never present.
+    if floss_path is None or not floss_path.is_file():
+        logger.info("FLOSS not found (resolved to %s)", floss_path)
         return None, "missing"
 
     # `--only static` is the entire cost control. Measured over the 30 PE

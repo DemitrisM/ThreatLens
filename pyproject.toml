@@ -32,6 +32,23 @@ analysis = [
     "py7zr>=0.20.8",
     "pycdlib>=1.14.0",
 ]
+# FLOSS and capa as Python packages rather than the pre-built one-file
+# binaries in ./bin. Same tools, same versions — "flare-" is Mandiant's team
+# name, not a fork. Measured on the corpus: capa runs end to end in 3.0s
+# against the bundle's 5.3s, and FLOSS output is byte-identical.
+#
+# Pinned with == rather than >=, which is deliberate. capa's rule set and
+# FLIRT signatures are NOT shipped in the wheel (the PyInstaller bundle
+# embeds them; the package does not, and exits 10 without them), so they are
+# fetched separately and pinned to the matching git tag. A floating tool
+# version would silently desync from its rules.
+#
+# Kept out of `analysis` so the bundled-binary workflow is unaffected.
+tools = [
+    "flare-capa==9.4.0",
+    "flare-floss==3.1.1",
+]
+
 # The C ssdeep binding, kept OUT of `analysis` on purpose. It is sdist-only
 # and needs libfuzzy-dev plus a compiler, so listing it there would turn a
 # working `pip install .[analysis]` into a build failure on any machine
