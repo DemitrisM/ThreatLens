@@ -22,7 +22,7 @@ Everything before it is a step toward that.
 | 0.5.12 | `reporting/` complete — the verdict now narrates every finding the modules scored |
 | 0.5.13 | FLOSS runs for the first time — emulation moved onto the `-p deep` axis |
 | 0.5.14 | The bundled tools stop leaking on a timeout; C ssdeep; the defect log split out |
-| 0.5.15 | *(current)* Containerised — the image builds, and finding out why it disagreed with the host fixed a real detection bug |
+| 0.5.15 | *(current)* Containerised — the image builds, and finding out why it disagreed with the host fixed a real detection bug. Phase 4's eight-step plan closes with the README |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
@@ -242,10 +242,68 @@ only through a `--system-site-packages` virtualenv, while the lockfile pins
 
 ### Tests
 
-**1129, up from 1114.** The new resolution and PDF tests were each verified
+**1131, up from 1114.** The new resolution and PDF tests were each verified
 to fail against the unfixed code — three of the PDF tests pass either way on
 a machine carrying peepdf 5.3.0, which is precisely why a mechanism test
-exists alongside them.
+exists alongside them. The last two are `test_compose_version.py`, confirmed
+to fail against the 0.5.14 tag before being kept.
+
+Measured on this machine: **1131 passed, 1 deselected in 78s** with the
+corpus present, and **1108 passed, 23 skipped** without it — exit 0 either
+way, which is why the README prints both numbers rather than the status.
+
+### Added — the README, and Phase 4's plan closes
+
+Step 8, and with it all eight steps. **Every command in the README was run
+against a fresh clone of `origin/main`**, in a scratch directory rather than
+in the working tree, which is the only reason four errors were caught:
+
+- `docker compose run` has **no `--network` flag** in Compose v2.40.3, so the
+  offline scan is documented as a plain `docker run`. It derives the rules
+  volume from the project directory, because Compose prefixes the name and a
+  hardcoded one is wrong in every other clone.
+- `bin/capa` and `bin/floss` are gitignored, so **a fresh clone has neither**,
+  and the two dependent modules degrade *differently*: `capa_analysis` skips
+  outright, `string_analysis` succeeds and falls back to raw extraction.
+- `pytest` is in the `dev` extra, not `analysis`, so the documented test
+  command could not run as written.
+- Without the corpus the suite is **1106 passed, 23 skipped, exit 0**, against
+  1129 passed with it. The exit status cannot tell those apart, so the README
+  prints both numbers.
+
+`LICENSE` added — MIT, the licence `pyproject.toml` had declared since the
+start with no file behind it.
+
+### Changed — the image tag is now pinned by a test, not by hand
+
+`docker-compose.yml` built `threatlens:0.5.14` while the package was 0.5.15.
+Compose tags whatever it is told, so the drift produced no error at all: it
+just meant an image whose name claimed a version the code inside it was not.
+
+Bumping the number would have fixed this instance and none of the next ones,
+so `tests/test_compose_version.py` now pins the tag to `cli.__version__`, and
+the README's raw `docker run` with it — three copies of one version string.
+The test was confirmed to fail against the 0.5.14 tag before being kept.
+
+### Changed — development notes are no longer in the public tree
+
+The repository is public, and `HANDOFF.md`, `docs/phase4_docker_plan.md`,
+`docs/defect_log.md`, `docs/docker_session_brief.md`, `docs/learn/` and
+`docs/scoring.md` were tracked, so they had been readable by anyone since
+27 September. They are working material for a tool that is not yet at beta —
+the scoring reference in particular describes weights that the end-of-project
+calibration sweep is expected to change, so publishing it now would document
+numbers that are going to move.
+
+Untracked, added to `.gitignore`, and removed from history with
+`git filter-repo` followed by a force push, so the 152 rewritten commits no
+longer contain them. Every hash changed; any other clone must be re-cloned.
+**`git rm --cached` alone would not have been enough** — the files stay
+readable at their old commits, which is what a public clone fetches.
+
+No credential was ever exposed: every path that has ever been tracked was
+audited, and `config.yaml`, `.env` and `CLAUDE.md` have never been in the
+repository at all. The stale `malware_triage.egg-info/` went the same way.
 
 ## 0.5.13 — 2026-09-25
 

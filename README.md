@@ -132,10 +132,22 @@ them degrade differently:
 - `string_analysis` still **succeeds**, falling back to raw ASCII extraction.
   You keep strings; you lose FLOSS's stack, tight and decoded ones.
 
-Nothing crashes either way. Measured on one corpus sample, the difference is
-100/CRITICAL with both tools against 93/CRITICAL without — the band held, the
-evidence behind it did not. The Docker image has both already; on the host,
-pick one of these.
+Nothing crashes either way. Measured across six real PE samples, having both
+tools is worth between **0 and 9 points**, and **the risk band did not move on
+any of them** — 100 against 91 on `Amadey.exe`, 100 against 93 on
+`RedLineStealer.exe`, and no difference at all on the other four.
+
+The reason those four tie is worth knowing, because it is not that capa found
+nothing. **capa timed out at the default `capa_timeout_seconds: 120` on four of
+the six, with the binary present and working.** It reports `skipped`, the scan
+succeeds, and the score matches having no capa installed at all.
+
+Given a 900s budget instead, those same samples score heavily: `AsyncRAT.exe`
+finishes in 137s for **+60**, `AgentTesla.exe` in 723s for **+45**. So if you
+want capa's evidence, raise the budget — `-p deep` only takes it to 180, which
+recovers the first of those two and not the second.
+
+The Docker image has both tools already; on the host, pick one of these.
 
 **Fetch the binaries** — matches the built-in defaults, so no config edit and
 no separate rule set. Their rules are embedded:
@@ -149,10 +161,17 @@ unzip -j -d bin /tmp/capa.zip capa && unzip -j -d bin /tmp/floss.zip floss
 chmod +x bin/capa bin/floss
 ```
 
-**Or install the PyPI packages** — the same tools, and capa runs about 40%
-faster. But the wheels do not carry capa's rules or FLIRT signatures, and capa
-exits 10 without them, so both must be fetched at the matching tag and pointed
-at explicitly:
+**Or install the PyPI packages** — the same tools. ("flare-" is Mandiant's team
+name, not a fork.) They start faster, because the `./bin` copies are
+PyInstaller bundles that unpack themselves on every run: 3.0s against 5.3s end
+to end, measured on one small sample during the containerisation work. Do not
+read that as a 40% saving on a long analysis — the samples above take capa
+between 137 and 723 seconds, and the bundle's unpacking is a fixed cost, not a
+proportional one.
+
+The wheels do not carry capa's rules or FLIRT signatures, and capa exits 10
+without them, so both must be fetched at the matching tag and pointed at
+explicitly:
 
 ```bash
 .venv/bin/pip install -e '.[tools]'
@@ -327,7 +346,7 @@ the `.lnk` size ceiling — are grouped and commented in `config.docker.yaml`.
 
 ## Tests
 
-1129 tests, green on the host and inside the image on a machine that has the
+1131 tests, green on the host and inside the image on a machine that has the
 malware corpus. `pytest` is not part of `.[analysis]`, so install it first.
 
 ```bash
@@ -351,9 +370,9 @@ Corpus scans that need the network or a long capa run are deselected by
 default; `-m corpus_slow` runs those on their own.
 
 **On a machine without the malware corpus, the 23 tests that scan real samples
-skip rather than fail** — 1106 passed, 23 skipped, and the exit status is still
+skip rather than fail** — 1108 passed, 23 skipped, and the exit status is still
 0. A skipped test looks exactly like a passing one in the tally, so read the
-skip count and not just the exit status. With the corpus present it is 1129
+skip count and not just the exit status. With the corpus present it is 1131
 passed and nothing skipped. `tests/_corpus.py` resolves the path in one place
 and `THREATLENS_CORPUS` overrides it:
 
