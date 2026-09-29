@@ -1,0 +1,97 @@
+# The ground-truth arm: build the image and run the suite inside it.
+#
+# Docker is the single shipping path, so this is the only job that tests what
+# users actually get — and the only one that exercises requirements.lock end to
+# end, ssdeep compilation included.
+#
+# It runs on source changes as well as packaging ones. Filtering .py out would
+# leave a real hole: a change that breaks only under the container, or only
+# after the gosu privilege drop, would pass tests.yml and merge, breaking the
+# one supported release format. Docs-only changes are the waste worth skipping.
+#
+# The two path lists below are duplicated rather than shared with a YAML
+# anchor, because GitHub Actions does not support anchors and this file cannot
+# be tested against its parser from a developer machine. Keep them in step.
+#
+# No registry push. The unar licence reasoning that made users build the image
+# themselves has not changed, and the build here is a check, not a release.
+# That also keeps two more third-party actions out of the supply chain; the
+# cost is no layer cache, which the path filter pays for.
+
+name: docker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.py'
+      - 'tests/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'entrypoint.sh'
+      - 'requirements.lock'
+      - 'pyproject.toml'
+      - 'config.docker.yaml'
+      - '.dockerignore'
+      - '.github/workflows/docker.yml'
+      - '.github/check_skips.py'
+  pull_request:
+    paths:
+      - '**.py'
+      - 'tests/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'entrypoint.sh'
+      - 'requirements.lock'
+      - 'pyproject.toml'
+      - 'config.docker.yaml'
+      - '.dockerignore'
+      - '.github/workflows/docker.yml'
+      - '.github/check_skips.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Exactly what the README tells a user to do, so this job exercises the
+      # documented first run rather than a private variant of it. Without the
+      # uid, entrypoint.sh chowns the mounts to 1000 and the JUnit XML comes
+      # back owned by a user this runner is not.
+      - name: Mount points and uid
+        run: |
+          mkdir -p samples reports
+          cp .env.example .env
+          printf 'TL_UID=%s\nTL_GID=%s\n' "$(id -u)" "$(id -g)" >> .env
+
+      - name: Build
+        run: docker compose build
+
+      # Through the entrypoint with --exec, never --entrypoint pytest: the
+      # latter bypasses the gosu drop and runs the tests as root, hiding
+      # exactly the permission failures a real user hits. -w /app because
+      # compose sets working_dir: /data, so `pytest tests/` would otherwise
+      # look for /data/tests.
+      #
+      # THREATLENS_CORPUS is deliberately NOT set. CI holds no malware corpus,
+      # the real-sample tests skip, and the next step confirms that absence is
+      # the only reason anything skipped.
+      - name: Suite inside the image
+        run: |
+          docker compose run --rm -w /app \
+            threatlens --exec python -m pytest tests/ --junitxml=/reports/junit.xml
+
+      - name: Every skip must be a corpus skip
+        if: always()
+        run: python3 .github/check_skips.py reports/junit.xml

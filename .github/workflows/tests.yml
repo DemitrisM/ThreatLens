@@ -1,0 +1,78 @@
+# The fast arm: the suite on a clean Ubuntu runner, on every push.
+#
+# What this proves: the test suite still covers what it covered yesterday.
+# What it does NOT prove is in .github/check_skips.py — when a module degrades
+# gracefully the test passes, and nothing here can see that. Running the tool
+# against the real corpus is what catches those, and it stays local.
+#
+# Installed from pyproject.toml rather than requirements.lock on purpose. The
+# lockfile pins ssdeep, which is sdist-only and needs libfuzzy-dev, a compiler
+# and --no-build-isolation; reproducing the Dockerfile's two-pass wheel build
+# here would put that machinery in a second place for no gain. ssdeep is the
+# optional fast-hashing extra and file_intake falls back to ppdeep. The
+# lockfile is exercised end to end by docker.yml, where that build already
+# exists.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The default GITHUB_TOKEN is read/write. Nothing here writes.
+permissions:
+  contents: read
+
+# A superseded run on the same ref is wasted minutes.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # Actions pinned to full commit SHAs, not moving tags. A tag is a third
+      # party with write access to the build of a tool people are invited to
+      # point at hostile input. The readable version is the trailing comment.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'   # matches the Dockerfile's base
+          cache: pip
+
+      # Chosen to match the image's runtime stage, so the runner is not a
+      # third environment with its own behaviour. libmagic1t64 is the trixie
+      # and noble spelling; libmagic1 is the fallback on older runners.
+      # pcodedmp is NOT here: it is a pip console script from the analysis
+      # extra, and pip puts it on PATH.
+      - name: System packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libmagic-mgc cabextract unar git
+          sudo apt-get install -y --no-install-recommends libmagic1t64 \
+            || sudo apt-get install -y --no-install-recommends libmagic1
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[analysis,dev]'
+
+      # No extra -q: pyproject.toml already passes one, and a second makes it
+      # -qq, which suppresses the summary a human reads in this log. The XML
+      # is what the checker reads, and only --junitxml produces it.
+      - name: Tests
+        run: pytest --junitxml=junit.xml
+
+      # The step that earns this workflow its keep. A skip is indistinguishable
+      # from a pass in an exit code, and sixteen tests once excused themselves
+      # inside the container while the tally read green.
+      - name: Every skip must be a corpus skip
+        if: always()
+        run: python .github/check_skips.py junit.xml
