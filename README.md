@@ -303,15 +303,19 @@ would hit.
 Corpus scans that need the network or a long capa run are deselected by
 default; `-m corpus_slow` runs those on their own.
 
-**On a machine without the malware corpus, the tests that scan real samples
-skip rather than fail**, and a skipped test looks exactly like a passing one in
-the tally — so read the skip count, not just the exit status.
-`tests/_corpus.py` resolves the corpus path in one place and
-`THREATLENS_CORPUS` overrides it:
+**On a machine without the malware corpus, the 23 tests that scan real samples
+skip rather than fail** — 1106 passed, 23 skipped, and the exit status is still
+0. A skipped test looks exactly like a passing one in the tally, so read the
+skip count and not just the exit status. With the corpus present it is 1129
+passed and nothing skipped. `tests/_corpus.py` resolves the path in one place
+and `THREATLENS_CORPUS` overrides it:
 
 ```bash
 THREATLENS_CORPUS=/path/to/corpus .venv/bin/pytest
 ```
+
+`pyproject.toml` already passes `-q`, so adding your own makes it `-qq` and
+pytest prints no summary line at all — which is precisely the count you need.
 
 ## Where things are
 
