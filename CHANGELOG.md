@@ -228,6 +228,18 @@ commit produced different builds — measured, a hermetic install resolved
 the lockfile into a fresh environment reproduces it exactly: 115 requested,
 115 installed, nothing missing, extra or mismatched.
 
+### Verified — host and container agree on 307 of 311 samples
+
+Every corpus sample scored in both environments, comparing total score, risk
+band and each module's status and delta. Zero crashes either side. The four
+that differ are all `pdf_analysis`, and the cause is the peepdf version, not
+the container: a clean host environment with a newer peepdf reproduces the
+container's numbers exactly, and **the container finds more, not less**.
+
+The host lags because `peepdf-3` 5.3.0 lives in `~/.local` and is visible
+only through a `--system-site-packages` virtualenv, while the lockfile pins
+5.4.1. The host is the outlier; the image matches what the project declares.
+
 ### Tests
 
 **1129, up from 1114.** The new resolution and PDF tests were each verified
