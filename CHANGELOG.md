@@ -21,7 +21,8 @@ Everything before it is a step toward that.
 | 0.5.11 | Design rules 6 and 8 made true — the palette is enforced, machine output is exact |
 | 0.5.12 | `reporting/` complete — the verdict now narrates every finding the modules scored |
 | 0.5.13 | FLOSS runs for the first time — emulation moved onto the `-p deep` axis |
-| 0.5.14 | *(current)* The bundled tools stop leaking on a timeout; C ssdeep; the defect log split out |
+| 0.5.14 | The bundled tools stop leaking on a timeout; C ssdeep; the defect log split out |
+| 0.5.15 | *(current)* Containerised — the image builds, and finding out why it disagreed with the host fixed a real detection bug |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
@@ -147,6 +148,92 @@ containment: a killed child leaving nothing behind, the directory being
 private to one invocation, `os.environ` staying untouched, graceful
 degradation when the directory cannot be made, and both call sites passing a
 private `TMPDIR`.
+
+## 0.5.15 — 2026-09-29
+
+Phase 4 steps 1 to 6. ThreatLens builds and runs as a Docker image. The
+lasting value is not the image: it is that **making a second environment
+exist exposed four defects the single environment had been hiding**.
+
+### Fixed — pdf_analysis lost detections depending on where it was run
+
+peepdf writes scratch files into the current working directory while
+parsing, and when it cannot it abandons the object it was reading rather
+than reporting a failure. So the analysis silently depended on wherever the
+caller happened to be standing, and it bit in both directions.
+
+**Unwritable directory loses findings.** The shipped container sets its
+working directory to the samples mount, read-only by design because a static
+scan must never write to a sample. Measured on `booking.pdf`: **0 JavaScript
+blocks extracted instead of 1**, the social-engineering lure *"non
+compatibile, aprilo nel browser"* missed, and **45/MEDIUM against the host's
+65/HIGH** — a band change, reported as `status: "success"`, with nothing
+saying the environment had degraded the analysis. Same class as the degraded
+FLOSS run in 0.5.13.
+
+**Writable directory gets littered instead.** 30 stray
+`<sample>-<timestamp>-peepdf-jserrors.txt` files had accumulated in the
+repository root, and would appear wherever a user ran a scan from.
+
+Version-dependent, which is why neither was noticed: peepdf-3 5.3.0 does not
+write, 5.4.1 does. **Five hypotheses were eliminated by measurement** before
+the real cause — the peepdf version itself (all three tested versions score
+identically in a clean environment), the JavaScript engine, the Python patch
+version, the text encoding, and all nine of peepdf's dependencies. Isolated
+by running one image, one user, against an unwritable versus a writable
+directory: 30 against 50.
+
+Fixed by owning the directory rather than configuring around it, so the
+module behaves identically on every peepdf version and every host.
+
+### Fixed — sixteen tests had been silently skipping
+
+The suite reported **1107 passed, 16 skipped** inside the image against 1123
+on the host. Five test files hardcoded an absolute corpus path under one
+developer's home directory; only `test_live_corpus.py` honoured
+`$THREATLENS_CORPUS`. A skipped test is indistinguishable from a passing one
+in a tally, so the plan's own acceptance check — "the suite passes inside the
+image" — would have passed while sixteen real-sample tests quietly excused
+themselves. Resolved in one place now, `tests/_corpus.py`.
+
+### Added — the image, and what the build corrected
+
+867 MB, Debian trixie, runs unprivileged. Six plan defects the build found in
+about fifteen seconds each, none of them catchable by review because each is
+a fact about the base image or a package's build system: `libmagic1` is
+`libmagic1t64` here; `python3-dev` was unnecessary and the wrong version; a
+blanket `--no-build-isolation` breaks `binary2strings` while `ssdeep`
+requires it; `setuptools<81` is needed because 84.0.0 ships no
+`pkg_resources`; `ssdeep` also wants `six` and `cffi` at metadata time; and
+`unrar` is non-free and absent, so `unar` is used instead — **verified
+against all 30 RAR samples, every score and flag matching, including RAR5
+and the CVE-2025-8088 NTFS-ADS sample.** The licence question is gone.
+
+`setuptools<81` is the one the host could never have caught: its virtualenv
+was built with `--system-site-packages` and silently borrowed
+`pkg_resources` from the system, so `ssdeep` built there and failed here.
+
+### Free hardening the host install does not have
+
+Docker mounts `/tmp` `noexec`. Extracted malware lands there, so a payload
+unpacked from a hostile archive cannot be executed from it even by accident.
+Kept deliberately.
+
+### Added — reproducibility
+
+`requirements.lock`, 115 exact pins, dependencies only. Every dependency was
+`>=` with no ceiling and there was no lockfile, so two installs of the same
+commit produced different builds — measured, a hermetic install resolved
+`click==8.5.0` the same day the working venv held `8.3.1`. Installing from
+the lockfile into a fresh environment reproduces it exactly: 115 requested,
+115 installed, nothing missing, extra or mismatched.
+
+### Tests
+
+**1129, up from 1114.** The new resolution and PDF tests were each verified
+to fail against the unfixed code — three of the PDF tests pass either way on
+a machine carrying peepdf 5.3.0, which is precisely why a mechanism test
+exists alongside them.
 
 ## 0.5.13 — 2026-09-25
 
