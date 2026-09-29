@@ -1,0 +1,3 @@
+Bind-mount source for `docker compose` — see samples/.gitkeep for why an
+empty directory is tracked rather than created on demand. Reports written
+inside the container land here on the host.

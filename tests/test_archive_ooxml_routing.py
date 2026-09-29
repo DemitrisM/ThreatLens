@@ -16,6 +16,7 @@ import pytest
 
 from modules.static.archive_analysis import run as archive_run
 from modules.static.archive_analysis.routing import is_office_ooxml_zip
+from tests._corpus import corpus_root
 
 _PE = b"MZ" + b"\x90\x00" * 20 + b"PE\x00\x00" + b"\x00" * 2000
 
@@ -221,7 +222,7 @@ def test_declining_to_defer_does_not_cost_the_document_its_macro_analysis():
     rather than a hardening.
     """
     sample = next(
-        (p for p in Path("/home/pmafma/Documents/Malware").rglob("*.docm")),
+        (p for p in corpus_root().rglob("*.docm")),
         None,
     )
     if sample is None:

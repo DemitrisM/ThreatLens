@@ -42,6 +42,7 @@ from modules.static.lnk_analysis.propstore import parse_property_store
 from modules.static.lnk_analysis.scoring import score_lnk
 from modules.static.lnk_analysis.shellitems import decode_shell_item, fat_timestamp
 from reporting.terminal_reporter.lnk import lnk_rows, visualise_padding
+from tests._corpus import corpus_path
 
 # ---------------------------------------------------------------------------
 # Builders
@@ -1120,9 +1121,7 @@ def test_zeroed_and_identical_timestamps_are_still_forgery():
 # Oversized shortcuts must not be skipped
 # ---------------------------------------------------------------------------
 
-_CORPUS_LNK = pathlib.Path(
-    "/home/pmafma/Documents/Malware/lnk test malware/Grandoreiro.lnk"
-)
+_CORPUS_LNK = corpus_path("lnk test malware", "Grandoreiro.lnk")
 
 
 @pytest.mark.skipif(not _CORPUS_LNK.exists(), reason="corpus sample unavailable")

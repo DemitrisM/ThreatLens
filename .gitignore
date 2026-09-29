@@ -13,7 +13,13 @@ __pycache__/
 # nothing.
 build/
 
-reports/
+# Bind-mount sources for docker compose. The directories themselves are
+# tracked (via .gitkeep) because Docker creates a missing bind-mount source
+# as root:root on the host; their contents are not.
+reports/*
+!reports/.gitkeep
+samples/*
+!samples/.gitkeep
 tests/samples/
 
 config.yaml
@@ -28,3 +34,12 @@ rules/yara/eset-malware-ioc/
 rules/yara/.rule_sources.json
 
 UI_Report
+
+# Holds a real VirusTotal key. The .example template is tracked instead.
+.env
+
+# peepdf writes <sample>-<timestamp>-peepdf-jserrors.txt into the working
+# directory. pdf_analysis now parses inside a scratch directory it owns, so
+# these should never appear — but the fallback path when that directory
+# cannot be created still parses in place, so this is belt and braces.
+*-peepdf-jserrors.txt

@@ -17,10 +17,9 @@ from modules.static.onenote_analysis.embedded import (
     _LNK_SIGNATURE,
     classify_blob,
 )
+from tests._corpus import corpus_path
 
-_CORPUS_LNK = pathlib.Path(
-    "/home/pmafma/Documents/Malware/lnk test malware/Grandoreiro.lnk"
-)
+_CORPUS_LNK = corpus_path("lnk test malware", "Grandoreiro.lnk")
 
 # HeaderSize 0x4C followed by the Shell.Link CLSID
 # 00021401-0000-0000-C000-000000000046 in packet byte order.
@@ -81,7 +80,7 @@ def test_a_non_lnk_blob_is_not_typed_as_one():
 # Script sniffing
 # ---------------------------------------------------------------------------
 
-_CORPUS_ONENOTE = pathlib.Path("/home/pmafma/Documents/Malware/onenote test malware")
+_CORPUS_ONENOTE = corpus_path("onenote test malware")
 
 
 @pytest.mark.parametrize(
