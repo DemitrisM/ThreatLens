@@ -16,6 +16,7 @@ still using the bundled binary is completely unaffected.
 """
 
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -32,41 +33,80 @@ def _make_executable(path: Path, body: str = "#!/bin/sh\nexit 0\n") -> Path:
 # ======================================================================
 # Resolution
 # ======================================================================
-def test_a_bare_name_resolves_through_path(tmp_path, monkeypatch):
+def test_a_bare_name_resolves_through_path():
+    """The PATH branch, using a command guaranteed to exist and be runnable.
+
+    Deliberately not a temp-directory fixture. `shutil.which` decides with
+    `os.access(path, os.X_OK)`, and Docker mounts `--tmpfs /tmp` as
+    `rw,nosuid,nodev,noexec` — so a file created under pytest's `tmp_path`
+    inside the container is never executable however its mode bits are set,
+    and a test built on one fails on a false premise. That noexec mount is
+    worth keeping: extracted malware lands in /tmp. `sh` is on PATH in any
+    POSIX environment, host or image, so the branch is tested against a real
+    executable and no filesystem is fought.
+    """
     from modules.static._bundled_tool import resolve_tool
 
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    _make_executable(bindir / "capa")
-    monkeypatch.setenv("PATH", str(bindir))
-
-    assert resolve_tool("capa") == bindir / "capa"
+    resolved = resolve_tool("sh")
+    assert resolved is not None
+    assert resolved.is_file()
+    assert resolved == Path(shutil.which("sh")).resolve()
 
 
 def test_a_bare_name_ignores_a_same_named_file_in_the_cwd(tmp_path, monkeypatch):
     """The security case, and the reason a bare name must not be a path.
 
-    The container sets ``working_dir`` to the directory of samples under
-    analysis. If a bare name were tested with ``Path(name).exists()``, a
-    sample named ``capa`` sitting in that directory would satisfy it, and
-    ThreatLens would execute the malware instead of capa.
+    The container sets its working directory to the folder of samples under
+    analysis. If a bare name were tested with `Path(name).exists()`, a sample
+    sitting there would satisfy it and ThreatLens would execute the malware
+    instead of the tool.
+
+    The decoy is deliberately **not** executable, which makes the test
+    stronger rather than weaker: `Path(name).exists()` does not care about
+    the execute bit, so a plain file is enough to catch that mistake — and
+    it needs nothing from the filesystem, so the test behaves identically on
+    the host and inside a noexec container.
     """
     from modules.static._bundled_tool import resolve_tool
 
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    real = _make_executable(bindir / "capa")
-    monkeypatch.setenv("PATH", str(bindir))
+    real = Path(shutil.which("sh")).resolve()
 
-    # A hostile file of the same name, in the working directory.
-    cwd = tmp_path / "samples"
-    cwd.mkdir()
-    _make_executable(cwd / "capa", "#!/bin/sh\nexit 66\n")
-    monkeypatch.chdir(cwd)
+    decoy = tmp_path / "sh"
+    decoy.write_text("#!/bin/sh\nexit 66\n")
+    monkeypatch.chdir(tmp_path)
+    assert decoy.exists(), "the decoy must exist, or the test proves nothing"
 
-    resolved = resolve_tool("capa")
+    resolved = resolve_tool("sh")
     assert resolved == real, "a bare name must never resolve against the CWD"
-    assert resolved.parent != cwd
+    assert resolved != decoy.resolve()
+
+
+def test_a_bare_name_is_resolved_by_which_and_nothing_else(monkeypatch):
+    """Pin the mechanism, not just the outcome.
+
+    The decoy test above proves a bare name does not resolve to a CWD file,
+    but it cannot catch every way of getting there: a decoy that is not
+    executable would also be rejected by `os.access(name, os.X_OK)`, so
+    swapping `shutil.which` for a hand-rolled CWD check would still pass it.
+
+    This asserts the branch delegates to `shutil.which` and returns what it
+    says — so a reimplementation that consults the filesystem directly fails
+    here even if its answer happens to be right on the test machine.
+    """
+    from modules.static import _bundled_tool
+
+    sentinel = Path("/nowhere/real/capa")
+    seen = []
+
+    def _fake_which(name, *a, **kw):
+        seen.append(name)
+        return str(sentinel)
+
+    monkeypatch.setattr(_bundled_tool.shutil, "which", _fake_which)
+    resolved = _bundled_tool.resolve_tool("capa")
+
+    assert seen == ["capa"], "the bare name must be handed to shutil.which verbatim"
+    assert resolved == sentinel, "and its answer must be what is returned"
 
 
 def test_a_value_with_a_separator_is_treated_as_a_path(tmp_path, monkeypatch):
@@ -239,10 +279,12 @@ def test_default_binaries_still_point_at_the_bundled_location(tmp_path, monkeypa
     assert DEFAULTS["floss_binary"] == "./bin/floss"
 
     # And the default must resolve without PATH help, which is the whole point.
-    monkeypatch.setenv("PATH", str(tmp_path))
+    # An ordinary file suffices: the path branch tests is_file(), not the
+    # execute bit, so this works on a noexec filesystem too.
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     monkeypatch.chdir(tmp_path)
     (tmp_path / "bin").mkdir()
-    _make_executable(tmp_path / "bin" / "capa")
+    (tmp_path / "bin" / "capa").write_text("#!/bin/sh\nexit 0\n")
     assert resolve_tool(DEFAULTS["capa_binary"]) is not None
 
 

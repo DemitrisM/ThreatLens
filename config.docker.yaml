@@ -1,0 +1,90 @@
+# In-container configuration. Every internal path is ABSOLUTE.
+#
+# This file is found through THREATLENS_CONFIG, set in the Dockerfile — not
+# by sitting next to the code. The loader's search chain is
+# --config, $THREATLENS_CONFIG, ./config.yaml, ~/.config/threatlens/, and
+# that third entry is relative to the working directory. The container sets
+# working_dir to the user's mount so relative paths on the command line mean
+# what the user expects, which puts this file out of reach of the CWD entry.
+# Without the environment variable the loader would silently fall back to
+# DEFAULTS, find no rules and no tools, and still print a verdict.
+
+virustotal_api_key: ""          # supplied via $THREATLENS_VT_KEY
+
+yara_rules_dir: "/app/rules/yara"     # named volume, populated by `rules update`
+output_dir: "/reports"                # a TOP-LEVEL mount, deliberately not
+                                      # inside /data: nesting it there would
+                                      # make Docker create a root-owned
+                                      # directory inside the user's samples
+                                      # folder, and `triage /data` would then
+                                      # walk its own output
+
+# Bare names: the image installs flare-capa and flare-floss from the lockfile
+# as console scripts. resolve_tool() sends a name with no path separator to
+# shutil.which and nowhere else, which is what stops a sample named `capa` in
+# the mounted working directory from being executed instead of the tool.
+capa_binary: "capa"
+floss_binary: "floss"
+
+# The PyPI capa package does not embed these; the PyInstaller bundle did.
+# Pinned to the same tag as flare-capa in the Dockerfile. A configured but
+# absent directory is a hard skip naming the path, never a silent zero-
+# capability result.
+capa_rules_dir: "/opt/capa-rules"
+capa_signatures_dir: "/opt/capa-sigs"
+
+log_level: "WARNING"
+module_timeout_seconds: 60
+capa_timeout_seconds: 120
+floss_timeout_seconds: 300
+floss_emulation: false
+
+enabled_modules:
+  - file_intake
+  - pe_analysis
+  - string_analysis
+  - ioc_extractor
+  - capa_analysis
+  - yara_scanner
+  - doc_analysis
+  - pdf_analysis
+  - html_analysis
+  - archive_analysis
+  - onenote_analysis
+  - lnk_analysis
+  - virustotal
+
+dynamic_provider: "none"
+
+archive_full_recursion: false
+max_archive_recursion_depth: 3
+max_archive_extracted_size_mb: 500
+archive_bomb_ratio_threshold: 100
+archive_bomb_member_count_threshold: 1000
+archive_member_mime_check_max_mb: 10
+
+max_onenote_size_mb: 50
+max_onenote_blobs: 200
+onenote_full_recursion: false
+max_onenote_recursion_depth: 2
+
+max_ppdeep_size_mb: 8           # inert here: the image installs the C ssdeep
+                                # binding, which the cap exempts
+
+max_lnk_size_mb: 10
+lnk_ansi_codepage: "cp1252"
+
+rule_sources:
+  - name: "signature-base"
+    type: "git"
+    url: "https://github.com/Neo23x0/signature-base.git"
+    directory: "signature-base"
+    branch: "master"
+    enabled: true
+
+  - name: "eset-malware-ioc"
+    type: "git"
+    url: "https://github.com/eset/malware-ioc.git"
+    directory: "eset-malware-ioc"
+    branch: "master"
+    enabled: false

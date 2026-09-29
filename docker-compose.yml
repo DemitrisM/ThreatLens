@@ -1,0 +1,75 @@
+# How to RUN the image. The Dockerfile says how to build it; this file is the
+# long `docker run` line written down once, so nobody has to remember it.
+#
+# Requires Compose v2. `docker-compose` v1 is end-of-life and its handling of
+# the long-form tmpfs mount below is not something to rely on.
+#
+#   docker compose build
+#   docker compose run --rm threatlens rules update     # first run only
+#   docker compose run --rm threatlens scan sample.exe
+
+services:
+  threatlens:
+    build: .
+    image: threatlens:0.5.14
+
+    volumes:
+      # Your samples, READ-ONLY. A static scan never writes to a sample, so
+      # it is not given the chance to.
+      - ./samples:/data:ro
+
+      # Reports, at a TOP-LEVEL path and deliberately not inside /data.
+      # Nested inside the samples mount, Docker would create the mount point
+      # on the host — a root-owned `reports/` appearing inside your own
+      # samples folder — and `triage /data` would then walk the JSON it had
+      # just written.
+      - ./reports:/reports
+
+      # YARA rules as a NAMED volume, not a bind mount, so `rules update`
+      # survives the container exiting. A bind mount here would shadow the
+      # directory and its ownership instead.
+      - threatlens-rules:/app/rules/yara
+
+      # /tmp is where archive extraction lands, so it is sized from the
+      # extraction budget rather than from anything else:
+      # max_archive_extracted_size_mb is 500 PER ARCHIVE and recursion goes
+      # three deep, and nested children are analysed sequentially with each
+      # cleaning up before the next, so the worst case is parent + one child
+      # per level — about 1.5 GB. Note this is RAM, not disk.
+      #
+      # Long form on purpose. The short form (`tmpfs: - /tmp:size=2g`) is
+      # Docker CLI syntax and whether Compose parses the suffix is
+      # version-dependent; this spelling is unambiguous.
+      #
+      # Docker mounts tmpfs noexec, and that is kept: extracted malware lands
+      # here, and being unable to execute it from here is worth having.
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 2147483648        # 2 GiB
+
+    environment:
+      # Design rule 9: the key never reaches argv, only the environment.
+      - THREATLENS_VT_KEY=${THREATLENS_VT_KEY:-}
+
+      # Read by entrypoint.sh, which corrects mount ownership as root and
+      # then drops to this uid/gid with gosu. Set them in .env to your own
+      # `id -u` / `id -g`, or reports arrive on the host owned by 1000.
+      - TL_UID=${TL_UID:-1000}
+      - TL_GID=${TL_GID:-1000}
+
+    # So `scan sample.exe` means ./samples/sample.exe, not /app/sample.exe.
+    # The image's own paths are absolute in config.docker.yaml precisely so
+    # this can point at the user's mount.
+    working_dir: /data
+
+    # Analysing hostile input needs no network. `rules update` and the
+    # virustotal module do, so this cannot simply be `network_mode: none` —
+    # but a scan of a sample can be run with `--network none` on the command
+    # line, and that is worth knowing.
+    #
+    # Sample bytes never leave the machine regardless: design rule 3 means
+    # VirusTotal is queried by hash only.
+
+volumes:
+  threatlens-rules:

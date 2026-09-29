@@ -1,0 +1,11 @@
+Bind-mount source for `docker compose`. Kept in git on purpose.
+
+Docker creates a missing bind-mount source directory as root:root on the
+host. The container then runs unprivileged, so the first write into a
+directory Docker had to invent fails with EACCES — and for ./samples the
+worse outcome is a root-owned directory appearing inside your own working
+tree that you then need sudo to remove.
+
+Shipping the directory means it always exists, owned by whoever cloned the
+repository. Put samples you want to scan in here; everything except this
+file is ignored.

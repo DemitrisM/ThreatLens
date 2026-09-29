@@ -15,10 +15,9 @@ import pytest
 
 from modules.static.onenote_analysis import run
 from modules.static.onenote_analysis.parser import walk_file_data_store_objects
+from tests._corpus import corpus_path
 
-_SAMPLE = pathlib.Path(
-    "/home/pmafma/Documents/Malware/onenote test malware/Redline.one"
-)
+_SAMPLE = corpus_path("onenote test malware", "Redline.one")
 
 pytestmark = pytest.mark.skipif(
     not _SAMPLE.exists(), reason="corpus sample unavailable"

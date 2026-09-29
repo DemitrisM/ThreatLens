@@ -1,0 +1,38 @@
+# Keep the build context small. Written before the first build on purpose:
+# without it the context carries a 241 MB virtualenv, 54 MB of YARA rules and
+# — worst — the entire malware corpus from ./samples, all of which is then
+# discarded. Docker uploads the context to the daemon before doing anything.
+
+.venv/
+.git/
+.github/
+
+# The samples mount point. This is the important one: it is where the corpus
+# is bind-mounted at runtime, and shipping malware into a build context is
+# both slow and wrong.
+samples/
+reports/
+
+# Fetched at runtime by `threatlens rules update`, into a named volume.
+rules/yara/
+
+# The PyInstaller binaries. The image installs flare-capa and flare-floss
+# from the lockfile instead, so these 84.8 MB are dead weight here.
+bin/capa
+bin/floss
+
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+build/
+*.egg-info/
+.pytest_cache/
+
+# Author-facing documentation. The image does not need it.
+docs/
+UI_Report/
+
+# Never ship a config that may hold a VirusTotal key. The image has its own
+# config.docker.yaml and the key arrives through the environment.
+config.yaml

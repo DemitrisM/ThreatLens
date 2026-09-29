@@ -55,12 +55,11 @@ from core.pipeline import run_pipeline
 from reporting.terminal_reporter import print_terminal_report
 from reporting.terminal_reporter._common import use_console
 from tests.conftest import make_console
+from tests._corpus import corpus_root
 
 #: Where the samples live. Overridable so another machine can point at
 #: its own copy without editing the file.
-CORPUS_ROOT = Path(
-    os.environ.get("THREATLENS_CORPUS", "/home/pmafma/Documents/Malware")
-)
+CORPUS_ROOT = corpus_root()
 
 #: The format directories, and the modules each one is there to exercise.
 _FORMATS = (
