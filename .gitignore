@@ -43,3 +43,15 @@ UI_Report
 # these should never appear — but the fallback path when that directory
 # cannot be created still parses in place, so this is belt and braces.
 *-peepdf-jserrors.txt
+
+# Development notes — working material, not documentation. They go public
+# when the version they describe does, and not before. docs/usage.md,
+# docs/scoring.md and docs/cli_redesign_plan.md are listed at the top of this
+# file for the same reason.
+HANDOFF.md
+docs/phase4_docker_plan.md
+docs/docker_session_brief.md
+docs/defect_log.md
+docs/learn/
+CLAUDE.md
+docs/claude_context.md
