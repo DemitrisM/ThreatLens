@@ -55,3 +55,6 @@ docs/defect_log.md
 docs/learn/
 CLAUDE.md
 docs/claude_context.md
+
+# pytest JUnit output, written by the CI command and by local runs of it.
+junit.xml
