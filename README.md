@@ -97,7 +97,7 @@ docker run --rm --network none \
   -v "$RULES:/app/rules/yara" \
   --tmpfs /tmp:size=2g \
   -e TL_UID=$(id -u) -e TL_GID=$(id -g) \
-  -w /data threatlens:0.5.14 scan suspicious.exe
+  -w /data threatlens:0.5.15 scan suspicious.exe
 ```
 
 ### About `TL_UID`
@@ -260,10 +260,53 @@ them even after a later layer deletes the file.
 First hit wins: `--config PATH`, then `$THREATLENS_CONFIG`, then `./config.yaml`,
 then `~/.config/threatlens/config.yaml`, then built-in defaults. Pointing
 `--config` at a file that does not exist is a usage error rather than a silent
-fallback. `config.yaml` is gitignored; the committed defaults are what a fresh
-clone runs on.
+fallback.
 
-Every setting is tabulated in [docs/usage.md](docs/usage.md).
+`config.yaml` is gitignored — it is where a VirusTotal key would sit — so a
+fresh clone has none and runs on `DEFAULTS` in `core/config_loader.py`, which
+is the authoritative list of every key. To write your own, copy
+`config.docker.yaml`: it is complete and commented. **Its paths are the
+container's**, so for host use change them back to the repo-relative ones
+(`./rules/yara`, `./bin/capa`, `./bin/floss`, `./reports`).
+
+**Inside the container your host `config.yaml` is not read.** The image sets
+`THREATLENS_CONFIG=/app/config.docker.yaml`, and that beats `./config.yaml` in
+the search order. To change a setting there, edit a *separate* copy that keeps
+the container's absolute paths, and mount it over the baked one:
+
+```bash
+cp config.docker.yaml my-container-config.yaml   # edit timeouts, modules, caps
+docker compose run --rm \
+  -v "$PWD/my-container-config.yaml:/app/config.docker.yaml:ro" \
+  threatlens scan suspicious.exe
+```
+
+Do not mount a host `config.yaml` here. Its paths are repo-relative, and the
+container resolves them against `/data` — your samples mount — so it would find
+no rules and no binaries and still print a verdict.
+
+The VirusTotal key needs none of this — it arrives through the environment.
+
+The settings you are most likely to touch:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `virustotal_api_key` | `""` | Overridden by `THREATLENS_VT_KEY` |
+| `yara_rules_dir` | `./rules/yara` | Where `rules update` writes |
+| `capa_binary` / `floss_binary` | `./bin/capa`, `./bin/floss` | A `/` makes it a path, a bare name resolves on `PATH` |
+| `capa_rules_dir` / `capa_signatures_dir` | unset | Required only for the PyPI capa |
+| `output_dir` | `./reports` | Where HTML reports land |
+| `log_level` | `WARNING` | `-v`/`-vv` override it |
+| `module_timeout_seconds` | `60` | **Not enforced by the orchestrator yet** — see the limitations below |
+| `capa_timeout_seconds` | `120` | `-p deep` raises it to 180 |
+| `floss_timeout_seconds` | `300` | Emulation takes 127–271s on real samples, so the generic 60 would time out every run |
+| `floss_emulation` | `false` | `-p deep` turns it on. Costs ~26x |
+| `enabled_modules` | all 13 | What `standard` and `deep` run |
+| `dynamic_provider` | `none` | Config-only; there is no CLI flag |
+| `rule_sources` | signature-base | Repos `rules update` clones |
+
+Per-format caps — archive recursion and bomb thresholds, OneNote blob limits,
+the `.lnk` size ceiling — are grouped and commented in `config.docker.yaml`.
 
 ## Limitations, stated plainly
 
@@ -273,8 +316,12 @@ Every setting is tabulated in [docs/usage.md](docs/usage.md).
 - **YARA coverage is whatever `rules update` fetched.** Only `signature-base`
   is enabled by default.
 - **Scores are evidence, not a verdict.** The bands are calibrated against a
-  311-sample corpus and documented in [docs/scoring.md](docs/scoring.md); they
-  rank suspicion, they do not prove intent.
+  311-sample corpus; they rank suspicion, they do not prove intent.
+- **`module_timeout_seconds` is not enforced by the orchestrator.** It is
+  validated and then not read — `core/pipeline.py` says so at the call site.
+  Timeouts exist only inside the modules that shell out (capa, FLOSS, the 30s
+  XLM cap), so a slow pure-Python parser runs to completion whatever the
+  setting says. Do not treat it as a hang guard.
 - `pdf_analysis` changes the process working directory while it parses. Safe
   while modules run in sequence, which they do today.
 
@@ -321,9 +368,11 @@ pytest prints no summary line at all — which is precisely the count you need.
 
 | | |
 |---|---|
-| [docs/usage.md](docs/usage.md) | the full user guide — every flag and setting |
-| [docs/scoring.md](docs/scoring.md) | how points are awarded and bands calibrated |
-| [docs/phase4_docker_plan.md](docs/phase4_docker_plan.md) | why the image is built the way it is |
-| [docs/defect_log.md](docs/defect_log.md) | defects found, and what each one taught |
-| [CHANGELOG.md](CHANGELOG.md) | version history |
-| [CLAUDE.md](CLAUDE.md) | design rules and contributor notes |
+| [CHANGELOG.md](CHANGELOG.md) | version history, and the roadmap to 1.0.0 |
+| `config.docker.yaml` | a complete config with every entry commented |
+| `core/config_loader.py` | `DEFAULTS` — the values used when no config is found |
+| `-h` | on the tool and on each of its four commands |
+
+The user guide, the scoring reference and the build notes are not published
+yet. They are working material for a project still in Phase 4, and they go out
+with the version they describe.
