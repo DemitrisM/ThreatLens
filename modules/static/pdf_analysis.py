@@ -62,7 +62,11 @@ and equally why a marker inside a compressed stream is invisible to it.
 Marker counts are therefore a floor, never a census.
 """
 
+import contextlib
 import logging
+import os
+import shutil
+import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -440,6 +444,89 @@ def _raw_keyword_scan(file_path: Path, file_size: int) -> tuple[int, list[str], 
     return score_delta, reasons, hits
 
 
+@contextlib.contextmanager
+def _scratch_working_directory():
+    """Run the body in a throwaway directory, restoring the caller's after.
+
+    peepdf writes scratch files into the CURRENT WORKING DIRECTORY while
+    parsing — ``<sample>-<timestamp>-peepdf-jserrors.txt`` and friends — and
+    when it cannot, it abandons the object it was reading rather than
+    reporting a failure. So the analysis silently depends on wherever the
+    caller happened to be standing.
+
+    Not hypothetical, and it bit twice. The shipped container sets its
+    working directory to the samples mount, which is read-only by design
+    because a static scan must never write to a sample: measured on
+    booking.pdf, 0 JavaScript blocks extracted instead of 1, the
+    social-engineering lure missed, and 45/MEDIUM against the host's
+    65/HIGH — a band change reported as ``status: "success"``. On a writable
+    directory the same behaviour instead litters it; 30 stray files had
+    accumulated in the repository root. Both are the same cause.
+
+    Version-dependent, which is why it went unseen: peepdf-3 5.3.0 does not
+    write, 5.4.1 does. Owning the directory makes the module behave the same
+    on every version and every host.
+
+    Yields:
+        True when the body is running in a directory this function owns,
+        False when one could not be created and the caller's directory is
+        still in effect — a possibly-degraded parse beats no parse, and
+        design rule 2 forbids taking the pipeline down over a temp
+        directory. Either way exactly one parse runs; there is no retry, so
+        no parser instance is ever reused after a failure.
+
+    Raises:
+        Nothing of its own. Exceptions from the body propagate once the
+        directory is restored.
+
+    Note for the planned parallel module execution: ``os.chdir`` is
+    process-global rather than per-thread, so this must move into a
+    subprocess if modules are ever run concurrently in threads. Safe today
+    because the pipeline runs them in sequence.
+    """
+    previous = os.getcwd()
+    try:
+        scratch = tempfile.mkdtemp(prefix="peepdf_")
+    except OSError as exc:
+        logger.warning(
+            "could not create a scratch directory for peepdf (%s) — parsing "
+            "in the current directory, which may lose objects if it is "
+            "read-only", exc,
+        )
+        yield False
+        return
+
+    try:
+        os.chdir(scratch)
+    except OSError as exc:
+        logger.warning("could not enter the peepdf scratch directory (%s)", exc)
+        shutil.rmtree(scratch, ignore_errors=True)
+        yield False
+        return
+
+    try:
+        yield True
+    finally:
+        # Restore BEFORE removing, or the process is left standing in a
+        # deleted directory and every later relative path in the scan
+        # resolves against nothing. A failure here is not swallowed: it is
+        # logged at error, and the last resort is root, because any valid
+        # directory beats a deleted one for the modules that run next.
+        try:
+            os.chdir(previous)
+        except OSError as exc:
+            logger.error(
+                "could not return to %s after the peepdf parse (%s) — "
+                "falling back to / so later modules have a valid working "
+                "directory", previous, exc,
+            )
+            try:
+                os.chdir("/")
+            except OSError:  # pragma: no cover — / is always traversable
+                logger.error("could not change to / either")
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def _peepdf_parse(file_path: Path, data: dict) -> tuple[int, list[str]]:
     """Parse with peepdf and harvest whatever it manages to expose.
 
@@ -467,8 +554,49 @@ def _peepdf_parse(file_path: Path, data: dict) -> tuple[int, list[str]]:
     # far more often than not — frequently on purpose, to break parsers —
     # so strict parsing would refuse exactly the files worth reading.
     parser = PDFParser()
+
+    # ------------------------------------------------------------------
+    # peepdf writes scratch files into the CURRENT WORKING DIRECTORY while
+    # parsing, and when it cannot it abandons the object it was reading
+    # rather than reporting a failure. So the analysis silently depends on
+    # wherever the caller happened to be standing.
+    #
+    # That is not hypothetical. The shipped container sets its working
+    # directory to the samples mount, which is read-only by design — a
+    # static scan must never write to a sample. Measured on booking.pdf
+    # with an unwritable cwd: 0 JavaScript blocks extracted instead of 1,
+    # the social-engineering lure missed, and the file scored 45/MEDIUM
+    # against 65/HIGH — a band change, reported as status "success" with
+    # nothing saying the environment had degraded the parse. Same defect
+    # class as the degraded FLOSS run in 0.5.13: an environmental failure
+    # rendering as a finding about the sample.
+    #
+    # Version-dependent, which is why it went unnoticed: peepdf-3 5.3.0
+    # does not write, 5.4.1 does. Owning the directory makes the module
+    # behave the same on every version and every host.
+    #
+    # The path is resolved to an absolute one FIRST — a relative path
+    # would no longer point at the sample once the directory changes.
+    #
+    # Note for the planned parallel module execution: os.chdir is
+    # process-global, not per-thread, so this must move into a subprocess
+    # if modules are ever run concurrently in threads. It is safe today
+    # because the pipeline runs them in sequence.
+    # ------------------------------------------------------------------
     try:
-        ret, pdf_file = parser.parse(str(file_path), forceMode=True, looseMode=True)
+        # Inside the try, not above it. resolve() touches the filesystem, and
+        # a symlink loop makes it raise RuntimeError — not OSError, so even a
+        # narrow handler would miss it. A looping symlink named .pdf is
+        # exactly the input this tool is pointed at, and design rule 2
+        # forbids letting it take the pipeline down.
+        #
+        # Absolute is required, not cosmetic: the parse runs from a different
+        # directory, so a relative path would stop pointing at the sample.
+        absolute_target = str(Path(file_path).resolve())
+        with _scratch_working_directory():
+            ret, pdf_file = parser.parse(
+                absolute_target, forceMode=True, looseMode=True
+            )
     except Exception as exc:  # noqa: BLE001
         logger.info("peepdf parse crashed on %s: %s", file_path.name, exc)
         return 0, [f"peepdf parse failure: {exc}"]
