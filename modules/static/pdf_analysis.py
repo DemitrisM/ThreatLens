@@ -468,11 +468,12 @@ def _run_worker(target: str, timeout: float) -> dict:
     """Parse `target` with peepdf in a child process and return its findings.
 
     The child is launched with ``cwd`` already pointed at a scratch directory
-    this function owns, so **nothing calls os.chdir anywhere**. That is the
-    whole point: peepdf writes scratch files into the working directory and
-    abandons objects when it cannot, but ``os.chdir`` is process-global rather
-    than per-thread, so solving it in-process makes the module unsafe to run
-    concurrently with any other.
+    this function owns, so **nothing calls os.chdir anywhere**. peepdf writes
+    scratch files into the working directory and abandons objects when it
+    cannot, and ``os.chdir`` is process-global: solving that in-process means
+    one module silently relocating every other one. The child also gets a
+    timeout, a memory ceiling and a crash that cannot reach the pipeline,
+    which is why this stayed after parallel execution was rejected.
 
     Args:
         target:  The PDF, already absolute.

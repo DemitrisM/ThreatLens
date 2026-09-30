@@ -6,16 +6,17 @@ peepdf writes scratch files into the **current working directory** while
 parsing, and when it cannot it abandons the object it was reading rather than
 reporting a failure. The module used to solve that by ``os.chdir``-ing into a
 directory it owned — correct, but ``os.chdir`` is **process-global, not
-per-thread**. Parallel module execution is on the Phase 4 list, and the moment
-two modules run concurrently in threads, one relocates every other module
-mid-analysis.
+per-thread**, so a module that moves it moves it for everything else in the
+process.
 
 A child process cannot do that to its parent. The parent launches this worker
 with ``cwd=`` already set to a scratch directory it owns, so nothing calls
 ``os.chdir`` anywhere — the child is simply *born* standing in the right place.
 
-Three things come free with the separation, and they are the reason this is
-worth a subprocess rather than a lock:
+This began as the prerequisite for parallel module execution, which was then
+measured and rejected (see CLAUDE.md). It stands on its own regardless — the
+reasons below are why it was worth doing, and none of them depend on
+concurrency:
 
 * peepdf gets a **timeout**, which it has never had.
 * A crash in an unmaintained parser becomes an exit code instead of taking the
@@ -63,8 +64,7 @@ except ImportError:      # pragma: no cover — Unix-only, and this is a Linux t
 #: budget, and the OOM killer does not read design rule 2.
 #:
 #: Set here rather than through the parent's ``preexec_fn``, which runs between
-#: fork and exec and is documented as unsafe in the presence of threads — and
-#: the whole point of this file is to make a threaded pipeline possible.
+#: fork and exec and is documented as unsafe in the presence of threads.
 #:
 #: **4 GiB, and it cannot sensibly be much tighter.** peepdf-3 5.4.1 pulls in
 #: STPyV8, and V8 reserves a large contiguous virtual address range for its
