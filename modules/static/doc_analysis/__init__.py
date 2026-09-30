@@ -53,6 +53,7 @@ the time on a given sample.
 """
 
 import logging
+import shutil
 import time
 from pathlib import Path
 
@@ -244,10 +245,46 @@ def _analyse(file_path: Path, _config: dict) -> dict:
         timings=timings,
     )
 
+    unavailable = _unavailable_passes(fmt, file_path, bool(vba.get("present")))
+    data["passes_unavailable"] = unavailable
+
+    # Nothing applicable to this format could run, so nothing was examined.
+    # Consistent with archive_analysis for an unread container, and with
+    # design rule 2: a result that analysed nothing must not read as success.
+    # An OOXML file never reaches here — its .rels template parsing is
+    # first-party and always runs — so in practice this is a classic OLE
+    # document with oletools absent.
+    applicable = _applicable_passes(fmt, file_path)
+    if applicable and all(name in unavailable for name in applicable):
+        return _skipped(
+            f"{', '.join(unavailable)} unavailable — the document was not examined"
+        )
+
     if reasons:
         reason_text = "; ".join(reasons)
     else:
         reason_text = "No suspicious OLE/VBA content detected"
+
+    if unavailable:
+        # Short on purpose. The reason is truncated at ~120 characters by
+        # default, and naming every missing pass here ate half the line and
+        # pushed the actual findings out — measured on APT28.docx, the
+        # analyst saw "analysis incomplete: VBA stomping check (pcodedmp)
+        # unavailable … 5 more" instead of the AutoExec and Shell indicators
+        # that identify the document. A marker that survives truncation plus
+        # the full list in `passes_unavailable` beats a complete sentence
+        # nobody gets to read alongside the evidence.
+        count = len(unavailable)
+        note = f"analysis incomplete ({count} pass{'es' if count > 1 else ''} unavailable)"
+        # PREPENDED, never appended. `truncate_reason` cuts the tail at
+        # default verbosity, so a notice added after several fired indicators
+        # would be the first thing dropped — invisible on exactly the busy
+        # reports where it matters most.
+        #
+        # And when nothing fired, the clean sentence is REPLACED rather than
+        # decorated: "No suspicious OLE/VBA content detected; analysis
+        # incomplete: ..." asserts safety and withdraws it in one line.
+        reason_text = note if not reasons else f"{note}; {reason_text}"
 
     return {
         "module": "doc_analysis",
@@ -349,6 +386,84 @@ def _build_data(**parts) -> dict:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _applicable_passes(fmt: str, file_path: Path) -> list[str]:
+    """Which passes this format is entitled to, whatever is installed.
+
+    Kept beside `_unavailable_passes` and in the same order, because the
+    decision "was anything examined at all" is exactly the comparison of the
+    two — and inferring it from `vba["performed"]` does not work: that flag is
+    set after the call and records that the pass was *attempted*, not that a
+    library was there to do it.
+
+    The first-party passes are listed too. They depend on no optional
+    library, so a format that has one can never be fully unanalysed.
+    """
+    passes: list[str] = []
+    if fmt in ("ole", "openxml"):
+        passes += ["VBA macros (olevba)", "container indicators (oleid)"]
+    if fmt == "openxml":
+        passes.append("template injection (.rels)")      # first-party
+    if fmt == "rtf":
+        passes += ["template injection (RTF)",           # first-party
+                   "embedded OLE objects (rtfobj)"]
+    if is_xlm_candidate(file_path, fmt):
+        passes.append("Excel 4.0 macros (XLMMacroDeobfuscator)")
+    return passes
+
+
+def _unavailable_passes(fmt: str, file_path: Path, macros_found: bool) -> list[str]:
+    """Which analysis passes could not run, for THIS format.
+
+    The measured defect: with `oletools` masked, `APT28.docx` scored 25 -> 9
+    and the reason still read "No suspicious OLE/VBA content detected" — a
+    claim about a document whose macros were never opened.
+
+    The existing decision not to raise a *flag* for a missing library stands
+    (`vba_macros.py`: "emitting a flag would let an install problem move a
+    score"). That is right, and it is about scoring. It had become "do not
+    mention it", which is a different requirement. This reports; it never
+    scores.
+
+    Only passes that **would have run** for the detected format are listed. A
+    notice naming `rtfobj` on a `.docx` is a warning about nothing, and a
+    warning that fires on files it cannot apply to is one analysts learn to
+    skip past.
+    """
+    from . import ole_objects, oleid_indicators, vba_macros, xlm_macros
+
+    missing: list[str] = []
+
+    if fmt in ("ole", "openxml"):
+        if not vba_macros._HAS_OLEVBA:
+            missing.append("VBA macros (olevba)")
+        elif macros_found and not vba_macros._HAS_MRAPTOR:
+            # Two guards, both needed. Not when olevba is absent: there are
+            # then no macros to triage and the second notice adds nothing.
+            # And not on a macro-free document: mraptor triages macros, so
+            # its absence costs nothing there, and a warning that fires on
+            # clean files is one analysts learn to skip past — the same trap
+            # avoided for pcodedmp just below.
+            missing.append("macro triage (mraptor)")
+        if not oleid_indicators._HAS_OLEID:
+            missing.append("container indicators (oleid)")
+
+    if fmt == "rtf" and not ole_objects._HAS_RTFOBJ:
+        missing.append("embedded OLE objects (rtfobj)")
+
+    if is_xlm_candidate(file_path, fmt) and not xlm_macros._HAS_XLM:
+        missing.append("Excel 4.0 macros (XLMMacroDeobfuscator)")
+
+    # pcodedmp is a binary on PATH, not an import, so no _HAS_ flag covers it.
+    # Deliberately NOT inferred from `stomping_check_performed`: that is false
+    # both when pcodedmp is absent and when the document simply has no macros,
+    # so using it would print this on every clean file. Reported only when
+    # macros were found, because only then would the check have run.
+    if macros_found and shutil.which("pcodedmp") is None:
+        missing.append("VBA stomping check (pcodedmp)")
+
+    return missing
+
 
 def _skipped(reason: str) -> dict:
     """Build the standard "skipped" result (design rule 1).
