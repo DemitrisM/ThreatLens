@@ -54,6 +54,19 @@ def doc_rows(data: dict, detail_level: int = 0) -> list[Row]:
     fmt = data.get("format") or "?"
     classification = data.get("classification") or "CLEAN"
     class_sev = CLASS_SEVERITY.get(classification, "info")
+
+    # Which passes did not run, named. The reason line says only "analysis
+    # incomplete (N passes unavailable)" because it is truncated at ~120
+    # characters and naming them there pushed the findings that identify the
+    # document off the line. The count prompts the question; this answers it.
+    #
+    # Not gated on detail_level: an analyst reading a default report is the
+    # one most likely to mistake a partial analysis for a complete one.
+    unavailable_rows = [
+        Row("Pass unavailable", str(name), "warn")
+        for name in (data.get("passes_unavailable") or [])
+    ]
+    rows.extend(unavailable_rows)
     rows.append(
         Row("Format / Classification", f"{fmt.upper()} — {classification}", class_sev)
     )
