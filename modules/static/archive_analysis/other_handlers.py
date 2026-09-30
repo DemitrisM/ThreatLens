@@ -213,7 +213,8 @@ def enumerate_iso(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
     try:
         import pycdlib  # noqa: PLC0415
     except ImportError:
-        meta.handler_errors.append({"stage": "enumerate_iso", "error": "pycdlib not installed"})
+        meta.handler_errors.append({"stage": "enumerate_iso", "error": "pycdlib not installed",
+             "kind": "missing_dependency"})
         return entries, meta
 
     try:

@@ -66,7 +66,8 @@ def enumerate_7z(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
     try:
         import py7zr  # noqa: PLC0415
     except ImportError:
-        meta.handler_errors.append({"stage": "enumerate_7z", "error": "py7zr not installed"})
+        meta.handler_errors.append({"stage": "enumerate_7z", "error": "py7zr not installed",
+             "kind": "missing_dependency"})
         return entries, meta
 
     try:
