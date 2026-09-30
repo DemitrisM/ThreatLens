@@ -125,7 +125,7 @@ def test_raw_encrypt_marker_sets_the_encrypted_flag(tmp_path):
     read the encryption dictionary of a hostile file.
     """
     path = _pdf(tmp_path, b"<< /Encrypt 9 0 R /Filter /Standard >>")
-    data = _analyse(path, path.stat().st_size)["data"]
+    data = _analyse(path, path.stat().st_size, {})["data"]
     assert data["encrypted"] is True
 
 

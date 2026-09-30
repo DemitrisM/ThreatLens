@@ -109,15 +109,21 @@ def test_the_module_does_not_leave_scratch_files_in_the_cwd(js_pdf, tmp_path, mo
     )
 
 
-def test_the_parse_runs_in_a_directory_the_module_owns(js_pdf, tmp_path, monkeypatch):
+def test_the_parse_runs_in_a_child_process_in_a_directory_the_module_owns(
+    js_pdf, tmp_path, monkeypatch
+):
     """Pin the mechanism, not just the symptom.
 
-    The two tests above only fail on a peepdf version that actually writes
-    to the working directory — 5.4.1 does, 5.3.0 does not — so on a machine
-    with the older one they pass whether or not the fix is present. This one
-    fails on any version if the fix is removed, by checking that the parse
-    happens somewhere other than where the caller was standing, and that the
-    caller's directory is restored afterwards.
+    The two tests above only fail on a peepdf version that actually writes to
+    the working directory — 5.4.1 does, 5.3.0 does not — so on a machine with
+    the older one they pass whether or not the fix is present. This one fails
+    on any version if the mechanism is removed.
+
+    It used to spy on ``PDFParser.parse`` inside this process. That stopped
+    being possible, and the reason is the fix: the parse now happens in a
+    **child process**, which a monkeypatch cannot reach. So the assertions
+    moved to the boundary — what command is launched, where it is launched,
+    and that this process stays put.
     """
     from modules.static import pdf_analysis
 
@@ -126,26 +132,34 @@ def test_the_parse_runs_in_a_directory_the_module_owns(js_pdf, tmp_path, monkeyp
     monkeypatch.chdir(workdir)
 
     seen = {}
-    real_parse = pdf_analysis.PDFParser.parse
+    real_run = pdf_analysis.subprocess.run
 
-    def _spy(self, path, *a, **kw):
-        seen["cwd"] = os.getcwd()
-        seen["path"] = path
-        return real_parse(self, path, *a, **kw)
+    def _spy(cmd, *a, **kw):
+        seen["cmd"] = cmd
+        seen["cwd"] = kw.get("cwd")
+        return real_run(cmd, *a, **kw)
 
-    monkeypatch.setattr(pdf_analysis.PDFParser, "parse", _spy)
+    monkeypatch.setattr(pdf_analysis.subprocess, "run", _spy)
     pdf_analysis.run(js_pdf, {})
 
-    assert seen, "peepdf was never invoked"
+    assert seen, "the peepdf worker was never launched"
+
+    assert seen["cwd"] is not None, "the child was not given a working directory"
     assert seen["cwd"] != str(workdir), (
-        "the parse ran in the caller's directory, so it still depends on "
-        "that directory being writable"
+        "the child ran in the caller's directory, so the parse still depends "
+        "on that directory being writable"
     )
-    assert Path(seen["path"]).is_absolute(), (
-        "the sample path must be absolute before the directory changes, or "
-        "it stops pointing at the sample"
+
+    # argv[1] is the worker, argv[2] the sample. Both must be absolute: the
+    # child starts in the scratch directory, so a relative path to either
+    # would be looked for inside it.
+    assert Path(seen["cmd"][1]).is_absolute(), "the worker path must be absolute"
+    assert Path(seen["cmd"][2]).is_absolute(), (
+        "the sample path must be absolute before the child starts, or it "
+        "stops pointing at the sample"
     )
-    assert os.getcwd() == str(workdir), "the caller's directory was not restored"
+
+    assert os.getcwd() == str(workdir), "the caller's directory was disturbed"
 
 
 def test_a_symlink_loop_does_not_kill_the_pipeline(tmp_path):
@@ -168,3 +182,45 @@ def test_a_symlink_loop_does_not_kill_the_pipeline(tmp_path):
     assert result["module"] == "pdf_analysis"
     assert result["status"] in ("skipped", "error", "success")
     assert isinstance(result["score_delta"], int)
+
+
+def test_the_scan_never_changes_the_callers_working_directory(js_pdf, tmp_path, monkeypatch):
+    """The prerequisite for running modules concurrently.
+
+    ``os.chdir`` is process-global, not per-thread. While modules run in
+    sequence, a module that changes the working directory and puts it back is
+    merely untidy. The moment two run concurrently in threads, it relocates
+    every other module mid-analysis — `file_intake` hashing a relative path,
+    `archive_analysis` extracting to `./something` — and the pipeline has
+    already paid once for a working directory it did not control: with an
+    unwritable one, `booking.pdf` scored 45/MEDIUM against 65/HIGH, reported
+    as ``status: "success"``.
+
+    So the parse must happen somewhere that is not this process. The spy
+    records and then **calls through**, rather than replacing ``os.chdir``
+    with a no-op: a no-op would leave the old code parsing in the caller's
+    directory and restoring nothing, so this could fail by some incidental
+    error instead of by its own assertion, and a test whose failure mode is
+    an accident is not evidence.
+    """
+    workdir = tmp_path / "caller"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    calls = []
+    real_chdir = os.chdir
+
+    def spy(path):
+        calls.append(str(path))
+        return real_chdir(path)
+
+    monkeypatch.setattr(os, "chdir", spy)
+
+    from modules.static import pdf_analysis
+    pdf_analysis.run(js_pdf, {})
+
+    assert calls == [], (
+        "the module changed this process's working directory "
+        f"({calls}) — that is safe only while modules run one at a time"
+    )
+    assert os.getcwd() == str(workdir)

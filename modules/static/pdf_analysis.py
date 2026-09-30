@@ -62,21 +62,37 @@ and equally why a marker inside a compressed stream is invisible to it.
 Marker counts are therefore a floor, never a census.
 """
 
-import contextlib
+import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# peepdf is imported by the worker, in its own process, not here. This import
+# exists only to answer "is structural analysis available", and importing the
+# library to ask costs a fraction of a second once per scan rather than per
+# PDF. The parser object itself is never built in this process.
 try:
-    from peepdf.PDFCore import PDFParser
+    import peepdf.PDFCore  # noqa: F401
     _HAS_PEEPDF = True
 except ImportError:
     _HAS_PEEPDF = False
     logger.warning("peepdf not available — structural PDF analysis disabled")
+
+#: The worker, by absolute path. With ``cwd=`` pointed at a scratch directory,
+#: a relative path would be looked for inside that empty directory.
+_WORKER = Path(__file__).resolve().parent / "_pdf_worker.py"
+
+#: Wall-clock budget for one parse. Reads ``module_timeout_seconds``, which
+#: `config_loader` has always validated and which nothing has ever read — this
+#: makes the documented setting true for one module. Measured over 31 corpus
+#: PDFs the worst parse is 0.63s, so the 60s default is not a constraint.
+_DEFAULT_TIMEOUT = 60
 
 _PDF_MIMES = {"application/pdf", "application/x-pdf"}
 
@@ -149,9 +165,11 @@ def run(file_path: Path, config: dict) -> dict:
 
     Args:
         file_path: Path to the file under analysis.
-        config:    Pipeline configuration dict. Not read — the size cap and
-                   score cap are module constants, deliberately not tunable,
-                   since a 100 MiB PDF is pathological at any profile.
+        config:    Pipeline configuration dict. Read for
+                   ``module_timeout_seconds``, the peepdf worker's wall-clock
+                   budget. The size cap and score cap remain module constants,
+                   deliberately not tunable, since a 100 MiB PDF is
+                   pathological at any profile.
 
     Returns:
         Standard module result dict. "skipped" when the file is not a PDF
@@ -177,7 +195,7 @@ def run(file_path: Path, config: dict) -> dict:
     # third-party parser handling hostile input; anything it raises must
     # become this module's error result, never the pipeline's traceback.
     try:
-        return _analyse(file_path, size)
+        return _analyse(file_path, size, config)
     except Exception as exc:  # noqa: BLE001
         logger.error("pdf_analysis failed on %s: %s", file_path.name, exc)
         return _error(f"Analysis error: {exc}")
@@ -226,12 +244,14 @@ def _read_header(file_path: Path, size: int = 1024) -> bytes:
         return b""
 
 
-def _analyse(file_path: Path, file_size: int) -> dict:
+def _analyse(file_path: Path, file_size: int, config: dict) -> dict:
     """Run both passes and assemble the module result.
 
     Args:
         file_path:  The PDF (or claimed PDF) under analysis.
         file_size:  Size in bytes, already checked against the cap by run().
+        config:     Pipeline configuration, threaded through for the peepdf
+                    worker's ``module_timeout_seconds`` budget.
 
     Returns:
         Standard module result dict with status "success" — reaching here
@@ -320,7 +340,7 @@ def _analyse(file_path: Path, file_size: int) -> dict:
     # and without the library and the report must admit that.
     # ------------------------------------------------------------------
     if _HAS_PEEPDF and not data["header_mismatch"]:
-        pd_delta, pd_reasons = _peepdf_parse(file_path, data)
+        pd_delta, pd_reasons = _peepdf_parse(file_path, data, config)
         score_delta += pd_delta
         reasons.extend(pd_reasons)
     elif not _HAS_PEEPDF:
@@ -444,312 +464,244 @@ def _raw_keyword_scan(file_path: Path, file_size: int) -> tuple[int, list[str], 
     return score_delta, reasons, hits
 
 
-@contextlib.contextmanager
-def _scratch_working_directory():
-    """Run the body in a throwaway directory, restoring the caller's after.
+def _run_worker(target: str, timeout: float) -> dict:
+    """Parse `target` with peepdf in a child process and return its findings.
 
-    peepdf writes scratch files into the CURRENT WORKING DIRECTORY while
-    parsing — ``<sample>-<timestamp>-peepdf-jserrors.txt`` and friends — and
-    when it cannot, it abandons the object it was reading rather than
-    reporting a failure. So the analysis silently depends on wherever the
-    caller happened to be standing.
+    The child is launched with ``cwd`` already pointed at a scratch directory
+    this function owns, so **nothing calls os.chdir anywhere**. That is the
+    whole point: peepdf writes scratch files into the working directory and
+    abandons objects when it cannot, but ``os.chdir`` is process-global rather
+    than per-thread, so solving it in-process makes the module unsafe to run
+    concurrently with any other.
 
-    Not hypothetical, and it bit twice. The shipped container sets its
-    working directory to the samples mount, which is read-only by design
-    because a static scan must never write to a sample: measured on
-    booking.pdf, 0 JavaScript blocks extracted instead of 1, the
-    social-engineering lure missed, and 45/MEDIUM against the host's
-    65/HIGH — a band change reported as ``status: "success"``. On a writable
-    directory the same behaviour instead litters it; 30 stray files had
-    accumulated in the repository root. Both are the same cause.
+    Args:
+        target:  The PDF, already absolute.
+        timeout: Wall-clock budget for the child, in seconds.
 
-    Version-dependent, which is why it went unseen: peepdf-3 5.3.0 does not
-    write, 5.4.1 does. Owning the directory makes the module behave the same
-    on every version and every host.
-
-    Yields:
-        True when the body is running in a directory this function owns,
-        False when one could not be created and the caller's directory is
-        still in effect — a possibly-degraded parse beats no parse, and
-        design rule 2 forbids taking the pipeline down over a temp
-        directory. Either way exactly one parse runs; there is no retry, so
-        no parser instance is ever reused after a failure.
-
-    Raises:
-        Nothing of its own. Exceptions from the body propagate once the
-        directory is restored.
-
-    Note for the planned parallel module execution: ``os.chdir`` is
-    process-global rather than per-thread, so this must move into a
-    subprocess if modules are ever run concurrently in threads. Safe today
-    because the pipeline runs them in sequence.
+    Returns:
+        The worker's payload, or ``{"parsed": False, "failure": <reason>}`` for
+        every way this can go wrong. Never raises: design rule 2 means a
+        failed parse degrades the module, not the pipeline.
     """
-    previous = os.getcwd()
+    if not _WORKER.is_file():
+        return {"parsed": False, "failure": f"pdf worker missing at {_WORKER}"}
+
     try:
         scratch = tempfile.mkdtemp(prefix="peepdf_")
     except OSError as exc:
-        logger.warning(
-            "could not create a scratch directory for peepdf (%s) — parsing "
-            "in the current directory, which may lose objects if it is "
-            "read-only", exc,
-        )
-        yield False
-        return
+        # A full /tmp or exhausted inodes. Returned rather than raised: the raw
+        # keyword sweep has already run and its findings are valid, and letting
+        # an environmental failure here escape would turn the whole module to
+        # "error" and throw that work away. The old in-process version degraded
+        # at exactly this point for exactly this reason.
+        return {"parsed": False,
+                "failure": f"could not create a scratch directory: {exc}"}
 
     try:
-        os.chdir(scratch)
-    except OSError as exc:
-        logger.warning("could not enter the peepdf scratch directory (%s)", exc)
-        shutil.rmtree(scratch, ignore_errors=True)
-        yield False
-        return
+        results = Path(scratch) / "result.json"
+        errors = Path(scratch) / "stderr.log"
 
-    try:
-        yield True
-    finally:
-        # Restore BEFORE removing, or the process is left standing in a
-        # deleted directory and every later relative path in the scan
-        # resolves against nothing. A failure here is not swallowed: it is
-        # logged at error, and the last resort is root, because any valid
-        # directory beats a deleted one for the modules that run next.
         try:
-            os.chdir(previous)
-        except OSError as exc:
-            logger.error(
-                "could not return to %s after the peepdf parse (%s) — "
-                "falling back to / so later modules have a valid working "
-                "directory", previous, exc,
-            )
+            with open(errors, "wb") as err:
+                completed = subprocess.run(
+                    [sys.executable, str(_WORKER), target, str(results)],
+                    cwd=scratch,
+                    timeout=timeout,
+                    stdin=subprocess.DEVNULL,
+                    # Never capture_output: that buffers the child's entire
+                    # stdout and stderr in THIS process, and a hostile PDF that
+                    # traps the parser in a chatty loop would exhaust the
+                    # orchestrator. stdout is discarded, stderr lands in a file
+                    # and only a few KB are read back, and only on failure.
+                    stdout=subprocess.DEVNULL,
+                    stderr=err,
+                    check=False,
+                )
+        except subprocess.TimeoutExpired:
+            return {"parsed": False,
+                    "failure": f"peepdf timed out after {timeout:.0f}s"}
+        except (OSError, ValueError) as exc:
+            return {"parsed": False, "failure": f"could not run pdf worker: {exc}"}
+
+        if completed.returncode != 0:
+            detail = ""
             try:
-                os.chdir("/")
-            except OSError:  # pragma: no cover — / is always traversable
-                logger.error("could not change to / either")
+                # read(N) on an open handle, NOT read_text()[:N]: the latter
+                # pulls the whole file into memory before slicing, so a child
+                # that wrote gigabytes to stderr before dying would exhaust
+                # this process — the very thing the DEVNULL redirection above
+                # exists to prevent, reintroduced at the diagnostic step.
+                with open(errors, "r", encoding="utf-8", errors="replace") as handle:
+                    detail = handle.read(400).strip()
+            except OSError:
+                pass
+            suffix = f" ({detail})" if detail else ""
+            return {"parsed": False,
+                    "failure": f"pdf worker exited {completed.returncode}{suffix}"}
+
+        try:
+            payload = json.loads(results.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            return {"parsed": False, "failure": f"unreadable pdf worker output: {exc}"}
+
+        if not isinstance(payload, dict):
+            return {"parsed": False, "failure": "pdf worker returned a non-object"}
+        return payload
+    finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-def _peepdf_parse(file_path: Path, data: dict) -> tuple[int, list[str]]:
-    """Parse with peepdf and harvest whatever it manages to expose.
+def _peepdf_parse(file_path: Path, data: dict, config: dict) -> tuple[int, list[str]]:
+    """Score what peepdf found, having run it somewhere else.
 
     Args:
         file_path: The PDF. Confirmed to carry a %PDF header by the caller.
         data:      The result payload, mutated in place. Written directly
-                   rather than returned because each accessor below may
-                   fail independently, and a partial harvest is still worth
+                   rather than returned because each finding below is
+                   independent, and a partial harvest is still worth
                    reporting.
+        config:    Pipeline configuration; read for ``module_timeout_seconds``.
 
     Returns:
-        (score_delta, reason_strings) for what peepdf added on top of the
-        raw sweep. A parse that fails outright returns (0, [reason]) — the
-        module still succeeds on its raw-sweep findings.
+        (score_delta, reason_strings) for what peepdf added on top of the raw
+        sweep. A failed parse returns (0, [reason]) — the module still succeeds
+        on its raw-sweep findings.
 
-    Every accessor is individually wrapped. peepdf's return shapes vary by
-    PDF version (a list per version, sometimes a bare value), so each site
-    also normalises rather than trusting the documented type.
+    The extraction happens in ``_pdf_worker``; every weight and pattern table
+    stays here, so moving the parse across a process boundary changed where
+    peepdf runs and nothing about what a PDF scores.
     """
     score_delta = 0
     reasons: list[str] = []
 
-    # forceMode and looseMode together tell peepdf to keep going through
-    # structural violations instead of aborting. Malware PDFs are malformed
-    # far more often than not — frequently on purpose, to break parsers —
-    # so strict parsing would refuse exactly the files worth reading.
-    parser = PDFParser()
-
-    # ------------------------------------------------------------------
-    # peepdf writes scratch files into the CURRENT WORKING DIRECTORY while
-    # parsing, and when it cannot it abandons the object it was reading
-    # rather than reporting a failure. So the analysis silently depends on
-    # wherever the caller happened to be standing.
-    #
-    # That is not hypothetical. The shipped container sets its working
-    # directory to the samples mount, which is read-only by design — a
-    # static scan must never write to a sample. Measured on booking.pdf
-    # with an unwritable cwd: 0 JavaScript blocks extracted instead of 1,
-    # the social-engineering lure missed, and the file scored 45/MEDIUM
-    # against 65/HIGH — a band change, reported as status "success" with
-    # nothing saying the environment had degraded the parse. Same defect
-    # class as the degraded FLOSS run in 0.5.13: an environmental failure
-    # rendering as a finding about the sample.
-    #
-    # Version-dependent, which is why it went unnoticed: peepdf-3 5.3.0
-    # does not write, 5.4.1 does. Owning the directory makes the module
-    # behave the same on every version and every host.
-    #
-    # The path is resolved to an absolute one FIRST — a relative path
-    # would no longer point at the sample once the directory changes.
-    #
-    # Note for the planned parallel module execution: os.chdir is
-    # process-global, not per-thread, so this must move into a subprocess
-    # if modules are ever run concurrently in threads. It is safe today
-    # because the pipeline runs them in sequence.
-    # ------------------------------------------------------------------
     try:
         # Inside the try, not above it. resolve() touches the filesystem, and
         # a symlink loop makes it raise RuntimeError — not OSError, so even a
         # narrow handler would miss it. A looping symlink named .pdf is
-        # exactly the input this tool is pointed at, and design rule 2
-        # forbids letting it take the pipeline down.
+        # exactly the input this tool is pointed at, and design rule 2 forbids
+        # letting it take the pipeline down. Verified still true on 3.12.
         #
-        # Absolute is required, not cosmetic: the parse runs from a different
+        # Absolute is required, not cosmetic: the child runs from a different
         # directory, so a relative path would stop pointing at the sample.
         absolute_target = str(Path(file_path).resolve())
-        with _scratch_working_directory():
-            ret, pdf_file = parser.parse(
-                absolute_target, forceMode=True, looseMode=True
-            )
     except Exception as exc:  # noqa: BLE001
-        logger.info("peepdf parse crashed on %s: %s", file_path.name, exc)
+        logger.info("could not resolve %s: %s", file_path.name, exc)
         return 0, [f"peepdf parse failure: {exc}"]
 
-    # Both halves are needed: peepdf signals failure through the status
-    # code in some paths and through a None document in others.
-    if ret != 0 or pdf_file is None:
-        return 0, ["peepdf could not parse PDF structure"]
+    timeout = config.get("module_timeout_seconds", _DEFAULT_TIMEOUT) if config else _DEFAULT_TIMEOUT
+    try:
+        timeout = float(timeout)
+        if timeout <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        timeout = _DEFAULT_TIMEOUT
 
-    # Set before any accessor runs, so the report can distinguish "peepdf
-    # parsed this and found nothing" from "peepdf never got that far".
+    found = _run_worker(absolute_target, timeout)
+
+    if not found.get("parsed"):
+        return 0, [found.get("failure") or "peepdf could not parse PDF structure"]
+
+    # Set before anything else, so the report can distinguish "peepdf parsed
+    # this and found nothing" from "peepdf never got that far".
     data["parsed"] = True
-    try:
-        data["version"] = pdf_file.getVersion()
-        # Never downgrades: the raw sweep may already have found an
-        # /Encrypt dictionary that peepdf failed to reach.
-        data["encrypted"] = data["encrypted"] or bool(pdf_file.isEncrypted())
-    except Exception:  # noqa: BLE001
-        pass
 
-    try:
-        stats = pdf_file.getStats()
-        if isinstance(stats, dict):
-            data["num_objects"] = _coerce_int(stats.get("Objects", 0))
-            data["num_streams"] = _coerce_int(stats.get("Streams", 0))
-            data["num_uris"] = _coerce_int(stats.get("URIs", 0))
-    except Exception:  # noqa: BLE001
-        pass
+    if found.get("version") is not None:
+        data["version"] = found["version"]
+    # Never downgrades: the raw sweep may already have found an /Encrypt
+    # dictionary that peepdf failed to reach.
+    data["encrypted"] = data["encrypted"] or bool(found.get("encrypted"))
 
-    # peepdf reports parse errors — some of them are meaningful.
-    # Only the three in `nasty` score, and only once: peepdf emits dozens of
-    # cosmetic complaints on ordinary files, so treating its error list as a
-    # signal wholesale would score every PDF ever produced by a bad writer.
-    try:
-        errors = pdf_file.getErrors()
-        if errors:
-            data["peepdf_errors"] = [str(e) for e in errors[:10]]
-            nasty = {"bad pdf header", "%%eof not found", "missing endobj"}
-            for e in errors:
-                if any(n in str(e).lower() for n in nasty):
-                    score_delta += 5
-                    reasons.append("peepdf reports structural anomalies")
-                    break
-    except Exception:  # noqa: BLE001
-        pass
+    stats = found.get("stats")
+    if isinstance(stats, dict):
+        data["num_objects"] = _coerce_int(stats.get("Objects", 0))
+        data["num_streams"] = _coerce_int(stats.get("Streams", 0))
+        data["num_uris"] = _coerce_int(stats.get("URIs", 0))
+
+    # peepdf reports parse errors — some of them are meaningful. Only the three
+    # in `nasty` score, and only once: peepdf emits dozens of cosmetic
+    # complaints on ordinary files, so treating its error list as a signal
+    # wholesale would score every PDF ever produced by a bad writer.
+    errors = found.get("errors") or []
+    if errors:
+        data["peepdf_errors"] = [str(e) for e in errors[:10]]
+        nasty = {"bad pdf header", "%%eof not found", "missing endobj"}
+        for e in errors:
+            if any(n in str(e).lower() for n in nasty):
+                score_delta += 5
+                reasons.append("peepdf reports structural anomalies")
+                break
 
     # ------------------------------------------------------------------
     # JavaScript. The single most useful thing peepdf provides, and the
     # reason it is worth carrying an unmaintained dependency.
-    #
-    # getJavascriptCode() returns a list *per PDF version*, whose entries
-    # may be (name, code) tuples or bare strings depending on where the
-    # script was found. Both shapes are flattened here; "[]" is filtered
-    # because peepdf stringifies an empty inner list into that literal.
     # ------------------------------------------------------------------
-    try:
-        js_versions = pdf_file.getJavascriptCode() or []
-        js_items: list[str] = []
-        for version_js in js_versions:
-            if isinstance(version_js, (list, tuple)):
-                for entry in version_js:
-                    if isinstance(entry, tuple) and len(entry) >= 2:
-                        js_items.append(str(entry[1]))
-                    else:
-                        js_items.append(str(entry))
-            elif isinstance(version_js, str):
-                js_items.append(version_js)
-        js_items = [j for j in js_items if j and j != "[]"]
-        if js_items:
-            data["has_javascript"] = True
-            data["javascript_count"] = len(js_items)
-            data["javascript_code"] = [j[:500] for j in js_items[:10]]
+    js_items = [str(j) for j in (found.get("javascript") or [])]
+    js_total = _coerce_int(found.get("javascript_total", len(js_items)))
+    # Gated on the COUNT, not on the payload. The worker caps how many bytes of
+    # JavaScript it ships back, and gating on the blocks themselves would mean
+    # a single block padded past that cap arrives as an empty list and silently
+    # scores nothing — a detection bypass costing the attacker one oversized
+    # comment. The count is reported whatever the payload did.
+    if js_total or js_items:
+        # The worker reports the true block count even if it had to stop
+        # sending their contents, so a transport limit cannot understate what
+        # the file carries.
+        count = js_total or len(js_items)
+        data["has_javascript"] = True
+        data["javascript_count"] = count
+        data["javascript_code"] = [j[:500] for j in js_items[:10]]
+        score_delta += 10
+        reasons.append(f"peepdf extracted {count} JavaScript block(s)")
+
+        # Patterns are matched against all blocks joined into one lowercased
+        # haystack. Joining loses which block matched, which the report does
+        # not show anyway, and gains detection of scripts split across objects
+        # to defeat per-block matching.
+        if found.get("js_truncated"):
+            # Say so in the report rather than quietly matching less: the
+            # haystack below is short of the file's real contents, so a
+            # non-match here is weaker evidence than usual.
+            reasons.append("JavaScript payload truncated — pattern matching is partial")
+
+        joined = " ".join(js_items).lower()
+        matched_exploits = [label for pat, label in _JS_EXPLOIT_PATTERNS.items() if pat in joined]
+        if matched_exploits:
+            score_delta += 15
+            reasons.append(f"JS exploit patterns: {', '.join(matched_exploits[:4])}")
+
+        # Social-engineering strings score separately from exploit patterns and
+        # lower. They prove intent, not capability: a PDF telling the reader to
+        # "open in browser" is a lure, and the payload is wherever it sends
+        # them.
+        matched_social = [p for p in _SOCIAL_ENG_PATTERNS if p in joined]
+        if matched_social:
             score_delta += 10
-            reasons.append(f"peepdf extracted {len(js_items)} JavaScript block(s)")
+            reasons.append(f"Social-engineering JS alert: {', '.join(matched_social[:3])}")
 
-            # Patterns are matched against all blocks joined into one
-            # lowercased haystack. Joining loses which block matched, which
-            # the report does not show anyway, and gains detection of
-            # scripts split across objects to defeat per-block matching.
-            joined = " ".join(js_items).lower()
-            matched_exploits = [label for pat, label in _JS_EXPLOIT_PATTERNS.items() if pat in joined]
-            if matched_exploits:
-                score_delta += 15
-                reasons.append(f"JS exploit patterns: {', '.join(matched_exploits[:4])}")
+    uris = [str(u) for u in (found.get("uris") or []) if u]
+    if uris:
+        data["uris"] = uris[:50]
 
-            # Social-engineering strings score separately from exploit
-            # patterns and lower. They prove intent, not capability: a PDF
-            # telling the reader to "open in browser" is a lure, and the
-            # payload is wherever it sends them.
-            matched_social = [p for p in _SOCIAL_ENG_PATTERNS if p in joined]
-            if matched_social:
-                score_delta += 10
-                reasons.append(f"Social-engineering JS alert: {', '.join(matched_social[:3])}")
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("JavaScript extraction failed: %s", exc)
-
-    # URIs.
-    try:
-        uri_versions = pdf_file.getURIs() or []
-        flat_uris: list[str] = []
-        for v in uri_versions:
-            if isinstance(v, (list, tuple)):
-                flat_uris.extend(str(u) for u in v if u)
-            elif isinstance(v, str) and v:
-                flat_uris.append(v)
-        if flat_uris:
-            data["uris"] = flat_uris[:50]
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("URI extraction failed: %s", exc)
-
-    # URLs (peepdf distinguishes URLs found inside stream content).
-    # Kept apart from URIs rather than merged: /URI annotation targets are
-    # what a click reaches, while these are strings found in decompressed
+    # URLs are kept apart from URIs rather than merged: /URI annotation targets
+    # are what a click reaches, while these are strings found in decompressed
     # content, and conflating them would hide which of the two a host came
     # from. Neither is scored here — ioc_extractor owns URL scoring, and
-    # double-counting the same endpoint across two modules would inflate
-    # every phishing PDF.
-    try:
-        url_versions = pdf_file.getURLs() or []
-        flat_urls: list[str] = []
-        for v in url_versions:
-            if isinstance(v, (list, tuple)):
-                flat_urls.extend(str(u) for u in v if u)
-            elif isinstance(v, str) and v:
-                flat_urls.append(v)
-        if flat_urls:
-            data["urls"] = flat_urls[:50]
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("URL extraction failed: %s", exc)
+    # double-counting the same endpoint across two modules would inflate every
+    # phishing PDF.
+    urls = [str(u) for u in (found.get("urls") or []) if u]
+    if urls:
+        data["urls"] = urls[:50]
 
-    # Suspicious components as reported by peepdf's internal check.
-    # Scored only +5 despite covering serious findings, because it overlaps
-    # heavily with the raw keyword sweep above — most of what it reports has
-    # already been counted there, and this is the increment for peepdf
-    # having reached it structurally rather than by byte match.
-    try:
-        susp = pdf_file.getSuspiciousComponents()
-        if susp:
-            flat: list[str] = []
-            for version_susp in susp if isinstance(susp, list) else [susp]:
-                if isinstance(version_susp, dict):
-                    for k, v in version_susp.items():
-                        flat.append(f"{k}: {v}")
-                elif isinstance(version_susp, list):
-                    flat.extend(str(i) for i in version_susp)
-                elif isinstance(version_susp, str):
-                    flat.append(version_susp)
-            if flat:
-                data["suspicious_elements"] = flat[:20]
-                score_delta += 5
-                reasons.append(f"peepdf flagged: {', '.join(flat[:3])}")
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Suspicious component extraction failed: %s", exc)
+    # Suspicious components as reported by peepdf's internal check. Scored only
+    # +5 despite covering serious findings, because it overlaps heavily with
+    # the raw keyword sweep above — most of what it reports has already been
+    # counted there, and this is the increment for peepdf having reached it
+    # structurally rather than by byte match.
+    suspicious = [str(s) for s in (found.get("suspicious") or []) if s]
+    if suspicious:
+        data["suspicious_elements"] = suspicious[:20]
+        score_delta += 5
+        reasons.append(f"peepdf flagged: {', '.join(suspicious[:3])}")
 
     return score_delta, reasons
 
