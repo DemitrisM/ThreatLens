@@ -17,12 +17,17 @@ pathological chain runs past it. SIGALRM is therefore layered underneath
 as a hard stop that interrupts wherever execution happens to be.
 
 That layering carries one contract worth knowing: ``signal.signal`` only
-works on the main thread of a process. The pipeline is single-threaded
-today so it holds. If module execution is ever parallelised (Phase 4),
-a *process* pool keeps this working — each worker runs its task on its
-own main thread — while a *thread* pool does not: the ValueError would
-be swallowed by the caller's except clause and XLM analysis would quietly
-stop running everywhere. Recorded here because the failure is silent.
+works on the main thread of a process. The pipeline is single-threaded, so
+it holds.
+
+This note earned its keep on 2026-09-30. A plan to run modules in a
+**thread** pool was drafted, and this is the defect it would have shipped:
+off the main thread the alarm raises ValueError, the caller's except
+swallows it, and XLM analysis stops running *everywhere* without a word —
+silently, on the deobfuscation pass that exists to read Excel 4.0 macros.
+Module-level parallelism was then rejected on its own measurements, but if
+it is ever revisited the rule stands: a *process* pool keeps this working,
+since each worker has its own main thread, and a *thread* pool does not.
 
 The import is guarded with a bare ``except Exception`` rather than
 ``ImportError``, unlike its siblings in this package. XLMMacroDeobfuscator

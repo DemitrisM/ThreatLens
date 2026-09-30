@@ -24,7 +24,7 @@ Everything before it is a step toward that.
 | 0.5.14 | The bundled tools stop leaking on a timeout; C ssdeep; the defect log split out |
 | 0.5.15 | *(current)* Containerised — the image builds, and finding out why it disagreed with the host fixed a real detection bug. Phase 4's eight-step plan closes with the README |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
-| 0.7.0 | The orchestrator timeout, parallel module execution, `msi_analysis` |
+| 0.7.0 | The orchestrator timeout, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
