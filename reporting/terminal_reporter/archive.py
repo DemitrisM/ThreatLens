@@ -18,6 +18,21 @@ from ._render import Row, more_hint, render_hash_list, render_indicators
 _ALWAYS_SHOW = frozenset({"Format", "Classification"})
 
 
+def _format_handler_error(err) -> str:
+    """Render one handler failure as prose rather than as a dict literal.
+
+    The module publishes these as ``{"stage": ..., "error": ...}``. Passing
+    that straight to ``str()`` puts ``{'stage': 'enumerate_rar', ...}`` in
+    front of an analyst, which nothing had noticed because the branch had
+    never run. Non-dict entries are tolerated rather than assumed away.
+    """
+    if isinstance(err, dict):
+        stage = err.get("stage")
+        message = err.get("error", "")
+        return f"{stage}: {message}" if stage else str(message)
+    return str(err)
+
+
 def archive_rows(data: dict, detail_level: int = 0) -> list[Row]:
     """Build the archive indicator rows from an ``archive_analysis`` data dict."""
     if not data or not data.get("detected_format"):
@@ -68,8 +83,18 @@ def archive_rows(data: dict, detail_level: int = 0) -> list[Row]:
         for flag in data.get("indicator_flags") or []:
             rows.append(Row("Flag", flag, "info"))
 
-    for err in data.get("handler_errors") or []:
-        rows.append(Row("Handler error", str(err), "warn"))
+    # `errors`, not `handler_errors`. The module publishes
+    # `data["errors"] = list(meta.handler_errors)`; `handler_errors` is the
+    # name of the ContainerMeta *attribute*, and reading it here meant this
+    # branch never executed for any failure — a missing backend, a
+    # BadRarFile, an extraction error. Measured with rarfile masked: a real
+    # RAR scored 8 -> 0 with status "success" and "No archive indicators
+    # fired", while the payload said the archive had never been opened.
+    #
+    # Not gated on detail_level: an analyst reading a default report is the
+    # one most likely to mistake a degraded scan for a clean one.
+    for err in data.get("errors") or []:
+        rows.append(Row("Handler error", _format_handler_error(err), "warn"))
 
     return rows
 
