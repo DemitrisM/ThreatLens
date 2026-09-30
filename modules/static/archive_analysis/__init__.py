@@ -461,11 +461,54 @@ def _analyse_archive(file_path: Path, config: dict, depth: int) -> dict:
         data["nested"] = nested_results
         data["recursion_depth_reached"] = depth >= max_depth
 
+        # ── Did the analysis actually happen? ─────────────────────────────────
+        # Measured in the degradation audit: with rarfile masked, a real RAR
+        # scored 0 with status "success" and the reason "No archive indicators
+        # fired" — a positive claim about a container that was never opened.
+        #
+        # The two causes are separated deliberately. An absent optional
+        # library says nothing about the sample and is a graceful skip, which
+        # the archive design notes in CLAUDE.md require. A handler that
+        # reached the file and rejected it says a great deal, and is an error
+        # that keeps its payload so the report can name what failed.
+        own_errors = data.get("errors") or []
+        if not entries and own_errors:
+            missing = _missing_libraries(own_errors)
+            # A parse failure outranks a missing library when both are
+            # recorded: if some handler reached the file and rejected it, that
+            # is a statement about the sample, and telling the analyst to
+            # install rarfile for a corrupt ZIP would be the wrong advice.
+            if missing and len(missing) == len({
+                e.get("error") for e in own_errors if isinstance(e, dict)
+            }) and all(
+                isinstance(e, dict) and e.get("kind") == "missing_dependency"
+                for e in own_errors
+            ):
+                return _skipped(
+                    f"{', '.join(missing)} not installed — {_UNREAD_MARKER}"
+                )
+            # Non-dict entries are not expected, but a handler that appended
+            # a bare string would otherwise leave "Archive could not be read
+            # — " trailing into nothing. Say how many instead of saying
+            # nothing.
+            detail = "; ".join(
+                f"{e.get('stage')}: {e.get('error')}"
+                for e in own_errors if isinstance(e, dict)
+            ) or f"{len(own_errors)} handler error(s)"
+            return _error(f"Archive could not be read — {detail}", data)
+
         # ── Score ──────────────────────────────────────────────────────────────
         score_delta, reason, fired, classification = score_archive(flags)
         data["indicator_flags"] = sorted(flags)
         data["classification"] = classification
         data["fired_rules"] = fired
+
+        # Entries were read, so the analysis happened — but a recorded failure
+        # must not sit silently beside "No archive indicators fired". Nested
+        # failures count too; see _count_incomplete.
+        incomplete = _count_incomplete(data)
+        if incomplete:
+            reason = f"{reason}; analysis incomplete: {incomplete} handler error(s)"
 
         return {
             "module": "archive_analysis",
@@ -729,6 +772,59 @@ def _empty_data() -> dict:
     }
 
 
+#: The phrase a missing-library skip ends with. Declared once and used both
+#: when the message is written and when a parent counts its children, so the
+#: two cannot drift apart — the alternative is matching on prose, which is a
+#: contract nobody agreed to.
+_UNREAD_MARKER = "the archive was not read"
+
+
+def _missing_libraries(errors: list[dict]) -> list[str]:
+    """The libraries whose absence stopped a handler, in order recorded."""
+    out = []
+    for err in errors or []:
+        if isinstance(err, dict) and err.get("kind") == "missing_dependency":
+            # split() on an empty or whitespace-only message returns [], and
+            # [0] would raise IndexError — killing the pipeline from inside
+            # the code meant to keep it alive. A handler that records a
+            # missing dependency without naming it is malformed, not fatal.
+            words = str(err.get("error", "")).split()
+            name = words[0] if words else ""
+            if name and name not in out:
+                out.append(name)
+    return out
+
+
+def _count_incomplete(data: dict) -> int:
+    """Handler failures for this container **and everything nested in it**.
+
+    The parent merges only ``indicator_flags`` from its children, so a child's
+    errors stay inside ``data["nested"][i]["data"]["errors"]`` and never reach
+    the parent's own list. Without walking them, a RAR inside a ZIP with
+    ``rarfile`` absent enumerates the ZIP, scores ``success`` and says nothing
+    — the audited defect one level down.
+    """
+    total = len(data.get("errors") or [])
+    for child in data.get("nested") or []:
+        child_data = (child.get("data") or {}) if isinstance(child, dict) else {}
+        total += _count_incomplete(child_data)
+        if not isinstance(child, dict):
+            continue
+        status = child.get("status")
+        # An `error` child failed on a file it owned. A `skipped` child is
+        # counted ONLY when it says the container went unread — a missing
+        # library carries no data of its own, so its message is the only
+        # signal it has. Every other skip is deliberate ("not an archive",
+        # "handled by doc_analysis") and flagging those would describe an
+        # ordinary nested document as an incomplete analysis.
+        if status == "error":
+            if not (child_data.get("errors") or []):
+                total += 1
+        elif status == "skipped" and _UNREAD_MARKER in (child.get("reason") or ""):
+            total += 1
+    return total
+
+
 def _skipped(reason: str) -> dict:
     """A file this module does not own.
 
@@ -752,7 +848,7 @@ def _skipped(reason: str) -> dict:
     }
 
 
-def _error(reason: str) -> dict:
+def _error(reason: str, data: dict | None = None) -> dict:
     """A file this module should have handled and could not.
 
     Args:
@@ -764,11 +860,17 @@ def _error(reason: str) -> dict:
     Scores zero deliberately. An analysis that did not run must never
     contribute to a verdict in either direction — see design rule 10,
     which is the same principle at the CLI level.
+
+    ``data`` is optional and defaults to empty. It is supplied when the
+    failure is about a file the module DID identify — an archive it reached
+    and could not read — because the detected format and the handler errors
+    are what let the report say which thing failed. A skip carries no data by
+    design rule 2; an error about a real file has something to say.
     """
     return {
         "module": "archive_analysis",
         "status": "error",
-        "data": {},
+        "data": data or {},
         "score_delta": 0,
         "reason": reason,
     }

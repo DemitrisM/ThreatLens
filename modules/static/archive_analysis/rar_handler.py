@@ -74,7 +74,8 @@ def enumerate_rar(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
     try:
         import rarfile  # noqa: PLC0415
     except ImportError:
-        meta.handler_errors.append({"stage": "enumerate_rar", "error": "rarfile not installed"})
+        meta.handler_errors.append({"stage": "enumerate_rar", "error": "rarfile not installed",
+             "kind": "missing_dependency"})
         return entries, meta
 
     try:
