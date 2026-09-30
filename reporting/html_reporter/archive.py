@@ -6,7 +6,10 @@ and nested-archive summary rows. Severity values follow the same
 convention as ``doc.py`` ({"bad", "warn", "info"}).
 """
 
-from reporting.terminal_reporter.archive import nested_member_label
+from reporting.terminal_reporter.archive import (
+    _format_handler_error,
+    nested_member_label,
+)
 from reporting.shared import human_size
 
 
@@ -96,6 +99,14 @@ def archive_indicators(module_results: list[dict]) -> dict | None:
             "classification": cdata.get("classification") or "-",
             "score_delta": child.get("score_delta"),
         })
+
+    # Handler failures, appended to summary_rows rather than given their own
+    # field: the template already renders that list, so this shows up without
+    # a template change. Adding a field the template does not read is exactly
+    # the defect being fixed here — the module has always published these and
+    # neither reporter read them.
+    for err in data.get("errors") or []:
+        _add("Handler error", _format_handler_error(err), "warn")
 
     return {
         "summary_rows": summary_rows,
