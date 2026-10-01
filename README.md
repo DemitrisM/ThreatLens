@@ -36,18 +36,56 @@ profile and the file type. Nothing is executed.
 ## Requirements
 
 - **x86-64 only.** `peepdf-3` requires STPyV8, which publishes no arm64 wheel.
-  This is a property of the dependency, not of the container.
+  This is a property of the dependency, not of the container. Check this first
+  — `uname -m` must print `x86_64`. On ARM neither path below works, and that
+  is cheaper to learn before a twenty-minute build than after one.
 - Either **Docker** with Compose v2, or **Python 3.10+** on Linux.
 
-Compose v2 installs to `~/.docker/cli-plugins/` and needs **no root**:
+### Docker Engine
+
+Needs root, once. On Debian or Ubuntu:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io docker-buildx
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+```
+
+`docker-buildx` is not optional: `docker compose build` drives buildx, and
+without it the build either fails or falls back to the legacy builder.
+
+**Then log out and back in.** Group membership only applies to new sessions,
+and `usermod` prints nothing either way, so the only way to know it worked is
+to test it:
+
+```bash
+docker run --rm hello-world     # must succeed without sudo
+```
+
+If that reports `permission denied while trying to connect to the Docker
+daemon socket`, the group has not taken effect yet — log out fully rather
+than working around it. `newgrp docker` fixes the current shell only.
+
+Ignore a `docker-compose` 1.29.x package if your distribution installs one.
+That is the end-of-life Python v1 implementation and is not what this project
+uses.
+
+### Compose v2
+
+Unlike the engine, the Compose plugin needs **no root** — Docker reads CLI
+plugins from your own home directory:
 
 ```bash
 mkdir -p ~/.docker/cli-plugins
 curl -SL https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-x86_64 \
   -o ~/.docker/cli-plugins/docker-compose
 chmod +x ~/.docker/cli-plugins/docker-compose
-docker compose version
+docker compose version          # must print v2.x, not 1.29.x
 ```
+
+Verified on Ubuntu 24.04.5 with `docker.io` 29.1.3, `docker-buildx` 0.30.1 and
+the Compose plugin at v2.40.3.
 
 ## Run it in Docker
 
@@ -110,8 +148,14 @@ delete your own reports. Set the values.
 
 ## Run it on the host
 
+The libmagic package was renamed in the 64-bit time_t transition. Ubuntu
+24.04+ and Debian trixie+ call it `libmagic1t64`; earlier releases call it
+`libmagic1`, and asking for the wrong one fails with `Unable to locate
+package`. The block below uses the newer name — substitute `libmagic1` if your
+release predates those.
+
 ```bash
-sudo apt-get install libmagic1t64 git    # libmagic1 on releases before trixie
+sudo apt-get install libmagic1t64 git
 python3 -m venv .venv
 .venv/bin/pip install -e '.[analysis]'
 .venv/bin/threatlens rules update
