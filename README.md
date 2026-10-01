@@ -4,7 +4,7 @@ Static malware triage for the command line, with transparent confidence
 scoring. Every point in a score is attributable: the report says which module
 awarded it and why, so a verdict can be argued with rather than just believed.
 
-Version 0.5.15. MIT licensed.
+Version 0.5.16. MIT licensed.
 
 ## What it does
 
@@ -97,7 +97,7 @@ docker run --rm --network none \
   -v "$RULES:/app/rules/yara" \
   --tmpfs /tmp:size=2g \
   -e TL_UID=$(id -u) -e TL_GID=$(id -g) \
-  -w /data threatlens:0.5.15 scan suspicious.exe
+  -w /data threatlens:0.5.16 scan suspicious.exe
 ```
 
 ### About `TL_UID`
@@ -350,7 +350,7 @@ the `.lnk` size ceiling — are grouped and commented in `config.docker.yaml`.
 
 ## Tests
 
-1131 tests, green on the host and inside the image on a machine that has the
+1178 passing on the host and inside the image on a machine that has the
 malware corpus. `pytest` is not part of `.[analysis]`, so install it first.
 
 ```bash
@@ -373,10 +373,10 @@ would hit.
 Corpus scans that need the network or a long capa run are deselected by
 default; `-m corpus_slow` runs those on their own.
 
-**On a machine without the malware corpus, the 23 tests that scan real samples
-skip rather than fail** — 1108 passed, 23 skipped, and the exit status is still
-0. A skipped test looks exactly like a passing one in the tally, so read the
-skip count and not just the exit status. With the corpus present it is 1131
+**On a machine without the malware corpus, the tests that scan real samples
+skip rather than fail** — 1155 passed, 24 skipped, and the exit status is still
+0. (23 of those skips are the corpus tests; the 24th needs `pcodedmp` absent.) A skipped test looks exactly like a passing one in the tally, so read the
+skip count and not just the exit status. With the corpus present it is 1178
 passed and nothing skipped. `tests/_corpus.py` resolves the path in one place
 and `THREATLENS_CORPUS` overrides it:
 

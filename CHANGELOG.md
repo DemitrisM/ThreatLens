@@ -22,7 +22,8 @@ Everything before it is a step toward that.
 | 0.5.12 | `reporting/` complete — the verdict now narrates every finding the modules scored |
 | 0.5.13 | FLOSS runs for the first time — emulation moved onto the `-p deep` axis |
 | 0.5.14 | The bundled tools stop leaking on a timeout; C ssdeep; the defect log split out |
-| 0.5.15 | *(current)* Containerised — the image builds, and finding out why it disagreed with the host fixed a real detection bug. Phase 4's eight-step plan closes with the README |
+| 0.5.16 | *(current)* Phase 4 closes: CI, the graceful-degradation audit and its fixes, capa's budgets measured |
+| 0.5.15 | Containerised — the image builds, and finding out why it disagreed with the host fixed a real detection bug. Phase 4's eight-step plan closes with the README |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
@@ -148,6 +149,84 @@ containment: a killed child leaving nothing behind, the directory being
 private to one invocation, `os.environ` staying untouched, graceful
 degradation when the directory cannot be made, and both call sites passing a
 private `TMPDIR`.
+
+## 0.5.16 — 2026-10-01
+
+Phase 4 closes. CI exists, the graceful-degradation audit is done and its
+findings are fixed, and capa's time budgets come from a measured distribution
+instead of a guess.
+
+### Added — CI, and a guard against the failure it cannot see
+
+`tests.yml` runs the suite on every push; `docker.yml` builds the image and
+runs the suite inside it, triggered on source changes as well as packaging
+ones, because Docker is the single shipping path and a container-only
+breakage would otherwise merge.
+
+`.github/check_skips.py` fails the build when a test skips for a reason nobody
+chose. A skip is indistinguishable from a pass in an exit code, and sixteen
+tests once excused themselves inside the container while the tally read green.
+It asserts skip **reasons**, not counts: the host gives 1178 and the image
+fewer, so a pinned number would go red for a non-defect.
+
+What it cannot see is written in its docstring rather than left implied — a
+module that degrades gracefully still **passes**, and nothing about that
+reaches the JUnit XML.
+
+### Fixed — the graceful-degradation audit
+
+Twelve dependencies masked across ten corpus samples, 120 cells, each diffed
+against a baseline from the same commit. Four cells were SILENT — output
+reduced, `status: "success"`, nothing said:
+
+- **Archive handler errors never reached the report.** The module wrote
+  `data["errors"]`; both reporters read `data["handler_errors"]`, a key
+  nothing writes, so the branch had never executed for *any* failure. A RAR
+  with `rarfile` absent scored 8 → 0 saying "No archive indicators fired".
+- **An archive that was never opened is no longer reported as clean.** A
+  missing optional library now skips with the library named; a handler that
+  reached the file and rejected it errors with its payload kept. Nested
+  failures count toward the parent, which an earlier draft missed.
+- **`doc_analysis` says which passes did not run.** With `oletools` absent,
+  `APT28.docx` scored 25 → 9 and `AgentTesla.xlsm` 27 → 2, both reported as
+  success. `passes_unavailable` is recorded and named in the report. No flag
+  is added, so no score moves — an install problem must not move a verdict.
+
+It immediately exposed a live degradation: `pcodedmp` is not on `PATH` on the
+development host, so the VBA stomping check had been silently not running
+there, while it does run in the image.
+
+### Changed — capa's budgets, measured
+
+`capa_timeout_seconds` 120 → 240, `-p deep` 180 → 900. Twelve PEs measured to
+completion, 11.1s to 734.0s. The old budgets covered 5 and 6 of twelve and
+reported the rest as "capa timed out". A `triage` sweep is unaffected: it
+defaults to `-p quick`, which runs no capa.
+
+**An existing `config.yaml` keeps its old value** — it is read ahead of the
+defaults, so update it by hand.
+
+### Changed — peepdf parses in a subprocess
+
+`os.chdir` is gone from `pdf_analysis`: the child is launched with `cwd`
+already set, so nothing relocates any process. It also gained a timeout, a
+memory ceiling and crash isolation. Scores unchanged, 31 of 31 corpus PDFs
+identical.
+
+### Removed — parallel module execution, from the roadmap
+
+Measured and rejected. capa is 93% of a PE scan's wall clock, so Amdahl caps
+the speedup near 1.07x; documents and archives reach about 2x, which is 4.3s
+becoming 2.5s. The flags already control cost better, and a thread pool would
+have silently broken XLM deobfuscation — `signal.signal` works only on a
+process's main thread.
+
+### Tests
+
+**1178 passing, up from 1131** — 1179 collected, one skipped because it needs
+`pcodedmp` absent to mean anything. Without the malware corpus it is 1155
+passed and 24 skipped, exit 0 either way, which is why the CI guard asserts
+skip *reasons* rather than counts.
 
 ## 0.5.15 — 2026-09-29
 
