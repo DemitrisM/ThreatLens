@@ -51,7 +51,7 @@ PROFILES = ("quick", "standard", "deep")
 _QUICK_MODULES = ["file_intake", "pe_analysis", "lnk_analysis"]
 
 _DEEP_OVERRIDES = {
-    "capa_timeout_seconds": 180,
+    "capa_timeout_seconds": 900,
     # FLOSS emulation — the one part of string extraction that is not
     # nearly free. Measured over the 30 corpus PEs: 30.0 minutes against
     # 69 seconds for static-only extraction, and it produced no suspicious

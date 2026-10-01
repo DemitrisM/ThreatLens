@@ -136,7 +136,7 @@ def test_capa_timeout_is_validated():
     for bad in (0, -5, "soon", None):
         config = {"capa_timeout_seconds": bad}
         _validate(config)
-        assert config["capa_timeout_seconds"] == 120
+        assert config["capa_timeout_seconds"] == 240
 
 
 def test_valid_capa_timeout_survives():

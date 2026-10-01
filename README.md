@@ -138,14 +138,18 @@ any of them** — 100 against 91 on `Amadey.exe`, 100 against 93 on
 `RedLineStealer.exe`, and no difference at all on the other four.
 
 The reason those four tie is worth knowing, because it is not that capa found
-nothing. **capa timed out at the default `capa_timeout_seconds: 120` on four of
-the six, with the binary present and working.** It reports `skipped`, the scan
-succeeds, and the score matches having no capa installed at all.
+nothing — it is that capa was cut off. Measured across 12 real PEs, capa takes
+**11 to 734 seconds**, and the old defaults (120s, or 180s under `-p deep`)
+covered only 5 and 6 of them.
 
-Given a 900s budget instead, those same samples score heavily: `AsyncRAT.exe`
-finishes in 137s for **+60**, `AgentTesla.exe` in 723s for **+45**. So if you
-want capa's evidence, raise the budget — `-p deep` only takes it to 180, which
-recovers the first of those two and not the second.
+The budgets are now **240s by default and 900s under `-p deep`**, set from that
+distribution: 240 covers the common case in under four minutes, 900 clears the
+slowest sample measured. A `triage` sweep is unaffected either way, because it
+defaults to `-p quick`, which does not run capa at all.
+
+**If you already have your own `config.yaml`, it keeps whatever
+`capa_timeout_seconds` you set** — it is read ahead of the built-in defaults,
+so update it by hand to pick this up.
 
 The Docker image has both tools already; on the host, pick one of these.
 
@@ -236,7 +240,7 @@ Cost and display are separate axes, and they never interfere:
 |---|---|---|
 | `quick` | `file_intake` + `pe_analysis` + `lnk_analysis` | <1s |
 | `standard` | all enabled modules | 5–120s |
-| `deep` | as `standard`, capa timeout 180s, FLOSS emulation on | 30s–5min |
+| `deep` | as `standard`, capa timeout **900s**, FLOSS emulation on | 30s–15min |
 
 Output is `text` (default), `json`, `jsonl` or `html`. stdout carries results
 only; progress, warnings and log lines go to stderr, so this is reliable:
@@ -317,7 +321,7 @@ The settings you are most likely to touch:
 | `output_dir` | `./reports` | Where HTML reports land |
 | `log_level` | `WARNING` | `-v`/`-vv` override it |
 | `module_timeout_seconds` | `60` | **Not enforced by the orchestrator yet** — see the limitations below |
-| `capa_timeout_seconds` | `120` | `-p deep` raises it to 180 |
+| `capa_timeout_seconds` | `240` | `-p deep` raises it to **900**. Measured: capa takes 11–734s on real PEs, so 240 covers the common case and 900 covers all of it |
 | `floss_timeout_seconds` | `300` | Emulation takes 127–271s on real samples, so the generic 60 would time out every run |
 | `floss_emulation` | `false` | `-p deep` turns it on. Costs ~26x |
 | `enabled_modules` | all 13 | What `standard` and `deep` run |
