@@ -61,7 +61,7 @@ _MACHINE_FORMATS = frozenset({"json", "jsonl"})
     type=click.Choice(PROFILES, case_sensitive=False),
     default="standard",
     show_default=True,
-    help="Which modules run: quick (intake + PE), standard (all), deep (extended timeouts).",
+    help="Which modules run: quick (intake + PE), standard (all), deep (capa up to 15 min, FLOSS emulation).",
 )
 @click.option(
     "-v",

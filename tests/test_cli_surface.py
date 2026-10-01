@@ -119,7 +119,7 @@ def stub_config(monkeypatch):
             "enabled_modules": ["file_intake", "virustotal"],
             "output_dir": "./reports",
             "module_timeout_seconds": 60,
-            "capa_timeout_seconds": 120,
+            "capa_timeout_seconds": 240,
         }
 
     for module in VERB_MODULES.values():

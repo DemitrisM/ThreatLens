@@ -235,7 +235,7 @@ def test_deep_runs_at_least_what_standard_runs():
     deep = _apply_scan_profile({"enabled_modules": []}, "deep")
 
     assert deep["enabled_modules"] == standard["enabled_modules"]
-    assert deep["capa_timeout_seconds"] == 180
+    assert deep["capa_timeout_seconds"] == 900
 
 
 def test_deep_keeps_a_configured_module_list():

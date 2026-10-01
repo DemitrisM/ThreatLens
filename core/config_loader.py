@@ -92,7 +92,7 @@ DEFAULTS = {
     # config file got a chattier tool than the documentation promised.
     "log_level": "WARNING",
     "module_timeout_seconds": 60,
-    "capa_timeout_seconds": 120,
+    "capa_timeout_seconds": 240,
     # FLOSS gets its own budget rather than the generic one. 300s is
     # measured, not copied: the slowest of the 30 corpus PEs emulated in
     # 271.1s, so 300 covers all of them. It is also harmless on the
@@ -376,14 +376,14 @@ def _validate(config: dict) -> None:
         config["module_timeout_seconds"] = 60
 
     # Same three-part guard as above: right type, not a bool, positive.
-    capa_timeout = config.get("capa_timeout_seconds", 120)
+    capa_timeout = config.get("capa_timeout_seconds", 240)
     if not isinstance(capa_timeout, (int, float)) or isinstance(
         capa_timeout, bool
     ) or capa_timeout <= 0:
         logger.warning(
-            "Invalid capa_timeout_seconds %r — falling back to 120", capa_timeout
+            "Invalid capa_timeout_seconds %r — falling back to 240", capa_timeout
         )
-        config["capa_timeout_seconds"] = 120
+        config["capa_timeout_seconds"] = 240
 
     # Same three-part guard again.
     floss_timeout = config.get("floss_timeout_seconds", 300)

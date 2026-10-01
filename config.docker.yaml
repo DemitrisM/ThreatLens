@@ -35,7 +35,7 @@ capa_signatures_dir: "/opt/capa-sigs"
 
 log_level: "WARNING"
 module_timeout_seconds: 60
-capa_timeout_seconds: 120
+capa_timeout_seconds: 240
 floss_timeout_seconds: 300
 floss_emulation: false
 
