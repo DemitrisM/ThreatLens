@@ -276,7 +276,7 @@ def extract_members_to_temp(
         # Inside the with-block: returning from a failed infolist() before
         # entering it skipped rf.close() and leaked the handle, which over a
         # triage run across malformed archives exhausts the descriptor limit.
-        # Raised by Gemini.
+        # Raised in review.
         try:
             infos = rf.infolist()
         except Exception as exc:  # noqa: BLE001

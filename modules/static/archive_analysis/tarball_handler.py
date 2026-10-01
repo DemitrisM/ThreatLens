@@ -219,7 +219,7 @@ def extract_tar_members_to_temp(
     with tf:
         # A truncated tarball raises ReadError partway through this walk —
         # the same corruption enumerate_tar already survives. Two things
-        # matter here, both raised by Gemini: the walk must be guarded at
+        # matter here, both raised in review: the walk must be guarded at
         # all (unguarded it escaped and killed the pipeline, which design
         # rule 2 forbids), and the error must not discard the members found
         # before the corruption. Returning on the exception abandoned every
@@ -233,7 +233,7 @@ def extract_tar_members_to_temp(
         # orchestrator's bomb guard then sees only those few members and
         # may not trip, letting extraction run. An unbounded walk here
         # would decompress everything the enumerator refused to.
-        # Raised by Gemini.
+        # Raised in review.
         wanted = [e.member_index for e in entries if e.member_index is not None]
         last_index = max(wanted) if wanted else -1
 

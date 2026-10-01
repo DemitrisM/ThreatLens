@@ -432,7 +432,7 @@ def detect_duplicate_member_names(
     # raw names reported no duplicates at all while one member still
     # overwrote another — the indicator missed the very case it exists for.
     # The spellings mirror sevenzip_handler._candidate_paths so the indicator
-    # and the mapper agree on what "the same file" means. Raised by Gemini.
+    # and the mapper agree on what "the same file" means. Raised in review.
     by_target: dict[str, set[int]] = {}
     for i, e in enumerate(entries):
         # include_basename=False: a shared basename across directories
@@ -445,7 +445,7 @@ def detect_duplicate_member_names(
     # named "nested/../a.exe" agree on all three of their spellings, which
     # would otherwise render as three identical findings in the report. The
     # group is keyed by the members involved; the shortest spelling is the
-    # canonical destination and the one worth showing. Raised by Gemini.
+    # canonical destination and the one worth showing. Raised in review.
     groups: dict[frozenset[int], str] = {}
     for target, owners in sorted(by_target.items()):
         if len(owners) < 2:

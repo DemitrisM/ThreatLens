@@ -323,8 +323,8 @@ def extract_iso_members_to_temp(
             # read — so a repeated path resolves to one record and its
             # sibling is unreachable. That is recorded by the duplicate-name
             # indicator (iso is in _OVERWRITING_FORMATS) rather than silently
-            # extracting the same record twice under two entries. Raised by
-            # Gemini. Claim each source path once so the shadowed member is
+            # extracting the same record twice under two entries. Raised in
+            # review. Claim each source path once so the shadowed member is
             # left unmapped instead of being reported as analysed.
             src_path = "/" + e.name.lstrip("/")
             if src_path in claimed_sources:

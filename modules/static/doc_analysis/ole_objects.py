@@ -40,7 +40,7 @@ carry the same vulnerable code path.
 
 Note ``.lnk`` reaches this module only as an OLE Package filename
 extension, scored blind on its extension. Handing those bytes to
-lnk_analysis is a planned follow-up recorded in CLAUDE.md; this is one of
+lnk_analysis is a planned follow-up in the project notes; this is one of
 the three detection sites it will change.
 """
 

@@ -251,8 +251,8 @@ def _map_extracted_paths(entries: list[ArchiveEntry], tmp_dir: Path) -> None:
         *sanitise* traversal on write, so ``../malware.exe`` is really
         extracted as ``tmp_dir/malware.exe``. Refusing to map it left the
         payload on disk and unexamined — prefixing ``../`` would have been
-        a one-token way to skip 7z and CAB scanning entirely. Raised by
-        Gemini.
+        a one-token way to skip 7z and CAB scanning entirely. Raised in
+        review.
 
         So each candidate is tried in the order the extractor might have
         written it — the full relative path first, then the flattened
@@ -281,7 +281,7 @@ def _map_extracted_paths(entries: list[ArchiveEntry], tmp_dir: Path) -> None:
     # candidate resolves to tmp_dir/evil.exe — which is the former's *only*
     # candidate. Whichever ran first took it, so the payload was attributed
     # to the wrong member and the other was orphaned and falsely reported as
-    # overwritten. Raised by Gemini.
+    # overwritten. Raised in review.
     #
     # Within each pass the walk is reversed: when two members genuinely
     # share a destination the extractor wrote the later one last, so the

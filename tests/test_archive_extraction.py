@@ -141,7 +141,7 @@ def test_sanitised_traversing_member_is_still_found(tmp_path):
     py7zr and cabextract strip traversal on write, so `../malware.exe` is
     really extracted as `tmp_dir/malware.exe`. If the mapper refuses the
     name, the payload sits on disk unexamined and prefixing `../` skips
-    7z/CAB analysis entirely. Raised by Gemini.
+    7z/CAB analysis entirely. Raised in review.
     """
     out = tmp_path / "out"
     out.mkdir()
@@ -221,7 +221,7 @@ def test_sanitised_names_that_keep_their_tree_are_found(tmp_path, member_name):
 
     Probing only the raw name and the flattened basename misses
     tmp_dir/nested/evil.exe entirely, so a leading slash or a backslash
-    separator skipped 7z and CAB analysis outright. Raised by Gemini.
+    separator skipped 7z and CAB analysis outright. Raised in review.
     """
     out = tmp_path / "out"
     (out / "nested").mkdir(parents=True)
@@ -266,7 +266,7 @@ def test_truncated_tar_does_not_crash_extraction(tmp_path):
 
     # ...and must not discard the members that survived the truncation.
     # Asserting only "did not raise" masks a handler that bails out on the
-    # first error and extracts nothing. Raised by Gemini.
+    # first error and extracts nothing. Raised in review.
     assert entries, "enumerate_tar should recover members before the cut"
     materialised = [e for e in entries if e.extracted_path]
     assert materialised, "intact members before the truncation were abandoned"
@@ -283,7 +283,7 @@ def test_extraction_walk_is_bounded_by_requested_members(tmp_path, monkeypatch):
     end, it decompresses everything the enumerator just declined.
 
     Counted rather than timed: gzip clears 100+ MB/s, so a wall-clock
-    bound passes on the vulnerable code too. Both points raised by Gemini.
+    bound passes on the vulnerable code too. Both points raised in review.
     """
     import io
 
@@ -347,7 +347,7 @@ def test_surviving_file_is_attributed_to_the_last_writer(tmp_path):
 
     Claiming forward handed the file to the first entry, labelling the
     surviving bytes with the name of the record they overwrote.
-    Raised by Gemini.
+    Raised in review.
     """
     out = tmp_path / "out"
     out.mkdir()
@@ -446,7 +446,7 @@ def test_collapsing_name_does_not_orphan_a_distinct_payload(tmp_path):
     tmp_dir/malware.exe — already claimed by the first. Abandoning the
     search there orphaned the real payload, and since all three names are
     distinct, no duplicate-name indicator fired to cover it.
-    Raised by Gemini.
+    Raised in review.
     """
     out = tmp_path / "out"
     (out / "nested").mkdir(parents=True)
@@ -479,7 +479,7 @@ def test_distinct_names_that_collapse_to_one_file_are_flagged():
     """Raw-name counting missed the case the indicator exists for.
 
     "a.exe", "./a.exe" and "nested/../a.exe" are three different strings
-    that an extractor writes to one file. Raised by Gemini.
+    that an extractor writes to one file. Raised in review.
     """
     from modules.static.archive_analysis.indicators import (
         detect_duplicate_member_names,
@@ -560,7 +560,7 @@ def test_one_row_per_collision_not_per_shared_spelling():
     """Two members named identically agree on all their spellings.
 
     Grouping by spelling rendered the same collision three times in the
-    report. Raised by Gemini.
+    report. Raised in review.
     """
     from modules.static.archive_analysis.indicators import (
         detect_duplicate_member_names,
@@ -602,7 +602,7 @@ def test_drive_letter_decoy_is_a_detected_collision(decoy_pair):
 
     So "C:\\malware.exe" and "malware.exe" land on one file. Leaving the
     drive letter on meant they never matched, so a payload could occupy a
-    decoy's destination unnoticed. Raised by Gemini.
+    decoy's destination unnoticed. Raised in review.
     """
     from modules.static.archive_analysis.indicators import (
         detect_duplicate_member_names,
@@ -647,7 +647,7 @@ def test_a_fallback_candidate_never_outranks_a_primary(tmp_path):
     Its third spelling resolves to tmp_dir/evil.exe, which is the other
     member's sole candidate. Claiming in one pass let whichever ran first
     take it, misattributing the payload and orphaning the other member.
-    Raised by Gemini.
+    Raised in review.
     """
     out = tmp_path / "out"
     (out / "nested").mkdir(parents=True)

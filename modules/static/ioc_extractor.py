@@ -301,7 +301,7 @@ def run(file_path: Path, config: dict) -> dict:
     # are not distinguished here — both yield an empty list. file_intake
     # has already errored on a path that cannot be opened, so a scan as a
     # whole is not misled, but the status below is optimistic for the
-    # unreadable case. Tracked in CLAUDE.md under "Still open".
+    # unreadable case. Tracked in the project notes under "Still open".
     # ------------------------------------------------------------------
     strings = _extract_strings(file_path)
     if not strings:

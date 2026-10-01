@@ -32,7 +32,7 @@ the thresholds above, and is entirely separate from the pipeline's
 A document can therefore be classified MALICIOUS here while the scan
 banner reads LOW, because 10 points of a 100-point budget is a low
 score however certain this module is. That divergence is a known issue
-recorded in CLAUDE.md; unifying the two is a scoring change, not a
+recorded in the project notes; unifying the two is a scoring change, not a
 display one, and must not be papered over in either reporter.
 
 The rule set is intentionally *layered*, not partitioned. A flag may

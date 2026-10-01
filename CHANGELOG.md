@@ -381,8 +381,8 @@ longer contain them. Every hash changed; any other clone must be re-cloned.
 readable at their old commits, which is what a public clone fetches.
 
 No credential was ever exposed: every path that has ever been tracked was
-audited, and `config.yaml`, `.env` and `CLAUDE.md` have never been in the
-repository at all. The stale `malware_triage.egg-info/` went the same way.
+audited, and `config.yaml`, `.env` and the private development notes have
+never been in the repository at all. The stale `malware_triage.egg-info/` went the same way.
 
 ## 0.5.13 — 2026-09-25
 
@@ -1354,7 +1354,7 @@ lies cannot be produced by a library that writes correct ones.
 
 Reading `archive_analysis` for the commenting pass surfaced twelve defects
 before a line of documentation was written. Several were exploitable. Each was
-fixed test-first in its own commit and cleared the Gemini review gate.
+fixed test-first in its own commit and cleared the review gate.
 
 ### Fixed — `file_intake`
 
@@ -1482,7 +1482,7 @@ fixed test-first in its own commit and cleared the Gemini review gate.
 
 ### Known
 
-- Nested damping is documented in CLAUDE.md and prepared for in
+- Nested damping is documented in the project notes and prepared for in
   `core/scoring.py` — `_clamp` accepts a float precisely for it — but nothing
   produces a damped value. `_analyse_archive` merges a nested child's flags and
   discards its `score_delta`. Deferred to the end-of-project calibration sweep,
