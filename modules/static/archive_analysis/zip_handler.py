@@ -576,7 +576,7 @@ def extract_members_to_temp(
         # because zip() pairs entries[0] with infos[0] whether or not they
         # describe the same member — one dropped record shifts every
         # mapping after it, and the scanner then reads the wrong bytes
-        # under the right name. Raised by Gemini.
+        # under the right name. Raised in review.
         infos = zf.infolist()
 
         # Monotonic counter rather than len(list(tmp_dir.iterdir())): the

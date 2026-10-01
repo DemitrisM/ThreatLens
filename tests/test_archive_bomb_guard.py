@@ -79,7 +79,7 @@ def test_declared_size_is_rejected_without_reading_the_payload(tmp_path):
 
     A wall-clock assertion cannot prove this: 40 MiB of zeroes inflates in
     well under a second, so a timing test passes on the vulnerable code too
-    (measured: 600 MiB via getmembers() takes 2.65s). Raised by Gemini.
+    (measured: 600 MiB via getmembers() takes 2.65s). Raised in review.
 
     So the bomb here is a header declaring 5 GiB with *no payload behind
     it* — the file ends immediately after the 512-byte header. Rejecting it

@@ -468,8 +468,8 @@ def _analyse_archive(file_path: Path, config: dict, depth: int) -> dict:
         #
         # The two causes are separated deliberately. An absent optional
         # library says nothing about the sample and is a graceful skip, which
-        # the archive design notes in CLAUDE.md require. A handler that
-        # reached the file and rejected it says a great deal, and is an error
+        # the archive design notes require. A handler that reached the file
+        # and rejected it says a great deal, and is an error
         # that keeps its payload so the report can name what failed.
         own_errors = data.get("errors") or []
         if not entries and own_errors:

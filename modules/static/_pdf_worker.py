@@ -14,9 +14,9 @@ with ``cwd=`` already set to a scratch directory it owns, so nothing calls
 ``os.chdir`` anywhere — the child is simply *born* standing in the right place.
 
 This began as the prerequisite for parallel module execution, which was then
-measured and rejected (see CLAUDE.md). It stands on its own regardless — the
-reasons below are why it was worth doing, and none of them depend on
-concurrency:
+measured and rejected (see the project notes). It stands on its own
+regardless — the reasons below are why it was worth doing, and none of them
+depend on concurrency:
 
 * peepdf gets a **timeout**, which it has never had.
 * A crash in an unmaintained parser becomes an exit code instead of taking the

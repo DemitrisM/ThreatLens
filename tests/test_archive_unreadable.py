@@ -11,8 +11,8 @@ JavaScript to a read-only working directory in 0.5.15 and still reporting
 success.
 
 The two causes are deliberately not treated alike, per the archive design
-notes in CLAUDE.md: *"Missing optional libraries (rarfile, py7zr, pycdlib) are
-graceful skips, not errors."* An absent library says nothing about the sample;
+notes: *"Missing optional libraries (rarfile, py7zr, pycdlib) are graceful
+skips, not errors."* An absent library says nothing about the sample;
 a file that a handler reached and rejected says a great deal.
 
 No corpus is needed here: a RAR signature followed by junk routes to the RAR

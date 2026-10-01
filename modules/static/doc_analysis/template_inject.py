@@ -80,7 +80,7 @@ _HIGH_REL_KEYWORDS = ("attachedtemplate", "oleobject", "frame", "subdocument")
 # that presents as a modern Word document.
 #
 # Note .lnk is detected here and scored blind — the container handoff to
-# lnk_analysis is a planned follow-up recorded in CLAUDE.md, and this is
+# lnk_analysis is a planned follow-up in the project notes, and this is
 # one of the three sites it will change.
 _DANGEROUS_EMBEDDED_EXTS = frozenset({
     ".rtf", ".exe", ".dll", ".scr", ".bat", ".cmd", ".ps1", ".vbs",
