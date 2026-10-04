@@ -168,8 +168,8 @@ has to be on `PATH`; nothing else does.
 
 ### capa and FLOSS
 
-Neither ships in the repository — they are 45 MB and 39 MB, and `.gitignore`
-excludes them. **A fresh clone has neither**, and the two modules that want
+Neither ships in the repository — they are 45 MB and 39 MB, and neither is
+tracked. **A fresh clone has neither**, and the two modules that want
 them degrade differently:
 
 - `capa_analysis` **skips**, with `capa binary not found` in the report.
@@ -318,7 +318,8 @@ printf 'virustotal_api_key: "<key>"\n' > ~/.config/threatlens/config.yaml
 chmod 600 ~/.config/threatlens/config.yaml
 ```
 
-In Docker, put it in `.env` (gitignored) and Compose passes it through. Never
+In Docker, put it in `.env`, which is not tracked, and Compose passes it
+through. Never
 bake a key into the image: layers are permanent and `docker history` exposes
 them even after a later layer deletes the file.
 
@@ -329,7 +330,12 @@ then `~/.config/threatlens/config.yaml`, then built-in defaults. Pointing
 `--config` at a file that does not exist is a usage error rather than a silent
 fallback.
 
-`config.yaml` is gitignored — it is where a VirusTotal key would sit — so a
+The repository ships no ignore rules, so a `config.yaml` you create in a clone
+is visible to `git` and a `git add -A` would stage it. **Prefer
+`~/.config/threatlens/config.yaml`**, outside the repository, for anything
+holding a key.
+
+`config.yaml` is not tracked — it is where a VirusTotal key would sit — so a
 fresh clone has none and runs on `DEFAULTS` in `core/config_loader.py`, which
 is the authoritative list of every key. To write your own, copy
 `config.docker.yaml`: it is complete and commented. **Its paths are the

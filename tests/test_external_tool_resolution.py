@@ -265,7 +265,7 @@ def test_defaults_do_not_configure_rule_paths():
 def test_default_binaries_still_point_at_the_bundled_location(tmp_path, monkeypatch):
     """A default must not change existing behaviour.
 
-    `config.yaml` is gitignored, so a fresh clone runs on DEFAULTS alone.
+    `config.yaml` is not tracked, so a fresh clone runs on DEFAULTS alone.
     Defaulting these to bare names looked tidier and silently broke the
     hand-placed `./bin/capa` workflow: capa reported "binary not found" and
     `string_analysis` fell back to `source="raw"` with both binaries sitting

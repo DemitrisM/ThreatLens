@@ -72,7 +72,7 @@ DEFAULTS = {
     # because it installs the tools from PyPI as console scripts.
     #
     # The default stays a path because a default must not change existing
-    # behaviour. config.yaml is gitignored, so a fresh clone runs on DEFAULTS
+    # behaviour. config.yaml is not tracked, so a fresh clone runs on DEFAULTS
     # alone; defaulting to "capa" would stop the hand-placed ./bin/capa from
     # being found and silently drop capability detection and FLOSS. Measured
     # before this was reverted: capa "skipped — binary not found" and
