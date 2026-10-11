@@ -283,6 +283,26 @@ def _analyse(file_path: Path, file_size: int, config: dict) -> dict:
         "raw_keyword_hits": {},
         "header_mismatch": False,
         "peepdf_errors": [],
+        "js_errors": [],
+        # Whether a JavaScript engine was present, whether it was armed, and
+        # whether it actually ran. Reported unconditionally, because "the
+        # script did nothing", "no engine was available" and "the script threw
+        # immediately" are three different findings that were previously
+        # indistinguishable — and because a reader is entitled to know the
+        # tool executed the sample's code.
+        #
+        # Seeded with the keys rather than left empty, so the disclosure
+        # survives a worker that timed out or crashed before it could report.
+        # Those are precisely the failures a hostile script is most likely to
+        # cause, so losing the disclosure there would be losing it where it
+        # matters most. `None` means "not known", which is distinct from
+        # False. Raised in review.
+        "javascript_engine": {
+            "available": None,
+            "enabled": None,
+            "executed": None,
+            "peepdf_version": None,
+        },
         "parsed": False,
     }
 
@@ -464,7 +484,7 @@ def _raw_keyword_scan(file_path: Path, file_size: int) -> tuple[int, list[str], 
     return score_delta, reasons, hits
 
 
-def _run_worker(target: str, timeout: float) -> dict:
+def _run_worker(target: str, timeout: float, execute_js: bool = True) -> dict:
     """Parse `target` with peepdf in a child process and return its findings.
 
     The child is launched with ``cwd`` already pointed at a scratch directory
@@ -478,6 +498,8 @@ def _run_worker(target: str, timeout: float) -> dict:
     Args:
         target:  The PDF, already absolute.
         timeout: Wall-clock budget for the child, in seconds.
+        execute_js: Whether the child may run the PDF's JavaScript. False
+                    appends the worker's ``nojs`` switch.
 
     Returns:
         The worker's payload, or ``{"parsed": False, "failure": <reason>}`` for
@@ -505,7 +527,8 @@ def _run_worker(target: str, timeout: float) -> dict:
         try:
             with open(errors, "wb") as err:
                 completed = subprocess.run(
-                    [sys.executable, str(_WORKER), target, str(results)],
+                    [sys.executable, str(_WORKER), target, str(results)]
+                    + ([] if execute_js else ["nojs"]),
                     cwd=scratch,
                     timeout=timeout,
                     stdin=subprocess.DEVNULL,
@@ -589,6 +612,11 @@ def _peepdf_parse(file_path: Path, data: dict, config: dict) -> tuple[int, list[
         logger.info("could not resolve %s: %s", file_path.name, exc)
         return 0, [f"peepdf parse failure: {exc}"]
 
+    # Default True, matching config_loader's DEFAULTS and peepdf's own
+    # behaviour. Read with an explicit default so the no-config path and a
+    # config missing the key both leave execution armed rather than silently
+    # losing the runtime-recovered stages.
+    execute_js = bool(config.get("pdf_javascript_execution", True)) if config else True
     timeout = config.get("module_timeout_seconds", _DEFAULT_TIMEOUT) if config else _DEFAULT_TIMEOUT
     try:
         timeout = float(timeout)
@@ -597,7 +625,26 @@ def _peepdf_parse(file_path: Path, data: dict, config: dict) -> tuple[int, list[
     except (TypeError, ValueError):
         timeout = _DEFAULT_TIMEOUT
 
-    found = _run_worker(absolute_target, timeout)
+    found = _run_worker(absolute_target, timeout, execute_js=execute_js)
+
+    # Recorded before the parsed/failed branch below, so the disclosure
+    # survives a parse that failed outright — a reader still needs to know
+    # whether a V8 context was handed this file's script.
+    #
+    # `enabled` comes from OUR config and is therefore known even when the
+    # worker never answered; `available` and `executed` are the child's to
+    # report and stay None if it died first. Writing a confident False there
+    # would claim the engine was absent when the truth is that we never found
+    # out.
+    data["javascript_engine"]["enabled"] = execute_js
+    engine = found.get("js_engine")
+    if isinstance(engine, dict):
+        data["javascript_engine"] = {
+            "available": engine.get("available"),
+            "enabled": bool(engine.get("enabled", execute_js)),
+            "executed": engine.get("executed"),
+            "peepdf_version": engine.get("peepdf_version"),
+        }
 
     if not found.get("parsed"):
         return 0, [found.get("failure") or "peepdf could not parse PDF structure"]
@@ -622,6 +669,15 @@ def _peepdf_parse(file_path: Path, data: dict, config: dict) -> tuple[int, list[
     # in `nasty` score, and only once: peepdf emits dozens of cosmetic
     # complaints on ordinary files, so treating its error list as a signal
     # wholesale would score every PDF ever produced by a bad writer.
+    # JavaScript failures are kept apart from structural ones. The worker
+    # partitions them because peepdf merges both into one list, and a script
+    # that threw on its first line otherwise reads as a quiet file. These are
+    # NOT scored: a script erroring says the engine ran, not that the file is
+    # malicious, and peepdf's bare global throws on any Acrobat-DOM access.
+    js_errors = found.get("js_errors") or []
+    if js_errors:
+        data["js_errors"] = [str(e) for e in js_errors[:10]]
+
     errors = found.get("errors") or []
     if errors:
         data["peepdf_errors"] = [str(e) for e in errors[:10]]

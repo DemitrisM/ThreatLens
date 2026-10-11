@@ -4,7 +4,7 @@ Static malware triage for the command line, with transparent confidence
 scoring. Every point in a score is attributable: the report says which module
 awarded it and why, so a verdict can be argued with rather than just believed.
 
-Version 0.5.17. MIT licensed.
+Version 0.5.18. MIT licensed.
 
 ## What it does
 
@@ -30,8 +30,13 @@ Thirteen modules ship enabled:
 | `lnk_analysis` | shell-link targets, arguments, overlays |
 | `virustotal` | hash-only lookup, optional, needs a key |
 
-Analysis is static. `file_intake` always runs; everything else is chosen by the
-profile and the file type. Nothing is executed.
+Analysis is static, with two disclosed exceptions. `file_intake` always runs;
+everything else is chosen by the profile and the file type. The sample is
+never launched, and no payload is run as a program — but a PDF's JavaScript
+**is** executed in a V8 engine and Excel 4.0 macro formulas **are**
+interpreted, because that is the only way to recover a payload assembled at
+runtime. Both are on by default, both are disclosed in the report, and the
+first is switchable. See [What runs your sample's code](#what-runs-your-samples-code).
 
 ## Requirements
 
@@ -175,20 +180,39 @@ docker compose build
 #    yara_scanner contributes nothing and scores read low.
 docker compose run --rm threatlens rules update
 
-# 5. Scan. Paths are relative to ./samples, which is mounted read-only.
+# 5. Scan, with no network. Paths are relative to ./samples (read-only).
 cp /path/to/suspicious.exe samples/
-docker compose run --rm threatlens scan suspicious.exe
+docker compose run --rm offline scan suspicious.exe
 ```
 
 Reports land in `./reports`. Rules live in a named volume and survive the
 container exiting.
 
+### Two services, and which one to use
+
+| service | network | use it for |
+|---|---|---|
+| `offline` | **none** | scanning samples — the normal case |
+| `threatlens` | egress | `rules update`, and a scan where you want `virustotal` |
+
+**Prefer `offline`.** Analysing a document is not a purely passive act:
+`pdf_analysis` **executes** the JavaScript inside a PDF, and the Excel-4.0
+pass interprets macro formulas (see "What runs your sample's code" below).
+Holding an open route to the internet while doing that is a combination worth
+having to ask for by name, which is why it is a separate service rather than
+a flag.
+
+Both services drop all Linux capabilities except the three the privilege drop
+needs (`SETUID`, `SETGID`, `CHOWN`), set `no-new-privileges`, cap the process
+count, and mount `/tmp` as `noexec` tmpfs. Your `samples/` is mounted
+read-only, so nothing a sample does can modify your corpus.
+
 `rules update` and the `virustotal` module are the only things that reach the
 network. Sample bytes never leave the machine either way — VirusTotal is
 queried by hash, not by upload.
 
-A scan itself needs no network at all, and can be run with none. `docker
-compose run` has no `--network` flag, so this one is a plain `docker run`:
+Prefer the `offline` service above. If you want the equivalent as a plain
+`docker run` — for instance to add your own flags — it is:
 
 ```bash
 # Compose names the volume after the project, which defaults to this
@@ -197,12 +221,70 @@ compose run` has no `--network` flag, so this one is a plain `docker run`:
 RULES="$(echo "${PWD##*/}" | tr '[:upper:]' '[:lower:]')_threatlens-rules"
 
 docker run --rm --network none \
+  --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add CHOWN \
+  --security-opt no-new-privileges:true --pids-limit 512 \
   -v "$PWD/samples:/data:ro" -v "$PWD/reports:/reports" \
   -v "$RULES:/app/rules/yara" \
-  --tmpfs /tmp:size=2g \
+  --tmpfs /tmp:size=2g,noexec \
   -e TL_UID=$(id -u) -e TL_GID=$(id -g) \
-  -w /data threatlens:0.5.17 scan suspicious.exe
+  -w /data threatlens:0.5.18 scan suspicious.exe
 ```
+
+`noexec` is spelled out even though Docker already applies it by default —
+measured on this machine, `--tmpfs /tmp:size=2g` mounts
+`rw,nosuid,nodev,noexec` and an attempt to execute from `/tmp` is refused.
+Extracted malware lands there, so the guarantee is stated rather than
+inherited from a default that a different daemon version could change.
+
+Do not simplify that to `--cap-drop ALL`. The entrypoint starts as root and
+drops to `TL_UID` with `gosu`, which needs `SETUID` and `SETGID`; without
+them the container fails to start with
+`error: failed switching to "1000:1000": operation not permitted`.
+
+## What runs your sample's code
+
+ThreatLens is a static analysis tool, with two deliberate exceptions. Both
+are on by default because both recover evidence that reading the file cannot,
+and you should know about them:
+
+**PDF JavaScript is executed.** `peepdf` hands every script it finds to a V8
+engine and runs it, with `eval` hooked so that each stage generated at
+runtime is recovered and re-run. That is how a payload assembled from
+fragments at runtime is seen at all. The report tells you what happened, in
+`pdf_analysis.data.javascript_engine`:
+
+| field | meaning |
+|---|---|
+| `available` | a JavaScript engine was importable (`None` if we never found out) |
+| `enabled` | execution was armed — i.e. `pdf_javascript_execution` |
+| `executed` | it **actually ran** this file's script: armed, importable, and the file carried script. `False` for a PDF with no JavaScript; `None` if the parse died before we could tell |
+| `peepdf_version` | which peepdf produced the result |
+
+`enabled` and `executed` are separate on purpose. A clean PDF with no script
+reports `enabled: true, executed: false` — the engine was armed and ran
+nothing, which is not the same as having executed something.
+
+Script errors appear separately as `js_errors`, so "the script threw on its
+first line" is distinguishable from "the file contained no script". They are
+not scored — an error means the engine ran, not that the file is malicious.
+
+To turn it off, in `config.yaml`:
+
+```yaml
+pdf_javascript_execution: false      # default: true
+```
+
+That costs real detection: a PDF whose payload is assembled at runtime will
+report only the loader. It is off-by-choice, not a recommendation.
+
+**Excel 4.0 macros are interpreted.** `doc_analysis` evaluates XLM formula
+graphs to resolve obfuscated macros. It calls no Windows APIs — it is a
+formula evaluator, so the risk is a hostile workbook hanging the parser
+rather than executing anything, which is why that pass carries its own
+timeouts.
+
+Neither needs network access, which is the argument for the `offline`
+service.
 
 ### About `TL_UID`
 
@@ -466,14 +548,14 @@ the `.lnk` size ceiling — are grouped and commented in `config.docker.yaml`.
 
 ## Tests
 
-**1188 tests collected**, and that is the number to check — it is the one the
+**1198 tests collected**, and that is the number to check — it is the one the
 environment cannot change. How many of them *run* depends on what is present:
 
 | where | passed | skipped |
 |---|---|---|
-| host, malware corpus present | 1187 | 1 |
-| host, no corpus | 1164 | 24 |
-| inside the image, no corpus | 1165 | 23 |
+| host, malware corpus present | 1197 | 1 |
+| host, no corpus | 1174 | 24 |
+| inside the image, no corpus | 1175 | 23 |
 
 23 of the skips are the tests that scan real samples. The 24th needs
 `pcodedmp` on `PATH`, which the image has and a bare host may not — that is

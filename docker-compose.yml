@@ -8,12 +8,23 @@
 #
 #   docker compose build
 #   docker compose run --rm threatlens rules update     # first run only
-#   docker compose run --rm threatlens scan sample.exe
+#   docker compose run --rm offline scan sample.exe     # the normal case
+#   docker compose run --rm threatlens scan sample.exe  # only if you need VT
+#
+# TWO SERVICES, and the difference matters. `offline` has no network at all
+# and is the right one for scanning a sample. `threatlens` has egress, which
+# only `rules update` and the virustotal module need.
+#
+# The reason this is not one service with a flag: analysing a PDF EXECUTES
+# the JavaScript it contains, in a V8 engine (see pdf_javascript_execution in
+# config.yaml), and the Excel-4.0 pass interprets macro formulas. Running
+# attacker-controlled code and holding an open route to the internet in the
+# same container is a combination worth having to ask for by name.
 
 services:
   threatlens:
     build: .
-    image: threatlens:0.5.17
+    image: threatlens:0.5.18
 
     volumes:
       # Your samples, READ-ONLY. A static scan never writes to a sample, so
@@ -65,13 +76,56 @@ services:
     # this can point at the user's mount.
     working_dir: /data
 
-    # Analysing hostile input needs no network. `rules update` and the
-    # virustotal module do, so this cannot simply be `network_mode: none` —
-    # but a scan of a sample can be run with `--network none` on the command
-    # line, and that is worth knowing.
+    # ── Containment ──────────────────────────────────────────────────────
+    # Every value below was measured against this image, not copied from a
+    # hardening guide. `docker run --cap-drop ALL` on its own FAILS with
+    #   error: failed switching to "1000:1000": operation not permitted
+    # because entrypoint.sh starts as root and gosu needs SETUID/SETGID to
+    # drop privileges. So capabilities are dropped and three are added back,
+    # which is the smallest set that still starts and still corrects mount
+    # ownership:
     #
+    #   SETUID, SETGID  gosu's privilege drop
+    #   CHOWN           entrypoint.sh fixing ownership of /reports
+    #
+    # Verified by scanning a real PDF from the corpus under this exact
+    # profile and comparing the payload against the unhardened run.
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+
+    # Blocks privilege gain through a setuid binary. gosu DROPS privilege, so
+    # this does not interfere — tested.
+    security_opt:
+      - no-new-privileges:true
+
+    # A fork bomb in an emulated or interpreted payload stops at the limit
+    # instead of at the host's process table. Generous: capa and FLOSS are
+    # subprocesses and archive extraction fans out.
+    pids_limit: 512
+
     # Sample bytes never leave the machine regardless: design rule 3 means
     # VirusTotal is queried by hash only.
+
+  # The same image with no network whatsoever. Use this to scan things.
+  #
+  # `network_mode: none` is a property of the container, which is exactly why
+  # it has to be a separate service: it cannot be applied to one Python call
+  # site while leaving the virustotal module able to reach the API. An
+  # earlier attempt to express that as a single hardened service was wrong
+  # for that reason.
+  #
+  # Note also that an in-container network namespace is NOT an alternative:
+  # `unshare -rn` as the unprivileged analysis user is refused
+  # ("unshare failed: Operation not permitted") without CAP_SYS_ADMIN, which
+  # would give back more than the isolation is worth.
+  offline:
+    extends:
+      service: threatlens
+    network_mode: none
 
 volumes:
   threatlens-rules:

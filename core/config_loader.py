@@ -140,6 +140,17 @@ DEFAULTS = {
     "max_onenote_blobs": 200,
     "onenote_full_recursion": False,
     "max_onenote_recursion_depth": 2,
+    # pdf_analysis tuning. peepdf does not merely parse JavaScript, it
+    # EXECUTES it in a V8 context, with eval hooked so each runtime-generated
+    # stage is recovered and re-run. That is how a payload assembled at
+    # runtime is seen at all, so it defaults to on — turning it off trades
+    # real detection for a smaller attack surface, and the trade should be
+    # made deliberately rather than inherited from peepdf's own default.
+    #
+    # The name says "execution" rather than mirroring peepdf's inverted
+    # `manualAnalysis` flag, because a setting whose True means "do not run
+    # it" is a setting someone will eventually read backwards.
+    "pdf_javascript_execution": True,
     # file_intake tuning. Ceiling for the pure-Python ppdeep fallback
     # only; the C ssdeep extension is ~100x faster and stays uncapped.
     # Past this size the fuzzy hash is skipped with a warning rather than

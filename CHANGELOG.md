@@ -24,12 +24,115 @@ Everything before it is a step toward that.
 | 0.5.14 | The bundled tools stop leaking on a timeout; C ssdeep; the defect log split out |
 | 0.5.15 | Containerised — the image builds, and finding out why it disagreed with the host fixed a real detection bug. Phase 4's eight-step plan closes with the README |
 | 0.5.16 | Phase 4 closes: CI, the graceful-degradation audit and its fixes, capa's budgets measured |
-| 0.5.17 | *(current)* An outside first-run review: two string-matching defects, five documentation defects, and 87 MiB that `rm -rf` never reclaimed |
+| 0.5.17 | An outside first-run review: two string-matching defects, five documentation defects, and 87 MiB that `rm -rf` never reclaimed |
+| 0.5.18 | *(current)* The tool admits it executes code: PDF JavaScript disclosed and switchable, container containment measured rather than assumed |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.18 — 2026-10-11
+
+Phase 5 opened with a research pass, and the first thing it found was in the
+existing code rather than in the plan: **ThreatLens already executes
+attacker-controlled code, and said so nowhere.** This release adds no dynamic
+backend. It makes the two places that already perform dynamic analysis
+visible, switchable and contained, which is the honest prerequisite for
+adding a third.
+
+### The finding
+
+`peepdf-3` does not merely parse the JavaScript in a PDF — it runs it in a V8
+context, with `eval` redirected to a hook that accumulates each
+runtime-generated stage and re-runs until no new code appears. That is how a
+payload assembled at runtime is recovered at all. It is gated on peepdf's own
+`manualAnalysis` parameter, which defaults to **False** — execution on — and
+which this project never set.
+
+Proved rather than inferred, with a benign PDF whose `/OpenAction` assembles
+a string from four array fragments and passes it to `eval`. With execution on
+the report carries a second block holding the assembled value, a string that
+appears nowhere in the file; with execution off it does not.
+
+It was also a host/image divergence of the worst kind. On the development
+host `JS_MODULE` is **False** — the virtualenv resolves `peepdf 0.4.2` ahead
+of `peepdf-3`, and the older package imports a JS binding that is not
+installed — so PDF JavaScript has **never** executed during development and
+**always** executes in the shipped image. Not a difference in what is found;
+a difference in whether attacker code runs.
+
+Separately, `XLMMacroDeobfuscator` is an Excel-4.0 **interpreter**. What the
+documentation called "XLM deobfuscation" is emulation. It evaluates formula
+graphs rather than calling Windows APIs, so it is a robustness risk rather
+than a code-execution one — which is why that module already carries two
+timeouts — but it is dynamic analysis and was described as static.
+
+### Added
+
+- `pdf_javascript_execution` in `config_loader.DEFAULTS`, default **True**.
+  The default is deliberately unchanged: turning execution off trades real
+  detection for a smaller attack surface, and the runtime-assembled stage
+  above is exactly the evidence that would be lost. The name states what it
+  does rather than mirroring peepdf's inverted flag, because a setting whose
+  `True` means "do not run it" is one somebody eventually reads backwards.
+- `javascript_engine` in the `pdf_analysis` payload — `available`, `enabled`,
+  `executed`, `peepdf_version` — reported on **every** path including a
+  timeout or a crash, because a reader is entitled to know a V8 context was
+  handed the sample's script whatever the structural outcome was, and a
+  worker killed mid-parse is exactly the failure a hostile script would
+  cause.
+
+  `enabled` and `executed` are distinct, and the review gate was right to
+  insist on it: the first draft computed `executed = enabled and available`
+  *before parsing began*, so **every clean PDF with no JavaScript claimed its
+  script had been executed.** A false disclosure in the alarming direction is
+  still a false disclosure. `executed` is now decided after the parse and
+  requires the file to have actually carried script; `None` means the parse
+  died before the question could be answered, which is not `False`.
+- `js_errors`, separated from `peepdf_errors`. peepdf routes script failures
+  into the same list as malformed-xref complaints, so until now "the script
+  threw on its first line" and "bad PDF header" were the same finding, and
+  both read as "the JavaScript found nothing". Deliberately not scored: a
+  script erroring says the engine ran, not that the file is malicious, and
+  peepdf's bare global throws on any Acrobat-DOM access.
+- A `nojs` switch on the PDF worker, **refused on a typo rather than
+  ignored** — a mistyped flag silently leaving the engine armed is the
+  failure this change exists to remove.
+- An `offline` Compose service with `network_mode: none`, now the documented
+  way to scan. Running attacker-controlled code and holding an open route to
+  the internet in one container should have to be asked for by name.
+
+### Changed
+
+- Container containment, every value measured against this image rather than
+  taken from a hardening guide. `cap_drop: ALL` alone **fails** —
+  `error: failed switching to "1000:1000": operation not permitted`, because
+  `entrypoint.sh` starts as root and `gosu` needs `SETUID`/`SETGID`. The
+  smallest working set is `ALL` dropped with `SETUID`, `SETGID` and `CHOWN`
+  added back, plus `no-new-privileges` (which does not interfere, since
+  `gosu` drops privilege rather than gaining it) and `pids_limit: 512`.
+  Verified by scanning a corpus PDF under the exact profile and diffing the
+  payload against an unhardened run.
+
+### Notes
+
+Two alternatives were tried and rejected, recorded so they are not
+re-derived:
+
+- **Egress cannot be denied per code path in Compose.** Network isolation is
+  a property of the container, and `virustotal` runs inside the scan, so a
+  single service cannot both deny the parser egress and let the enrichment
+  module reach the API. Hence a second service rather than a flag.
+- **An in-container network namespace is not an alternative.** `unshare -rn`
+  as the unprivileged analysis user is refused — "unshare failed: Operation
+  not permitted" — without `CAP_SYS_ADMIN`, which gives back more than the
+  isolation is worth.
+
+Still open and deliberately not in this release: the orphaned-payload fix
+(`Popen(start_new_session=True)` plus `os.killpg`), which becomes a
+precondition for any further dynamic provider and wants its own commit and
+its own tests.
 
 ## 0.5.17 — 2026-10-11
 

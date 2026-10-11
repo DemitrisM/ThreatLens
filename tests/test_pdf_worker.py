@@ -260,7 +260,7 @@ def test_the_worker_truncates_an_oversized_block_rather_than_dropping_it(monkeyp
             return [["app.alert(1);" + "A" * 5000]]
 
     class _FakeParser:
-        def parse(self, target, forceMode=False, looseMode=False):
+        def parse(self, target, forceMode=False, looseMode=False, **kwargs):
             return 0, _FakeDoc()
 
     monkeypatch.setattr(peepdf.PDFCore, "PDFParser", _FakeParser)
@@ -365,3 +365,291 @@ def test_an_unusable_temp_directory_degrades_without_losing_the_raw_sweep(sample
     # The raw sweep's own finding survives: this PDF carries /JavaScript and
     # /OpenAction, which the byte-level pass sees without peepdf.
     assert result["score_delta"] > 0, "the raw keyword sweep's findings were lost"
+
+
+# ------------------------------------------------- JavaScript execution gate
+#
+# peepdf EXECUTES the JavaScript it recovers; it does not merely read it.
+# These tests pin the three things that follow from that: the engine state is
+# always reported, the switch that disables execution is actually honoured,
+# and a mistyped switch is refused rather than silently leaving V8 armed.
+
+
+class _RecordingParser:
+    """A fake PDFParser that records how it was called and returns nothing."""
+
+    calls: list = []
+
+    # `manualAnalysis` defaults to None, NOT False. peepdf's real default is
+    # False, so a fake that copied it would record False when the worker
+    # omitted the argument entirely — and the assertion below would pass for
+    # the very regression it exists to catch. None is a value the worker can
+    # never pass, so omission is detectable. Raised in review.
+    def parse(self, target, forceMode=False, looseMode=False, manualAnalysis=None):
+        type(self).calls.append(
+            {"target": target, "forceMode": forceMode,
+             "looseMode": looseMode, "manualAnalysis": manualAnalysis}
+        )
+        return 1, None          # a refused parse — the call shape is the point
+
+
+def _patch_parser(monkeypatch, parser_cls):
+    """Install `parser_cls` as the PDFParser the worker imports."""
+    import sys
+    import types
+    from modules.static import _pdf_worker
+
+    module = types.ModuleType("peepdf.PDFCore")
+    module.PDFParser = parser_cls
+    monkeypatch.setitem(sys.modules, "peepdf.PDFCore", module)
+    return _pdf_worker
+
+
+def test_execution_is_on_by_default_and_peepdfs_flag_is_passed_explicitly(monkeypatch):
+    """Default is execute, and `manualAnalysis` is never left to peepdf.
+
+    peepdf's own default for `manualAnalysis` is False — i.e. run the script.
+    Relying on that default is what made the execution undisclosed, so the
+    worker must pass it explicitly even when the value agrees.
+    """
+    _RecordingParser.calls = []
+    worker = _patch_parser(monkeypatch, _RecordingParser)
+
+    worker._extract("/sample.pdf")
+
+    assert len(_RecordingParser.calls) == 1
+    # `is False`, not falsy: the fake records None when the argument is
+    # omitted, and None is falsy too.
+    assert _RecordingParser.calls[0]["manualAnalysis"] is False, \
+        "manualAnalysis must be passed explicitly, not left to peepdf's default"
+
+
+def test_disabling_execution_inverts_peepdfs_manual_analysis_flag(monkeypatch):
+    """`execute_js=False` must become `manualAnalysis=True`, not False.
+
+    The two names are opposites, which is exactly the kind of inversion that
+    gets implemented backwards once and then ships.
+    """
+    _RecordingParser.calls = []
+    worker = _patch_parser(monkeypatch, _RecordingParser)
+
+    worker._extract("/sample.pdf", execute_js=False)
+
+    assert _RecordingParser.calls[0]["manualAnalysis"] is True
+
+
+def test_engine_state_is_reported_even_when_the_parse_fails(monkeypatch):
+    """A failed parse must still disclose whether a JS engine ran.
+
+    A reader needs to know the tool handed this file's script to V8 whatever
+    the structural outcome was, so the disclosure cannot live only on the
+    success path.
+    """
+    _RecordingParser.calls = []
+    worker = _patch_parser(monkeypatch, _RecordingParser)
+
+    result = worker._extract("/sample.pdf")
+
+    assert result["parsed"] is False
+    assert set(result["js_engine"]) == {
+        "available", "enabled", "executed", "peepdf_version"
+    }
+
+
+def test_execution_cannot_be_reported_without_an_engine(monkeypatch):
+    """Asking for execution on a build with no V8 binding runs nothing.
+
+    `executed` is **False** here, not None: the parse completed and found
+    script, so the question was answered — the engine simply was not there to
+    run it. (`_engine_facts` alone returns None, because before the parse it
+    genuinely does not know. This test deliberately goes past that point.)
+    An earlier docstring here described the pre-review version of the test and
+    contradicted its own assertion. Raised in review.
+    """
+    _force_js_module(monkeypatch, False)
+
+    # Drive the real extraction with script PRESENT, so the only thing that
+    # can keep `executed` False is the missing engine. Asserting against
+    # `_engine_facts` alone proved nothing: it hardcodes None. Raised in
+    # review, along with a monkeypatch that had set the function to itself.
+    worker = _patch_parser(monkeypatch, _parser_returning(_doc([["app.alert(1)"]])))
+    result = worker._extract("/js.pdf", execute_js=True)
+
+    engine = result["js_engine"]
+    assert engine["available"] is False
+    assert engine["enabled"] is True
+    assert result["javascript_total"] == 1, "script was present"
+    assert engine["executed"] is False, "no engine means nothing ran"
+
+
+def test_javascript_errors_are_separated_from_structural_errors(monkeypatch):
+    """A script that threw must not read as a quiet file.
+
+    peepdf routes JS failures into the same error list as malformed-xref
+    complaints, so without the split "the script threw on line 1" and "bad
+    PDF header" are the same finding.
+    """
+    class _ErrorParser:
+        def parse(self, target, **kwargs):
+            return 0, _ErrorDoc()
+
+    class _ErrorDoc:
+        def getVersion(self): return "1.7"
+        def getEncryptionAlgorithms(self): return []
+        def isEncrypted(self): return False
+        def getStats(self): return {}
+        def getErrors(self):
+            return ["Bad PDF header",
+                    "Error analysing Javascript: ReferenceError: app is not defined"]
+        def getJavascriptCode(self): return []
+        def getURIs(self): return []
+        def getURLs(self): return []
+        def getSuspiciousComponents(self): return []
+
+    worker = _patch_parser(monkeypatch, _ErrorParser)
+    result = worker._extract("/sample.pdf")
+
+    assert result["errors"] == ["Bad PDF header"]
+    assert len(result["js_errors"]) == 1
+    assert "ReferenceError" in result["js_errors"][0]
+
+
+def test_a_mistyped_switch_is_refused_rather_than_ignored(tmp_path):
+    """An unknown third argument must not leave execution armed silently.
+
+    The PDF is created, so a missing input cannot be the reason for the exit
+    code — the mistyped switch has to be. Argument validation happens before
+    the file is touched, so the original version passed for the right reason,
+    but it would not have survived a reordering. Raised in review.
+    """
+    from modules.static import _pdf_worker
+
+    pdf = tmp_path / "x.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n%%EOF\n")
+    out = tmp_path / "out.json"
+
+    code = _pdf_worker.main(["worker", str(pdf), str(out), "no-js"])
+
+    assert code == 2
+    assert not out.exists(), "a refused switch must not produce a result file"
+
+
+# ------------------------------------------- `executed` means executed
+#
+# The first draft of the disclosure computed `executed` before parsing, from
+# `enabled and available` alone, so a clean PDF carrying no script at all
+# reported that its script had been executed. Raised in review. A disclosure
+# that overclaims in the alarming direction is as wrong as one that hides.
+
+
+def _doc(js):
+    class _Doc:
+        def getVersion(self): return "1.7"
+        def isEncrypted(self): return False
+        def getStats(self): return {}
+        def getErrors(self): return []
+        def getJavascriptCode(self): return js
+        def getURIs(self): return []
+        def getURLs(self): return []
+        def getSuspiciousComponents(self): return []
+    return _Doc()
+
+
+def _parser_returning(doc):
+    class _P:
+        def parse(self, target, **kwargs): return 0, doc
+    return _P
+
+
+def _force_js_module(monkeypatch, present):
+    """Pin `peepdf.JSAnalysis.JS_MODULE` so a test does not inherit the host's.
+
+    This matters more than it looks. On this development host `JS_MODULE` is
+    False, because the virtualenv resolves the old `peepdf` package ahead of
+    `peepdf-3`; in the shipped image it is True. A test that does not pin it
+    asserts something different in the two places — and `executed` is a
+    conjunction including `available`, so on the host it is False whatever
+    else is true. Two of these tests passed vacuously for exactly that
+    reason and would have kept passing if the defect were reintroduced.
+    Raised in review.
+    """
+    import sys
+    import types
+    stub = types.ModuleType("peepdf.JSAnalysis")
+    stub.JS_MODULE = present
+    monkeypatch.setitem(sys.modules, "peepdf.JSAnalysis", stub)
+
+
+def test_a_pdf_with_no_javascript_did_not_execute_anything(monkeypatch):
+    """Armed AND importable, but nothing to run — `executed` must be False.
+
+    `available` is pinned True deliberately: without it the host's own False
+    satisfies the assertion on its own and the test proves nothing.
+    """
+    _force_js_module(monkeypatch, True)
+    worker = _patch_parser(monkeypatch, _parser_returning(_doc([])))
+    result = worker._extract("/clean.pdf", execute_js=True)
+
+    engine = result["js_engine"]
+    assert engine["enabled"] is True
+    assert engine["available"] is True, "the point of this test needs an engine"
+    assert engine["executed"] is False, "a PDF with no script executed nothing"
+
+
+def test_a_pdf_with_javascript_did_execute(monkeypatch):
+    """Armed, importable, and script present — `executed` is True."""
+    _force_js_module(monkeypatch, True)
+    worker = _patch_parser(monkeypatch, _parser_returning(_doc([["app.alert(1)"]])))
+    result = worker._extract("/js.pdf", execute_js=True)
+
+    assert result["js_engine"]["executed"] is True
+
+
+def test_disabling_execution_means_nothing_ran_even_with_script_present(monkeypatch):
+    """Script present but the engine disarmed — `executed` must be False.
+
+    `available` is pinned True so that disarming is the ONLY thing that can
+    keep `executed` False. Without the pin this passed on the host for the
+    same vacuous reason `_force_js_module` was written to prevent — and I had
+    not applied it here. Raised in review.
+    """
+    _force_js_module(monkeypatch, True)
+    worker = _patch_parser(monkeypatch, _parser_returning(_doc([["app.alert(1)"]])))
+    result = worker._extract("/js.pdf", execute_js=False)
+
+    engine = result["js_engine"]
+    assert engine["available"] is True, "disarming must be the only cause"
+    assert engine["enabled"] is False
+    assert engine["executed"] is False
+
+
+def test_the_disclosure_survives_a_worker_that_never_reported(monkeypatch, tmp_path):
+    """A timeout or crash must not silently drop the disclosure.
+
+    Those are the failures a hostile script is most likely to cause, so the
+    keys must still be there — with `None` meaning "not known" rather than a
+    confident False, and without handing a consumer a KeyError. Driven
+    through the real module rather than asserted against its source.
+    Raised in review.
+    """
+    from modules.static import pdf_analysis
+
+    pdf = tmp_path / "s.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n%%EOF\n")
+
+    # The worker dying before it writes anything — exactly what a timeout
+    # looks like to the parent.
+    monkeypatch.setattr(
+        pdf_analysis, "_run_worker",
+        lambda *a, **k: {"parsed": False, "failure": "peepdf timed out after 60s"},
+    )
+
+    result = pdf_analysis.run(pdf, {"pdf_javascript_execution": True})
+    engine = result["data"]["javascript_engine"]
+
+    assert set(engine) == {"available", "enabled", "executed", "peepdf_version"}
+    # Known from our own config even though the child never answered.
+    assert engine["enabled"] is True
+    # Never found out — and "not known" must not be reported as False.
+    assert engine["available"] is None
+    assert engine["executed"] is None

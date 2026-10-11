@@ -34,9 +34,28 @@ This returns raw facts. Every weight, pattern table and threshold stays in
 process boundary changes where peepdf runs and nothing about what a PDF
 scores.
 
+peepdf **executes** the JavaScript it finds
+-------------------------------------------
+This is not a static parse. peepdf-3 hands every recovered script to a V8
+context and runs it, with ``eval`` redirected to a hook that accumulates each
+dynamically generated stage and re-runs until no new code appears. That is
+what recovers a second stage assembled at runtime, and it is the reason a
+PDF's ``javascript_count`` can exceed the number of script objects in the
+file.
+
+It is gated on peepdf's own ``manualAnalysis`` parameter, which defaults to
+**False** — i.e. execution on — and on ``JS_MODULE``, which is True only when
+the V8 binding imported. Both facts are reported back in ``js_engine`` so the
+parent can say which happened, because "the script did nothing" and "no
+engine was present" and "the script threw on its first line" are three
+different findings and used to be indistinguishable.
+
 Protocol
 --------
 ``argv[1]`` the PDF, absolute. ``argv[2]`` where to write the JSON.
+``argv[3]`` optional, ``"nojs"`` to parse with JavaScript execution disabled.
+Anything else in that position is rejected rather than ignored, so a typo
+cannot silently leave the engine armed.
 
 Results go to that **file, not stdout**: peepdf prints, and a
 JSON-on-stdout protocol would be corrupted by any library chatter — the same
@@ -132,8 +151,75 @@ def _flatten(versions) -> list[str]:
     return out
 
 
-def _extract(target: str) -> dict:
+def _engine_facts(execute_js: bool) -> dict:
+    """Describe the JavaScript engine this parse will or will not use.
+
+    Args:
+        execute_js: Whether the caller asked for execution.
+
+    Returns:
+        ``{available, enabled, executed, peepdf_version}``.
+
+        * ``available`` — peepdf's own ``JS_MODULE``, True only when the V8
+          binding imported.
+        * ``enabled`` — what the caller asked for.
+        * ``executed`` — **None here**, meaning not yet known. It is only
+          decided after the parse, by :func:`_extract`, because an armed
+          engine and a file with no script means nothing ran.
+
+        The three are deliberately separate. An earlier version reported
+        ``executed = enabled and available``, computed before parsing began,
+        so **every clean PDF with no JavaScript at all claimed its script had
+        been executed** — a false disclosure in the alarming direction, and
+        exactly the kind of overclaim this field exists to prevent. Raised in
+        review.
+
+    Imported inside the function because a failure to import peepdf's JS
+    layer must not stop the structural parse, which is useful on its own.
+    """
+    available = False
+    try:
+        from peepdf.JSAnalysis import JS_MODULE
+        available = bool(JS_MODULE)
+    except Exception:  # noqa: BLE001
+        pass
+
+    version = None
+    try:
+        from importlib.metadata import version as _v
+        for dist in ("peepdf-3", "peepdf"):
+            try:
+                version = _v(dist)
+                break
+            except Exception:  # noqa: BLE001, PERF203
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {
+        "available": available,
+        "enabled": bool(execute_js),
+        "executed": None,
+        "peepdf_version": version,
+    }
+
+
+#: peepdf's prefix for a JavaScript failure, from ``PDFCore``'s
+#: ``'Error analysing Javascript: '+jsError``. Script errors are routed into
+#: the same error list as structural complaints, so the only way to tell them
+#: apart downstream is this string. Matched case-insensitively on a prefix
+#: because the surrounding text has moved between peepdf releases.
+_JS_ERROR_MARKER = "error analysing javascript"
+
+
+def _extract(target: str, execute_js: bool = True) -> dict:
     """Parse `target` and harvest whatever peepdf manages to expose.
+
+    Args:
+        target:     Path to the PDF.
+        execute_js: When False, peepdf is asked to parse without running any
+                    recovered JavaScript. Recovery of runtime-assembled
+                    stages is lost; structural findings are not.
 
     Every accessor is wrapped on its own: peepdf's shapes vary by PDF version
     and a failure in one says nothing about the next, so a partial harvest is
@@ -142,12 +228,22 @@ def _extract(target: str) -> dict:
     from peepdf.PDFCore import PDFParser
 
     result: dict = {"parsed": False, "failure": None}
+    result["js_engine"] = _engine_facts(execute_js)
 
     # forceMode and looseMode tell peepdf to keep going through structural
     # violations instead of aborting. Malware PDFs are malformed far more often
     # than not, frequently on purpose, so strict parsing would refuse exactly
     # the files worth reading.
-    ret, pdf_file = PDFParser().parse(target, forceMode=True, looseMode=True)
+    # manualAnalysis is peepdf's own switch and it is inverted: True means
+    # "a human will look at the script", i.e. do not run it. Passing it
+    # explicitly rather than relying on the default, because the default is
+    # False and that silently arms a JavaScript engine.
+    ret, pdf_file = PDFParser().parse(
+        target,
+        forceMode=True,
+        looseMode=True,
+        manualAnalysis=not execute_js,
+    )
 
     # Both halves matter: peepdf signals failure through the status code on
     # some paths and through a None document on others.
@@ -175,7 +271,15 @@ def _extract(target: str) -> dict:
         pass
 
     try:
-        result["errors"] = [str(e) for e in (pdf_file.getErrors() or [])]
+        # Partitioned, not merely copied. peepdf appends script failures to the
+        # same list as structural ones (because forceMode turns a JS error
+        # into addError rather than a hard return), so without this split a
+        # script that threw on its first line is indistinguishable from a
+        # malformed xref table — and both look like "the JavaScript found
+        # nothing".
+        every = [str(e) for e in (pdf_file.getErrors() or [])]
+        result["errors"] = [e for e in every if _JS_ERROR_MARKER not in e.lower()]
+        result["js_errors"] = [e for e in every if _JS_ERROR_MARKER in e.lower()]
     except Exception:  # noqa: BLE001
         pass
 
@@ -207,6 +311,22 @@ def _extract(target: str) -> dict:
     except Exception:  # noqa: BLE001
         pass
 
+    # ------------------------------------------------------------------
+    # Now `executed` can be answered honestly: the engine ran the sample's
+    # script only if it was armed, importable, AND the file actually carried
+    # script for it to run. A PDF with no JavaScript executed nothing, however
+    # armed the engine was.
+    #
+    # Left as None if the JavaScript harvest above raised, because then we do
+    # not know what peepdf did — and None means "unknown", which is a
+    # different statement from False.
+    # ------------------------------------------------------------------
+    if "javascript_total" in result:
+        engine = result["js_engine"]
+        engine["executed"] = bool(
+            engine["enabled"] and engine["available"] and result["javascript_total"]
+        )
+
     try:
         result["uris"] = [u for u in _flatten(pdf_file.getURIs()) if u]
     except Exception:  # noqa: BLE001
@@ -235,25 +355,37 @@ def _extract(target: str) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print(f"usage: {argv[0]} <pdf> <output.json>", file=sys.stderr)
+    if len(argv) not in (3, 4):
+        print(f"usage: {argv[0]} <pdf> <output.json> [nojs]", file=sys.stderr)
         return 2
+
+    execute_js = True
+    if len(argv) == 4:
+        if argv[3] != "nojs":
+            # Rejected rather than ignored. A mistyped switch that silently
+            # left the engine running is the failure this whole change exists
+            # to remove.
+            print(f"unknown option {argv[3]!r} — expected 'nojs'", file=sys.stderr)
+            return 2
+        execute_js = False
 
     _limit_memory()
 
     target, destination = argv[1], argv[2]
     try:
-        payload = _extract(target)
+        payload = _extract(target, execute_js=execute_js)
     except MemoryError:
         # The address-space ceiling, reported as itself rather than as a
         # generic crash, because "this file tried to exhaust memory" is a fact
         # about the sample worth seeing in a log.
-        payload = {"parsed": False, "failure": "peepdf exceeded the memory limit"}
+        payload = {"parsed": False, "failure": "peepdf exceeded the memory limit",
+                   "js_engine": _engine_facts(execute_js)}
     except BaseException as exc:  # noqa: BLE001
         # BaseException, not Exception: peepdf reaches SystemExit on some
         # malformed input, and a worker that dies silently would look to the
         # parent exactly like a crash it cannot explain.
-        payload = {"parsed": False, "failure": f"peepdf parse failure: {exc}"}
+        payload = {"parsed": False, "failure": f"peepdf parse failure: {exc}",
+                   "js_engine": _engine_facts(execute_js)}
 
     try:
         with open(destination, "w", encoding="utf-8") as handle:
