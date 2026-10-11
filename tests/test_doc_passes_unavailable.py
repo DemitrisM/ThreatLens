@@ -158,7 +158,9 @@ def test_an_ole_document_with_nothing_available_is_a_skip(ole_doc, monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("pcodedmp") is None,
-                    reason="pcodedmp present, so its absence cannot be observed here")
+                    reason="needs pcodedmp on PATH: with it genuinely absent "
+                           "the module is correct to report it unavailable, "
+                           "so there is no false positive to catch")
 def test_pcodedmp_is_not_reported_missing_on_a_macro_free_document(docx):
     """The proxy trap.
 

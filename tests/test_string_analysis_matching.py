@@ -59,13 +59,18 @@ def test_lowercase_ciphers_other_than_des_keep_their_recall():
     IGNORECASE from the whole group to fix `DES` would have silently cost
     every case below.
 
+    `xor key` rather than `xor eax` on purpose: the latter is the x86
+    register-zeroing mnemonic and would be a false positive if a binary
+    happened to carry the literal text, so it is no argument for recall.
+    Raised in review.
+
     Measured while writing this: a longer PascalCase identifier such as
     `RsaCryptoServiceProvider` never matched at all, with or without
     IGNORECASE, because there is no word boundary inside it. So the recall
     at stake is narrower than it first appears — it is the bare token, not
     .NET naming in general.
     """
-    for s in ("crypto/aes", "crypto/rc4", "Aes.Create()", "xor eax, eax"):
+    for s in ("crypto/aes", "crypto/rc4", "Aes.Create()", "xor key"):
         categories, _, _ = sa._find_suspicious([s])
         assert "Crypto algorithm reference" in categories, s
 

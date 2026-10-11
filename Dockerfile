@@ -116,6 +116,16 @@ FROM python:3.12-slim
 #   git                          rule_updater shells out to it.
 #   gosu                         the privilege drop in entrypoint.sh.
 #
+# unar costs more than its own size: it is a GNUstep application, so it drags
+# in an X11 stack, libtiff/libwebp/libyuv, an AV1 encoder and perl — none of
+# which a headless static-analysis container has any use for. Recorded because
+# the next person reading this layer will wonder, and because installed surface
+# matters in a container pointed at hostile input. It is not the size problem
+# it looks like: the whole runtime apt layer, every package below included, is
+# 250 MB against 387 MB for the pip install. The licensing argument stands and
+# `unar` stays — do not swap back to unrar, which is non-free, nor try to
+# --no-install-recommends your way out of a hard dependency tree.
+#
 # pcodedmp needs no apt package: it is a console script from the lockfile,
 # already on PATH, which is all doc_analysis's subprocess call needs.
 RUN apt-get update \
@@ -133,11 +143,23 @@ RUN apt-get update \
 # Dependencies only — ThreatLens itself is never installed as a package. The
 # source is copied to /app and run from there, so /app leads sys.path and an
 # installed copy would be shadowed dead weight that could silently go stale.
-COPY --from=builder /wheels /wheels
-COPY requirements.lock /tmp/requirements.lock
-RUN pip install --no-cache-dir --no-index --find-links=/wheels \
-        -r /tmp/requirements.lock \
- && rm -rf /wheels /tmp/requirements.lock
+# The wheels are MOUNTED, not COPYed, and this is not a style preference.
+# Layers are additive and immutable: a `COPY --from=builder /wheels /wheels`
+# followed by `rm -rf /wheels` in the next RUN leaves all of it in the shipped
+# image and only writes a whiteout marker over it. Measured here: 116 wheels,
+# 91,438,027 bytes, about 11% of the finished image. Both views are
+# then true at once — `docker history` shows the 91.7 MB layer while
+# `ls /wheels` inside the container says the path does not exist — which is
+# exactly why the anti-pattern survives review. `docker save` recovers every
+# byte. That was the shape here until 0.5.17; the mount never creates a layer,
+# so the bytes are present for the install and absent from the image.
+#
+# Same reasoning is why .dockerignore excludes samples/: if a payload reaches
+# a layer, deleting it afterwards does not unship it.
+RUN --mount=type=bind,from=builder,source=/wheels,target=/wheels \
+    --mount=type=bind,source=requirements.lock,target=/tmp/requirements.lock \
+    pip install --no-cache-dir --no-index --find-links=/wheels \
+        -r /tmp/requirements.lock
 
 COPY --from=builder /opt/capa-rules /opt/capa-rules
 COPY --from=builder /opt/capa-sigs  /opt/capa-sigs

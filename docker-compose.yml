@@ -1,8 +1,10 @@
 # How to RUN the image. The Dockerfile says how to build it; this file is the
 # long `docker run` line written down once, so nobody has to remember it.
 #
-# Requires Compose v2. `docker-compose` v1 is end-of-life and its handling of
-# the long-form tmpfs mount below is not something to rely on.
+# Requires the `docker compose` plugin, v2 or newer — the version numbering has
+# since moved past 2, so this is not a pin. What it rules out is the
+# end-of-life `docker-compose` v1 script, whose handling of the long-form tmpfs
+# mount below is not something to rely on.
 #
 #   docker compose build
 #   docker compose run --rm threatlens rules update     # first run only
@@ -11,7 +13,7 @@
 services:
   threatlens:
     build: .
-    image: threatlens:0.5.16
+    image: threatlens:0.5.17
 
     volumes:
       # Your samples, READ-ONLY. A static scan never writes to a sample, so

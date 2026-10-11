@@ -4,7 +4,7 @@ Static malware triage for the command line, with transparent confidence
 scoring. Every point in a score is attributable: the report says which module
 awarded it and why, so a verdict can be argued with rather than just believed.
 
-Version 0.5.16. MIT licensed.
+Version 0.5.17. MIT licensed.
 
 ## What it does
 
@@ -40,10 +40,35 @@ profile and the file type. Nothing is executed.
   — `uname -m` must print `x86_64`. On ARM neither path below works, and that
   is cheaper to learn before a twenty-minute build than after one.
 - Either **Docker** with Compose v2, or **Python 3.10+** on Linux.
+- **Budget up to 20 minutes and 4 GB free disk** for the first build, and
+  expect wide variance between machines. Two cold builds, both from an empty
+  cache:
+
+  | | machine A | machine B |
+  |---|---|---|
+  | `docker compose build` | **5m 0s** | **18m 39s** |
+  | Final image | **740 MB** | 1.31 GB |
+  | Build cache left behind | 1.25 GB | 1.94 GB |
+
+  Those two rows are not additive — the image and the build cache share
+  layers, so the disk actually consumed is less than their sum and is worth
+  checking with `docker system df` rather than arithmetic. The 4 GB above is
+  headroom for the slower column plus `rules update`, which adds 2–3 minutes
+  and 752 rule files. The build compiles `py-tlsh` and `ssdeep` from source,
+  runs two `pip wheel` passes over the lockfile and clones the capa rules and
+  FLIRT signatures, so several quiet minutes are normal and not a hang.
+  `docker builder prune` reclaims the cache afterwards.
 
 ### Docker Engine
 
-Needs root, once. On Debian or Ubuntu:
+**Already have Docker?** Check with `docker --version` and skip to
+[Compose v2](#compose-v2). Do not run the block below over a working
+install — `docker.io` is the distribution's engine package and conflicts
+with `docker-ce` from Docker's own apt repository, so on a machine that
+already has `docker-ce` it either aborts on a dpkg conflict or silently
+replaces your engine with an older one.
+
+If you have no Docker at all, on Debian or Ubuntu — needs root, once:
 
 ```bash
 sudo apt-get update
@@ -67,6 +92,40 @@ If that reports `permission denied while trying to connect to the Docker
 daemon socket`, the group has not taken effect yet — log out fully rather
 than working around it. `newgrp docker` fixes the current shell only.
 
+**Know what the `docker` group is.** It is not a convenience that saves you
+typing `sudo` — the daemon runs as root and carries out whatever is asked of
+it over its socket, so membership is equivalent to passwordless, unlogged
+root on this host (`docker run -v /:/host ...` is a root shell). That is a
+property of Docker, not of ThreatLens, but it is worth deciding deliberately
+on a machine you intend to open malware on.
+
+If you would rather not hold it, skip the `usermod` line and prefix every
+command below with `sudo`. Two things to know before you do.
+
+**Install the Compose plugin system-wide, not into your home directory.** The
+next section installs it under `~/.docker/cli-plugins`, which `sudo` cannot
+see — it runs as root with `HOME=/root` — so `sudo docker compose` fails with
+`'compose' is not a docker command`. Use these instead of that section's
+commands, and note the `mkdir`: neither directory exists by default and
+`curl` will not create them.
+
+```bash
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -SL https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-x86_64 \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+```
+
+**And be clear what `sudo` buys.** It removes the standing, ambient grant and
+restores a password prompt and an audit record, but it does **not** reduce
+what the container can do — the daemon still runs as root either way, so
+escape containment is unchanged.
+
+Do not try to narrow this with a `sudoers` rule. Docker's flags are
+expressive enough that any rule permitting `docker run` permits
+`-v /:/host --privileged`, and a trailing wildcard absorbs both, so a rule
+that reads as a restriction grants full root.
+
 Ignore a `docker-compose` 1.29.x package if your distribution installs one.
 That is the end-of-life Python v1 implementation and is not what this project
 uses.
@@ -81,8 +140,15 @@ mkdir -p ~/.docker/cli-plugins
 curl -SL https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-x86_64 \
   -o ~/.docker/cli-plugins/docker-compose
 chmod +x ~/.docker/cli-plugins/docker-compose
-docker compose version          # must print v2.x, not 1.29.x
+docker compose version          # must be the plugin, not docker-compose 1.x
 ```
+
+Any `docker compose` plugin at v2 or newer is fine; the version pinned above
+is simply the one this was verified against, not a floor to match exactly.
+What is being excluded is the end-of-life `docker-compose` v1 Python script.
+Nothing in ThreatLens reads a Compose version at runtime, so if
+`docker compose version` prints anything at all and `build` works, you are
+fine.
 
 Verified on Ubuntu 24.04.5 with `docker.io` 29.1.3, `docker-buildx` 0.30.1 and
 the Compose plugin at v2.40.3.
@@ -135,7 +201,7 @@ docker run --rm --network none \
   -v "$RULES:/app/rules/yara" \
   --tmpfs /tmp:size=2g \
   -e TL_UID=$(id -u) -e TL_GID=$(id -g) \
-  -w /data threatlens:0.5.16 scan suspicious.exe
+  -w /data threatlens:0.5.17 scan suspicious.exe
 ```
 
 ### About `TL_UID`
@@ -400,8 +466,20 @@ the `.lnk` size ceiling — are grouped and commented in `config.docker.yaml`.
 
 ## Tests
 
-1178 passing on the host and inside the image on a machine that has the
-malware corpus. `pytest` is not part of `.[analysis]`, so install it first.
+**1188 tests collected**, and that is the number to check — it is the one the
+environment cannot change. How many of them *run* depends on what is present:
+
+| where | passed | skipped |
+|---|---|---|
+| host, malware corpus present | 1187 | 1 |
+| host, no corpus | 1164 | 24 |
+| inside the image, no corpus | 1165 | 23 |
+
+23 of the skips are the tests that scan real samples. The 24th needs
+`pcodedmp` on `PATH`, which the image has and a bare host may not — that is
+the whole difference between the last two rows. All three exit 0.
+
+`pytest` is not part of `.[analysis]`, so install it first.
 
 ```bash
 # Host
@@ -423,12 +501,14 @@ would hit.
 Corpus scans that need the network or a long capa run are deselected by
 default; `-m corpus_slow` runs those on their own.
 
-**On a machine without the malware corpus, the tests that scan real samples
-skip rather than fail** — 1155 passed, 24 skipped, and the exit status is still
-0. (23 of those skips are the corpus tests; the 24th needs `pcodedmp` absent.) A skipped test looks exactly like a passing one in the tally, so read the
-skip count and not just the exit status. With the corpus present it is 1178
-passed and nothing skipped. `tests/_corpus.py` resolves the path in one place
-and `THREATLENS_CORPUS` overrides it:
+**Without the malware corpus the tests that scan real samples skip rather
+than fail**, and the exit status is still 0 — so read the collected count and
+the skip count, not just the exit status. A skipped test looks exactly like a
+passing one in the tally, and a run where the corpus-gated tests silently
+vanished is indistinguishable from a healthy one by exit code alone.
+To supply the corpus so those 23 tests run instead of skipping, point
+`THREATLENS_CORPUS` at the directory — `tests/_corpus.py` resolves the path in
+one place and that variable overrides it:
 
 ```bash
 THREATLENS_CORPUS=/path/to/corpus .venv/bin/pytest

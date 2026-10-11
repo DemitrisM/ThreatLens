@@ -22,13 +22,182 @@ Everything before it is a step toward that.
 | 0.5.12 | `reporting/` complete — the verdict now narrates every finding the modules scored |
 | 0.5.13 | FLOSS runs for the first time — emulation moved onto the `-p deep` axis |
 | 0.5.14 | The bundled tools stop leaking on a timeout; C ssdeep; the defect log split out |
-| 0.5.16 | *(current)* Phase 4 closes: CI, the graceful-degradation audit and its fixes, capa's budgets measured |
 | 0.5.15 | Containerised — the image builds, and finding out why it disagreed with the host fixed a real detection bug. Phase 4's eight-step plan closes with the README |
+| 0.5.16 | Phase 4 closes: CI, the graceful-degradation audit and its fixes, capa's budgets measured |
+| 0.5.17 | *(current)* An outside first-run review: two string-matching defects, five documentation defects, and 87 MiB that `rm -rf` never reclaimed |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.17 — 2026-10-11
+
+Someone else installed the tool from a fresh clone, followed the README
+literally, and wrote down everything that went wrong. Nothing was broken —
+the containerised path worked end to end — but fourteen findings came back,
+and the ones worth acting on were almost all things an author cannot see,
+because an author never reads their own install instructions as a stranger.
+
+Two of the fourteen were code. Both were found by looking at a rendered
+report rather than at the test suite, which is the practice this project
+already keeps, and both had survived every green test.
+
+### Fixed — `DES` matched the French and Spanish word "des"
+
+The crypto-reference pattern ran with `re.IGNORECASE`, and "des" is an
+ordinary word in two languages, so the rule fired on the localised UI
+resources of essentially any Windows binary. Word-bounding cannot help when
+the false positive is itself a whole word.
+
+Measured over the 311-sample corpus rather than argued: the category fired on
+**60** files before the fix and **55** after. The five it cleared were not
+marginal — two OneNote samples matched French prose ("il peut contenir des
+informations", "des mots de passe"), and three more matched binary noise such
+as `D;DEs` and `M*DeS`. So the base rate recorded in `reporting/shared.py`
+was 19.3% before and 17.7% after — 1.6 points of it was a regex defect — and
+both citations of that figure have been corrected.
+
+Only `DES` became case-sensitive. The other four cipher names keep
+`IGNORECASE`, because lowercase is how Go package paths (`crypto/aes`,
+`crypto/rc4`), .NET constructors (`Aes.Create()`) and obfuscation-routine
+strings (`xor key`) spell them, and dropping it wholesale — the fix
+originally proposed — would have cost real recall to fix a problem only one
+of the five actually had. `DES` is the only one of the five that collides
+with a common word in any language.
+
+What the stricter rule costs, also measured: nothing. `crypto/des` and
+`des-ede3-cbc` would have matched the old pattern and appear in none of the
+311 samples; the one lowercase spelling that is present, `3des`, never matched
+either pattern, because `3` is a word character and leaves no boundary.
+
+No score moved. Low-severity categories are worth zero points by design,
+which is what made this a report-quality defect rather than a scoring one.
+
+### Fixed — the same string was reported twice
+
+`Anti-debug API reference │ IsDebuggerPresent` rendered as two identical rows
+on 2 of 8 corpus PEs, inflating the apparent weight of evidence in the one
+table an analyst reads most closely.
+
+The cause is that the two extraction paths disagree about duplicates: the raw
+extractor deduplicates its own output, while the FLOSS sections
+(static/decoded/stack/tight) are concatenated as they arrive. On
+`Amadey3.exe`, 6,340 strings reach the matcher and only 4,057 are unique.
+
+Deduplicated per `(category, string)` at collection time rather than at render
+time, which fixes the JSON and HTML reporters too and stops the
+three-examples-per-category cap spending a slot on a repeat — a file could
+previously show one string three times while hiding two genuinely different
+indicators. Keyed on the pair, not the string, because one line can be real
+evidence for two categories: `FromBase64String` legitimately appears under
+both "PowerShell download/exec" and "Base64 reference".
+
+### Fixed — `rm -rf /wheels` shipped the 87 MiB it claimed to delete
+
+The runtime stage did `COPY --from=builder /wheels /wheels`, installed from
+them, and then `rm -rf /wheels` in the following `RUN`. Layers are additive
+and immutable, so the delete could only write a whiteout marker: the bytes
+stayed in the published image and are recoverable with `docker save`.
+
+Measured in the builder stage: 116 wheels, 91,438,027 bytes — about 11% of
+the finished image. Both views were true at once, `docker history` showing the
+layer while `ls /wheels` inside the container reported no such path, which is
+precisely why the pattern survives review. The cleanup looks like it worked
+from the inside.
+
+Now a BuildKit bind mount, so the wheels are present for the install and never
+enter a layer. Verified by a cold rebuild: the image carries no `/wheels` layer
+in `docker history` at all, and it needed no `# syntax` directive, which would
+have added a network dependency at build time. Same class of mistake as committing a secret and deleting it in
+a later commit, and the same reason `.dockerignore` must exclude `samples/`:
+if a payload reaches a layer, deleting it afterwards does not unship it.
+
+### Fixed — five documentation defects, all of them install-blocking or worse
+
+- **The engine install block could break an existing Docker.** `apt-get install
+  docker.io` ran unconditionally, and `docker.io` conflicts with `docker-ce`
+  from Docker's own repository. A reader who already had a working engine and
+  followed the README literally ended up worse off than before they started.
+  Now gated, with the conflict named.
+- **The Compose check failed a correct setup.** `must print v2.x` rejects any
+  future version numbered above 2, and the reviewer's machine was refused by
+  it. Inverted to name what is actually excluded — the end-of-life
+  `docker-compose` v1 script — in both the README and the compose file header.
+- **Build cost was undocumented.** The only figure anywhere was "a
+  twenty-minute build", inside the ARM warning that an x86-64 reader stops
+  reading at the first line. Requirements now states ~20 minutes and ~3 GB,
+  measured, with where the time goes.
+- **Step 2 produced a `.env` declaring every key twice.** `.env.example` set
+  `TL_UID`/`TL_GID` and the documented `printf` appended them again. Harmless
+  — the last occurrence wins — until a user whose id is not 1000 opens the
+  file, finds one key with two values and nothing to say which applies, and
+  deletes one at random. Deleting the wrong one is silent and restores the
+  exact ownership problem the step exists to prevent. The example file now
+  ships them commented, so the append is the only definition.
+- **The README asked for root-equivalent access without saying so.**
+  `usermod -aG docker` is presented as a convenience for avoiding `sudo`; what
+  it grants is passwordless, unlogged root on the host, which is worth deciding
+  deliberately on a machine intended for opening malware. Now stated, with the
+  `sudo docker` alternative and its real limit — it changes who can reach the
+  daemon, not what the container can do — and a warning that Docker access
+  cannot be narrowed through `sudoers`.
+
+### Fixed — the test-count claims did not reconcile
+
+The README advertised 1178 passing with the corpus and "1155 passed, 24
+skipped" without, which collects 1179 in one case and 1178 in the other. Both
+numbers were real; they were taken at different commits. Measured at one
+commit, in three environments:
+
+| where | passed | skipped | collected |
+|---|---|---|---|
+| host, corpus present | 1187 | 1 | **1188** |
+| host, no corpus | 1164 | 24 | **1188** |
+| inside the image, no corpus | 1165 | 23 | **1188** |
+
+**1188 collected is the number to check**, because it is the one the
+environment cannot change, and a run where the corpus-gated tests silently
+vanished is indistinguishable from a healthy one by exit code alone. 23 of
+the skips are the corpus tests. The 24th needs `pcodedmp` on `PATH`, which
+the image has and this host does not — that single test is the whole
+difference between the last two rows, and it is why "nothing skipped with the
+corpus" was never true here.
+
+Reconciling it also turned up why the old README had the condition backwards.
+That test's `skipif` reason read "pcodedmp present, so its absence cannot be
+observed here" while the condition fires when pcodedmp is **absent** — the
+message stated the opposite of the predicate above it, and the README had been
+written from the message rather than the predicate. The reason now says what
+the test actually needs: pcodedmp on `PATH`, because with it genuinely missing
+the module is right to report it unavailable and there is no false positive
+left to catch.
+
+### Also recorded
+
+`unar`'s dependency tail is now documented in the Dockerfile: it is a GNUstep
+application and drags in an X11 stack, image codecs, an AV1 encoder and perl.
+It stays — the licensing argument against `unrar` is unchanged and the whole
+runtime apt layer is 264 MB against 420 MB for the Python dependencies — but
+installed surface in a container pointed at hostile input is worth naming
+rather than discovering.
+
+### Declined, with reasons
+
+- **A benign binary scoring 45/100 MEDIUM** is real and recorded, but the
+  proposed fix — softening the report when the only findings are
+  "runtime-typical" — would hand malware a template: real samples are also
+  unsigned and also check for debuggers. The honest answer is a benign
+  calibration corpus, which this project does not yet have, and the weights
+  move at the post-Phase-5 recalibration anyway.
+- **A `threatlens selftest` verb** is the right idea and is deferred. The
+  suggested stopgap of scanning `/bin/ls` was declined outright: ELF is a
+  deliberate scope exclusion, so five modules skip and a healthy install looks
+  like a broken one.
+- **Rootless Docker** was measured by the reviewer and works, at a 40% build
+  penalty, with one real incompatibility around `TL_UID`. Left undocumented
+  until Phase 5, when dynamic analysis makes the privilege question load-bearing
+  rather than theoretical.
 
 ## 0.5.14 — 2026-09-27
 
