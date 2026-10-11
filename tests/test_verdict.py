@@ -319,8 +319,11 @@ def test_string_high_severity_category_reaches_the_verdict():
 
 
 def test_string_low_severity_alone_does_not_reach_the_verdict():
-    """'Crypto algorithm reference' fires on 60 of 311 corpus samples — any
-    binary that speaks TLS — and scores nothing. It must not take a slot."""
+    """'Crypto algorithm reference' fires on 55 of 311 corpus samples — any
+    binary that speaks TLS — and scores nothing. It must not take a slot.
+
+    Was 60 before the ``DES`` case-sensitivity split; five of those were the
+    French/Spanish word "des", not a cipher reference."""
     data = {"suspicious_categories": ["Crypto algorithm reference"],
             "suspicious_matches": [
                 {"category": "Crypto algorithm reference", "severity": "low"}]}

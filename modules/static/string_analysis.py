@@ -199,7 +199,30 @@ _SUSPICIOUS_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"\b(?:base64|FromBase64String|ToBase64String)\b",
                 re.IGNORECASE),
      "Base64 reference", "medium"),
-    (re.compile(r"\b(?:AES|RC4|DES|RSA|XOR)\b", re.IGNORECASE),
+    # DES is matched case-SENSITIVELY, alone among the cipher names: `des`
+    # is an ordinary French and Spanish word, so with IGNORECASE this fired
+    # on the UI resources of any localised Windows binary. Word-bounding
+    # cannot help when the false positive is itself a whole word — on
+    # Wine's notepad.exe it supplied three of the five reported strings
+    # (`Des&hacer`, where `&` is the menu accelerator marker, plus two
+    # lines of ordinary French prose).
+    (re.compile(r"\bDES\b"),
+     "Crypto algorithm reference", "low"),
+    # The rest keep IGNORECASE, because case genuinely varies for them and
+    # none collides with a common word: Go package paths spell them
+    # lowercase (`crypto/aes`), .NET spells them mixed (`Aes.Create()`),
+    # and `xor` is lowercase in scripts and disassembly. The boundary has
+    # to be a non-word character for any of those to match, so a longer
+    # identifier such as `RsaCryptoServiceProvider` never matched at all.
+    #
+    # What the stricter DES rule costs, measured over all 311 corpus
+    # samples rather than argued: nothing. `crypto/des` and `des-ede3-cbc`
+    # would have matched the old pattern and appear in none of them, and
+    # the one lowercase spelling that is present — `3des`, 8 occurrences
+    # across 4 samples — never matched either pattern, because `3` is a
+    # word character and leaves no boundary. The category is worth zero
+    # points regardless, so the whole trade is report quality, not recall.
+    (re.compile(r"\b(?:AES|RC4|RSA|XOR)\b", re.IGNORECASE),
      "Crypto algorithm reference", "low"),
     (re.compile(r"\b(?:decrypt|encrypt|obfuscat|deobfuscat)(?:ed|ion|or)?\b",
                 re.IGNORECASE),
@@ -639,20 +662,38 @@ def _find_suspicious(
     details: list[dict] = []
     # Map category → severity (for ordering and scoring)
     seen_severity: dict[str, str] = {}
+    # (category, display) pairs already recorded. Keyed by the pair rather
+    # than by the string alone: one line can be evidence for two different
+    # categories, and dropping it from the second would lose a finding.
+    seen_examples: set[tuple[str, str]] = set()
 
     for s in strings:
         for pattern, category, severity in _SUSPICIOUS_PATTERNS:
             if pattern.search(s):
                 categories.add(category)
                 seen_severity[category] = severity
+
+                # Truncate very long strings. Done before the duplicate
+                # check so two strings that differ only past the cut are
+                # treated as the one row they would actually render as.
+                display = s if len(s) <= 120 else s[:117] + "..."
+
+                # The extraction paths disagree about duplicates: the raw
+                # extractor deduplicates its own output, while FLOSS
+                # sections (static/decoded/stack/tight) are concatenated as
+                # they come, so a string present in two sections arrives
+                # twice. Recording it twice printed the same row twice and
+                # spent a capped example slot doing it.
+                if (category, display) in seen_examples:
+                    continue
+
                 # Examples are capped at three per category. They exist to
                 # show the analyst *what* matched — the fourth example of
                 # the same category adds nothing but report length, and the
                 # cap also bounds this inner recount to a trivial size.
                 cat_count = sum(1 for d in details if d["category"] == category)
                 if cat_count < 3:
-                    # Truncate very long strings.
-                    display = s if len(s) <= 120 else s[:117] + "..."
+                    seen_examples.add((category, display))
                     details.append({
                         "category": category,
                         "severity": severity,

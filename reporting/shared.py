@@ -238,8 +238,15 @@ _VERDICT_EXEMPT_DOC_FLAGS: frozenset[str] = frozenset({
 # same field its own scoring reads, so it cannot drift from what scored.
 #
 # ``low`` is absent deliberately, not forgotten: it scores zero points by
-# design, and "Crypto algorithm reference" alone fires on 60 of the 311
+# design, and "Crypto algorithm reference" alone fires on 55 of the 311
 # corpus samples — any binary that speaks TLS.
+#
+# That figure was 60 until the ``DES`` split in ``string_analysis``. Five of
+# the sixty were the French and Spanish word "des" rather than the cipher:
+# two OneNote samples carrying French prose ("il peut contenir des
+# informations"), three PEs matching binary noise such as ``D;DEs``. So the
+# base rate stated here is now the real one, and the category is noisy on
+# its own merits rather than on a regex defect.
 _STRING_SEVERITY_WEIGHTS: dict[str, int] = {
     "critical": W_STEALER,
     "high": W_STRUCTURE,
