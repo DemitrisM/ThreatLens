@@ -25,12 +25,137 @@ Everything before it is a step toward that.
 | 0.5.15 | Containerised — the image builds, and finding out why it disagreed with the host fixed a real detection bug. Phase 4's eight-step plan closes with the README |
 | 0.5.16 | Phase 4 closes: CI, the graceful-degradation audit and its fixes, capa's budgets measured |
 | 0.5.17 | An outside first-run review: two string-matching defects, five documentation defects, and 87 MiB that `rm -rf` never reclaimed |
-| 0.5.18 | *(current)* The tool admits it executes code: PDF JavaScript disclosed and switchable, container containment measured rather than assumed |
+| 0.5.18 | The tool admits it executes code: PDF JavaScript disclosed and switchable, container containment measured rather than assumed |
+| 0.5.19 | *(current)* A timeout now bounds the work and not just the wait — a killed tool no longer leaves its payload running |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.19 — 2026-10-12
+
+A timeout was bounding how long ThreatLens *waited*, not how long the
+sample's analysis *ran*.
+
+`subprocess.run(timeout=...)` enforces a timeout with `Popen.kill()` —
+SIGKILL to the single process it started. That is enough for a tool that is
+one process and wrong for one that forks. `bin/capa` and `bin/floss` are
+PyInstaller bundles: the executable is a bootloader that unpacks itself and
+forks the real application as its own child, so the signal reached the
+bootloader while the analysis process was orphaned, reparented to PID 1, and
+kept running. `triage` repeated the loss once per file.
+
+This is the other half of the `_MEI` leak whose disk side 0.5.14 closed.
+
+### Proved on real malware, and the measurement has a trap
+
+Scanning `AgentTesla2.exe` with `capa_timeout_seconds: 20`, sampled one, two
+and three seconds after the scan had reported its verdict:
+
+| | +1s | +2s | +3s |
+|---|---|---|---|
+| `subprocess.run` | capa=1 | capa=1 | capa=1 |
+| `run_contained` | capa=0 | capa=0 | capa=0 |
+
+The survivor was real, still working on the sample after the verdict printed:
+`./bin/capa --json ".../exe test malware/AgentTesla2.exe"`.
+
+**A 3-second budget shows zero orphans either way**, because the bootloader
+has not reached its fork yet. A first attempt at this measurement used one
+and would have been a false pass.
+
+### Added
+
+- `core/process.py` — `run_contained`, which starts every external tool with
+  `start_new_session=True` and, on any way out other than a clean return,
+  kills the **process group** and waits for it. A drop-in for the subset of
+  `subprocess.run` this project uses, so none of the seven `except
+  subprocess.TimeoutExpired` blocks needed touching.
+- 22 tests, including an AST sweep of `modules/` and `core/` that fails if a
+  `subprocess.run` call reappears anywhere. Parsed rather than grepped,
+  because a docstring mentioning it is legitimate and two files do.
+
+### Changed
+
+- All seven call sites migrated: `capa_analysis`, `string_analysis`,
+  `pdf_analysis`, both cabextract calls in `archive_analysis/other_handlers`,
+  `pcodedmp` in `doc_analysis/vba_macros`, and `rule_updater._run_git` plus
+  its `git --version` probe.
+- `pdf_analysis` keeps its explicit `DEVNULL`/file redirects. Capture is not
+  requested there, and an explicit redirect wins over `capture_output`
+  everywhere else — buffering a chatty hostile PDF in the orchestrator is the
+  exhaustion those redirects exist to prevent.
+
+### Four design points, each forced by reviewing the plan before writing code
+
+- `capture_output` and `check` are **consumed** by the runner, not forwarded.
+  `Popen` rejects both, so forwarding them would raise `TypeError` inside
+  modules that catch only `TimeoutExpired` and `OSError` — design rule 2
+  breached by the function meant to enforce rule 5. Stripping
+  `capture_output` without translating it to pipes would instead let child
+  output inherit stdout and corrupt `-f json | jq`, breaching rule 7.
+- The group is killed by `p.pid`, with the guard on the `killpg` and never on
+  a `getpgid` lookup. Under `setsid` the pgid already equals the pid, and if
+  the leader exited while grandchildren run, `getpgid` raises `ESRCH` — a
+  guard there would skip the kill and the orphans would survive.
+- `wait()` after the kill, not `communicate()`, and the exception re-raised
+  bare. CPython's `subprocess.run` does the same on POSIX, and its comment
+  explains why: the output captured before the timeout is already attached to
+  the exception, so a second `communicate()` would return only later bytes
+  and discard the rest.
+- It waits for the **group**, not the child. `waitpid` cannot see a
+  grandchild reparented to PID 1, and `private_extraction_dir` removes its
+  directory as soon as control returns, so a bounded `killpg(pgid, 0)` poll
+  closes that window. The budget is bounded deliberately: a bounded `rmtree`
+  race beats hanging the scan.
+
+### Notes
+
+**Do not tidy this into `with Popen(...)`** even though `subprocess.run`
+does. `Popen.__exit__` ends with an unbounded `self.wait()`, which puts the
+unbounded failure-path wait straight back. Nothing leaks without it —
+measured, 50 clean runs and 5 timed-out runs with `capture_output=True` left
+the open-descriptor count unchanged, because `communicate()` closes what it
+opened — and a test pins that so the tidy-up is visibly unnecessary.
+
+Two defects surfaced during the migration that no test would have caught.
+`test_pdf_readonly_cwd` captured its spy's delegate as
+`pdf_analysis.subprocess.run`, so after the rename the spy would have been
+installed as `run_contained` while delegating to the standard library:
+passing, and covering nothing. And the four sites outside capa/FLOSS/pdf had
+**no** subprocess patches in the suite at all, so a missed migration there
+would have been silent — hence the AST sweep.
+
+### Two things the container found that the host could not
+
+The suite passed on the host and failed in the image twice over, and both
+causes are worth recording.
+
+**`/tmp` is `noexec` in the image, by design** — extracted malware lands
+there and must not be runnable. The new tests wrote a shell script to
+`tmp_path` and executed it, which raises `PermissionError` in the container
+and passes on the host. They now hand the path to `sh` instead: reading a
+file is permitted, and the fork behaviour under test is identical.
+
+**PID 1 in the image is `python`, not an init.** Measured: `/proc/1/comm`.
+So nothing reaps an orphan, and a grandchild killed by the group kill stays a
+**zombie** indefinitely. `os.killpg(pgid, 0)` succeeds for a zombie, so the
+existence probe never went false in the container: the runner burned its
+whole 5-second grace budget on **every** tool timeout there and logged a
+warning about an `rmtree` race that was not happening. Fixed twice over —
+`_group_has_live_members` reads `/proc` to tell a zombie from a live
+process, and `docker-compose.yml` now sets `init: true` so PID 1 reaps. A
+liveness check that only calls `os.kill(pid, 0)` is wrong in this container,
+which is also why two of these tests failed there while the code was correct.
+
+Measured after both fixes: image **1197 passed, 23 skipped, 1220 collected**,
+exit 0, and no race warnings.
+
+**This was the stated precondition for any Phase 5 dynamic provider.** The
+browser tier still needs more: Chromium moves renderers into their own
+process groups, so a group kill alone will not reap them, and that tier wants
+cgroup teardown plus `--init` — the latter now already in place.
 
 ## 0.5.18 — 2026-10-11
 

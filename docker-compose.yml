@@ -24,7 +24,7 @@
 services:
   threatlens:
     build: .
-    image: threatlens:0.5.18
+    image: threatlens:0.5.19
 
     volumes:
       # Your samples, READ-ONLY. A static scan never writes to a sample, so
@@ -90,6 +90,14 @@ services:
     #
     # Verified by scanning a real PDF from the corpus under this exact
     # profile and comparing the payload against the unhardened run.
+    # A real init as PID 1, so a killed tool's orphaned descendants are
+    # reaped instead of accumulating as zombies. Without it PID 1 is the
+    # analysis process itself — measured, `/proc/1/comm` read `python` — and
+    # nothing reaps anything, which made every tool timeout leave zombie
+    # entries behind. core/process.py tolerates that on its own, but the
+    # container should not create the condition in the first place.
+    init: true
+
     cap_drop:
       - ALL
     cap_add:

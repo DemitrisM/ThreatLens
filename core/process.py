@@ -45,6 +45,14 @@ holding files open in that tree makes the removal race a live writer. Hence
 :func:`_await_group_exit`, which polls the *group* with signal 0 until it is
 gone.
 
+**A zombie is not a live member.** ``killpg(pgid, 0)`` succeeds for a
+process that is dead but unreaped, and inside the image PID 1 is the analysis
+process rather than an init — ``/proc/1/comm`` reads ``python`` — so nothing
+reaps a grandchild whose parent was just killed. Counting those as alive made
+every containerised timeout burn the whole grace budget and log a warning
+about a race that was not happening. :func:`_group_has_live_members` reads
+``/proc`` to tell the difference.
+
 **That poll is bounded, and the trade is deliberate.** Rule 5 forbids an
 unbounded wait anywhere, including on a failure path. If the budget expires
 with members still alive — realistically, uninterruptible sleep on I/O — this
@@ -119,6 +127,66 @@ def _kill_group(pid: int) -> None:
         logger.debug("killpg(%d) did not apply: %s", pid, exc)
 
 
+def _group_has_live_members(pgid: int) -> bool:
+    """Whether `pgid` contains any process that is not already a zombie.
+
+    Args:
+        pgid: The process-group id to inspect.
+
+    Returns:
+        True if at least one member is in a state other than ``Z``. False if
+        the group is empty or holds nothing but zombies.
+
+    Why this is needed, and it is specific to the container
+    ------------------------------------------------------
+    ``os.killpg(pgid, 0)`` succeeds for a **zombie**, because a zombie is
+    still a process-table entry until somebody reaps it. On a normal host
+    that barely matters: the orphan reparents to init, which reaps it within
+    milliseconds. Inside the image it matters a great deal, because PID 1 is
+    the analysis process itself rather than an init — measured, ``/proc/1/comm``
+    reads ``python`` — so nothing reaps a grandchild whose parent we just
+    killed, and it stays a zombie indefinitely.
+
+    Without this check the existence probe therefore never goes false in the
+    container, :func:`_await_group_exit` burns its entire budget on every
+    timeout, and it logs a warning about a race that is not happening. The
+    processes are dead; only their table entries remain, and a zombie holds
+    no file handles, so it cannot interfere with the directory removal this
+    wait exists to protect.
+
+    Reads ``/proc`` directly because there is no portable call for "list the
+    members of a process group". Linux-only, which this project already is.
+    """
+    try:
+        pids = [entry for entry in os.listdir("/proc") if entry.isdigit()]
+    except OSError:
+        # No /proc to read. Fall back to assuming the group is live, which
+        # is the conservative answer: it costs a wait, not a wrong result.
+        return True
+
+    for entry in pids:
+        try:
+            with open(f"/proc/{entry}/stat", "rb") as handle:
+                fields = handle.read().split()
+        except (OSError, ValueError):
+            continue            # exited between listdir and open
+
+        # Field layout: pid (comm) state ppid pgrp ... — and `comm` can
+        # contain spaces and parentheses, so the fields after it are located
+        # from the LAST ')' rather than by splitting from the left.
+        try:
+            raw = b" ".join(fields)
+            tail = raw[raw.rindex(b")") + 2:].split()
+            state, pgrp = tail[0], int(tail[2])
+        except (ValueError, IndexError):
+            continue
+
+        if pgrp == pgid and state != b"Z":
+            return True
+
+    return False
+
+
 def _await_group_exit(pgid: int, budget: float = _GRACE_SECONDS) -> bool:
     """Wait until no process remains in `pgid`, or the budget expires.
 
@@ -136,23 +204,23 @@ def _await_group_exit(pgid: int, budget: float = _GRACE_SECONDS) -> bool:
     which ``waitpid`` cannot see.
     """
     deadline = time.monotonic() + budget
-    while time.monotonic() < deadline:
+    while True:
         try:
             os.killpg(pgid, 0)
         except ProcessLookupError:
-            return True
+            return True                      # group gone entirely
         except PermissionError:
-            # Still there, owned by someone else. Treat as alive.
-            pass
-        time.sleep(_POLL_SECONDS)
+            pass                             # exists, not ours — treat as there
 
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        pass
-    return False
+        # The group still has an entry, but entries are not necessarily live
+        # processes: see _group_has_live_members. Zombies cannot hold a file
+        # open, so they do not threaten what this wait protects.
+        if not _group_has_live_members(pgid):
+            return True
+
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_POLL_SECONDS)
 
 
 def _tear_down(proc: subprocess.Popen) -> None:

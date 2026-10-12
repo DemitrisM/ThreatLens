@@ -60,19 +60,42 @@ def _forking_tool(tmp_path):
         f"sh -c 'echo $$ > {pidfile}; exec sleep {GRANDCHILD_LIFETIME}' &\n"
         "wait\n"
     )
+    # The exec bit is set for readability, but every caller invokes the
+    # script as `sh <path>` rather than executing it directly. `/tmp` is
+    # mounted **noexec** in the shipped image — extracted malware lands
+    # there and must not be runnable — so a direct exec raises
+    # PermissionError in the container while passing on the host. Handing
+    # the path to `sh` is a read, which is permitted, and the fork
+    # behaviour under test is identical.
     script.chmod(0o755)
     return script, pidfile
 
 
 def _alive(pid):
-    """Whether `pid` is a live process, without reaping or signalling it."""
+    """Whether `pid` is a live process — a zombie does not count.
+
+    `os.kill(pid, 0)` alone is not enough. It succeeds for a zombie, because
+    a zombie remains a process-table entry until something reaps it, and
+    inside the shipped image PID 1 is the analysis process rather than an
+    init (`/proc/1/comm` reads `python`), so a killed grandchild is never
+    reaped and stays a zombie indefinitely. Checking only existence made
+    these tests pass on the host and fail in the container while the code
+    was behaving correctly in both.
+    """
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:          # exists, owned by someone else
         return True
-    return True
+
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            raw = handle.read()
+        state = raw[raw.rindex(b")") + 2:].split()[0]
+    except (OSError, ValueError, IndexError):
+        return False                 # vanished while we looked
+    return state != b"Z"
 
 
 def _read_pid(pidfile, deadline=5.0):
@@ -118,7 +141,7 @@ def test_stdlib_run_leaks_a_grandchild_on_timeout(forking_tool):
     script, pidfile = forking_tool
 
     with pytest.raises(subprocess.TimeoutExpired):
-        subprocess.run([str(script)], timeout=TIMEOUT)
+        subprocess.run(["/bin/sh", str(script)], timeout=TIMEOUT)
 
     pid = _read_pid(pidfile)
     # Give the kernel a moment, so a pass cannot come from merely being early.
@@ -139,7 +162,7 @@ def test_run_contained_reaps_the_whole_group_on_timeout(forking_tool):
     script, pidfile = forking_tool
 
     with pytest.raises(subprocess.TimeoutExpired):
-        run_contained([str(script)], timeout=TIMEOUT)
+        run_contained(["/bin/sh", str(script)], timeout=TIMEOUT)
 
     pid = _read_pid(pidfile)
     time.sleep(0.5)
@@ -181,7 +204,7 @@ def test_the_group_is_reaped_even_when_the_leader_exited_first(tmp_path, request
 
     # Started the same way run_contained starts it, so the leader's pid is
     # the group id — and kept, because that is the value under test.
-    proc = subprocess.Popen([str(script)], start_new_session=True)
+    proc = subprocess.Popen(["/bin/sh", str(script)], start_new_session=True)
     leader_pgid = proc.pid
 
     def _cleanup():
@@ -221,7 +244,7 @@ def test_the_parent_survives_the_group_kill(forking_tool):
     my_pid, my_pgid = os.getpid(), os.getpgid(0)
 
     with pytest.raises(subprocess.TimeoutExpired):
-        run_contained([str(script)], timeout=TIMEOUT)
+        run_contained(["/bin/sh", str(script)], timeout=TIMEOUT)
 
     assert os.getpid() == my_pid
     assert os.getpgid(0) == my_pgid, "the parent's process group changed"
@@ -245,7 +268,7 @@ def test_partial_output_survives_the_timeout(tmp_path):
     script.chmod(0o755)
 
     with pytest.raises(subprocess.TimeoutExpired) as caught:
-        run_contained([str(script)], timeout=TIMEOUT, capture_output=True)
+        run_contained(["/bin/sh", str(script)], timeout=TIMEOUT, capture_output=True)
 
     assert caught.value.output is not None, "partial stdout was discarded"
     assert b"BEFORE_TIMEOUT" in caught.value.output

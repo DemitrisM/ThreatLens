@@ -4,7 +4,7 @@ Static malware triage for the command line, with transparent confidence
 scoring. Every point in a score is attributable: the report says which module
 awarded it and why, so a verdict can be argued with rather than just believed.
 
-Version 0.5.18. MIT licensed.
+Version 0.5.19. MIT licensed.
 
 ## What it does
 
@@ -227,7 +227,7 @@ docker run --rm --network none \
   -v "$RULES:/app/rules/yara" \
   --tmpfs /tmp:size=2g,noexec \
   -e TL_UID=$(id -u) -e TL_GID=$(id -g) \
-  -w /data threatlens:0.5.18 scan suspicious.exe
+  -w /data threatlens:0.5.19 scan suspicious.exe
 ```
 
 `noexec` is spelled out even though Docker already applies it by default —
@@ -548,14 +548,14 @@ the `.lnk` size ceiling — are grouped and commented in `config.docker.yaml`.
 
 ## Tests
 
-**1198 tests collected**, and that is the number to check — it is the one the
+**1220 tests collected**, and that is the number to check — it is the one the
 environment cannot change. How many of them *run* depends on what is present:
 
 | where | passed | skipped |
 |---|---|---|
-| host, malware corpus present | 1197 | 1 |
-| host, no corpus | 1174 | 24 |
-| inside the image, no corpus | 1175 | 23 |
+| host, malware corpus present | 1219 | 1 |
+| host, no corpus | 1196 | 24 |
+| inside the image, no corpus | 1197 | 23 |
 
 23 of the skips are the tests that scan real samples. The 24th needs
 `pcodedmp` on `PATH`, which the image has and a bare host may not — that is
