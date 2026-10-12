@@ -192,7 +192,7 @@ def test_no_rules_flags_when_unconfigured(tmp_path, monkeypatch):
     from modules.static import capa_analysis
 
     seen: list = []
-    monkeypatch.setattr(capa_analysis.subprocess, "run", _capture_cmd(seen))
+    monkeypatch.setattr(capa_analysis, "run_contained", _capture_cmd(seen))
     capa = _make_executable(tmp_path / "capa")
     sample = tmp_path / "s.exe"
     sample.write_bytes(b"MZ")
@@ -207,7 +207,7 @@ def test_rules_and_signature_flags_are_passed_when_the_dirs_exist(tmp_path, monk
     from modules.static import capa_analysis
 
     seen: list = []
-    monkeypatch.setattr(capa_analysis.subprocess, "run", _capture_cmd(seen))
+    monkeypatch.setattr(capa_analysis, "run_contained", _capture_cmd(seen))
     capa = _make_executable(tmp_path / "capa")
     rules = tmp_path / "capa-rules"; rules.mkdir()
     sigs = tmp_path / "capa-sigs"; sigs.mkdir()
@@ -233,7 +233,7 @@ def test_configured_but_missing_rules_dir_skips_loudly(tmp_path, monkeypatch):
     from modules.static import capa_analysis
 
     seen: list = []
-    monkeypatch.setattr(capa_analysis.subprocess, "run", _capture_cmd(seen))
+    monkeypatch.setattr(capa_analysis, "run_contained", _capture_cmd(seen))
     capa = _make_executable(tmp_path / "capa")
     sample = tmp_path / "s.exe"
     sample.write_bytes(b"MZ")

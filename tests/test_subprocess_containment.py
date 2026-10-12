@@ -376,3 +376,86 @@ def test_no_descriptors_leak_across_runs():
             run_contained(["/bin/sh", "-c", "echo hi; sleep 30"],
                           timeout=1, capture_output=True)
     assert _open_fds() == baseline, "timed-out runs leaked descriptors"
+
+
+# --------------------------------------------------------------------------
+# Every call site must go through the contained runner.
+#
+# These exist because four of the seven sites — the two cabextract calls,
+# pcodedmp and git — had **no** subprocess patches in the suite at all. So a
+# migration that missed one, or a later edit that reverted one to
+# `subprocess.run`, would leave the orphan behaviour in place with every test
+# still green. Asserting on the module attribute is deliberate: it catches a
+# reverted call without needing the external tool installed.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "module_path",
+    [
+        "modules.static.capa_analysis",
+        "modules.static.string_analysis",
+        "modules.static.pdf_analysis",
+        "modules.static.archive_analysis.other_handlers",
+        "modules.static.doc_analysis.vba_macros",
+        "core.rule_updater",
+    ],
+)
+def test_the_module_imports_the_contained_runner(module_path):
+    """Each module that launches a tool must hold a reference to it."""
+    import importlib
+
+    module = importlib.import_module(module_path)
+    assert hasattr(module, "run_contained"), (
+        f"{module_path} does not import run_contained, so any "
+        f"subprocess.run left in it would orphan a forked child"
+    )
+
+
+def test_no_module_still_calls_subprocess_run():
+    """A whole-tree sweep, so a reverted call site cannot hide.
+
+    Parsed rather than grepped: a docstring mentioning `subprocess.run` is
+    legitimate and this file's own module docstring does it, so a text search
+    would either miss real calls or flag prose.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    offenders = []
+
+    for path in list((root / "modules").rglob("*.py")) + list((root / "core").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "run"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "subprocess"
+            ):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+
+    assert offenders == [], (
+        "these call sites still use subprocess.run, whose timeout kills only "
+        f"the direct child: {offenders}"
+    )
+
+
+def test_git_is_launched_through_the_contained_runner(monkeypatch):
+    """`rule_updater` is the one site outside `modules/`, so it is pinned too."""
+    from core import rule_updater
+
+    calls = []
+
+    def _fake(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(rule_updater, "run_contained", _fake)
+    rule_updater._run_git(["status"])
+
+    assert calls and calls[0][0] == "git"

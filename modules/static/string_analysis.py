@@ -36,6 +36,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from core.process import run_contained
 from modules.static._bundled_tool import private_extraction_dir, resolve_tool
 
 logger = logging.getLogger(__name__)
@@ -487,7 +488,13 @@ def _run_floss(
     # directory is removed for it — see modules/static/_bundled_tool.py.
     try:
         with private_extraction_dir("floss_") as env:
-            proc = subprocess.run(
+            # run_contained, not subprocess.run: this is a PyInstaller
+            # bundle, so the process started here forks the real tool as its
+            # own child. subprocess.run's timeout SIGKILLs only the direct
+            # child and leaves that payload running, reparented to PID 1 —
+            # see core/process.py. `subprocess` is still imported for
+            # TimeoutExpired, which run_contained re-raises unchanged.
+            proc = run_contained(
                 cmd,
                 capture_output=True,
                 timeout=timeout,

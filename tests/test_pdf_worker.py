@@ -56,7 +56,7 @@ def test_a_timed_out_parse_degrades(sample, monkeypatch):
     def _boom(cmd, *a, **kw):
         raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 60))
 
-    monkeypatch.setattr(pdf_analysis.subprocess, "run", _boom)
+    monkeypatch.setattr(pdf_analysis, "run_contained", _boom)
     _assert_degraded_not_dead(pdf_analysis.run(sample, {}), "timed out")
 
 
@@ -79,7 +79,7 @@ def test_a_crashing_worker_degrades(sample, monkeypatch):
         # real call shape so cwd and the redirections are still exercised.
         return real_run([sys.executable, "-c", "import sys; sys.exit(9)"], *a, **kw)
 
-    monkeypatch.setattr(pdf_analysis.subprocess, "run", _fail)
+    monkeypatch.setattr(pdf_analysis, "run_contained", _fail)
     _assert_degraded_not_dead(pdf_analysis.run(sample, {}), "exited 9")
 
 
@@ -91,7 +91,7 @@ def test_unreadable_worker_output_degrades(sample, monkeypatch):
         Path(cmd[3]).write_text("{not json")
         return real_run([sys.executable, "-c", ""], *a, **kw)
 
-    monkeypatch.setattr(pdf_analysis.subprocess, "run", _garbage)
+    monkeypatch.setattr(pdf_analysis, "run_contained", _garbage)
     _assert_degraded_not_dead(pdf_analysis.run(sample, {}), "unreadable")
 
 
@@ -111,7 +111,7 @@ def test_the_scratch_directory_is_removed_even_when_the_child_is_killed(sample, 
 
     monkeypatch.setattr(pdf_analysis.tempfile, "mkdtemp", _track)
     monkeypatch.setattr(
-        pdf_analysis.subprocess, "run",
+        pdf_analysis, "run_contained",
         lambda cmd, *a, **kw: (_ for _ in ()).throw(
             subprocess.TimeoutExpired(cmd, 1)
         ),
@@ -140,7 +140,7 @@ def test_the_configured_timeout_reaches_the_child(sample, monkeypatch):
         seen["timeout"] = kw.get("timeout")
         return real_run(cmd, *a, **kw)
 
-    monkeypatch.setattr(pdf_analysis.subprocess, "run", _spy)
+    monkeypatch.setattr(pdf_analysis, "run_contained", _spy)
     pdf_analysis.run(sample, {"module_timeout_seconds": 17})
     assert seen["timeout"] == 17.0
 
@@ -155,7 +155,7 @@ def test_a_nonsense_timeout_falls_back_to_the_default(sample, monkeypatch, bad):
         seen["timeout"] = kw.get("timeout")
         return real_run(cmd, *a, **kw)
 
-    monkeypatch.setattr(pdf_analysis.subprocess, "run", _spy)
+    monkeypatch.setattr(pdf_analysis, "run_contained", _spy)
     pdf_analysis.run(sample, {"module_timeout_seconds": bad})
     assert seen["timeout"] == float(pdf_analysis._DEFAULT_TIMEOUT)
 
@@ -218,7 +218,7 @@ def test_an_oversized_javascript_block_still_registers(sample, monkeypatch):
         }))
         return real_run([sys.executable, "-c", ""], *a, **kw)
 
-    monkeypatch.setattr(pdf_analysis.subprocess, "run", _oversized)
+    monkeypatch.setattr(pdf_analysis, "run_contained", _oversized)
     result = pdf_analysis.run(sample, {})
 
     assert result["data"]["has_javascript"] is True, (
@@ -299,7 +299,7 @@ def test_the_stderr_excerpt_is_read_with_a_bounded_call(sample, monkeypatch):
             err.flush()
         return real_run([sys.executable, "-c", "import sys; sys.exit(4)"], *a, **kw)
 
-    monkeypatch.setattr(pdf_analysis.subprocess, "run", _fail)
+    monkeypatch.setattr(pdf_analysis, "run_contained", _fail)
 
     reads: list = []
     real_open = open

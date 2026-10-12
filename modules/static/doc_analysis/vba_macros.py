@@ -39,6 +39,8 @@ this kind of per-module threshold.
 import logging
 import re
 import subprocess
+
+from core.process import run_contained
 from pathlib import Path
 
 from ._quiet import quiet_stdout
@@ -243,7 +245,8 @@ def _detect_stomping(file_path: Path, source_streams: list[dict]) -> dict:
     """
     out = {"performed": False, "detected": False, "modulestreamname_mismatch": False}
     try:
-        proc = subprocess.run(
+        # run_contained so the timeout reaps pcodedmp's descendants too.
+        proc = run_contained(
             ["pcodedmp", "-d", str(file_path)],
             capture_output=True,
             text=True,

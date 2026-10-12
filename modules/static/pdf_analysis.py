@@ -71,6 +71,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from core.process import run_contained
+
 logger = logging.getLogger(__name__)
 
 # peepdf is imported by the worker, in its own process, not here. This import
@@ -526,7 +528,15 @@ def _run_worker(target: str, timeout: float, execute_js: bool = True) -> dict:
 
         try:
             with open(errors, "wb") as err:
-                completed = subprocess.run(
+                # run_contained, not subprocess.run. The worker is a plain
+                # Python child rather than a forking bundle, so it has no
+                # grandchild of its own today — but peepdf is an
+                # unmaintained parser fed hostile input, and a timeout here
+                # must bound whatever it started rather than only the direct
+                # child. Capture is deliberately NOT requested: the explicit
+                # redirects below are the point, and run_contained leaves
+                # them alone.
+                completed = run_contained(
                     [sys.executable, str(_WORKER), target, str(results)]
                     + ([] if execute_js else ["nojs"]),
                     cwd=scratch,

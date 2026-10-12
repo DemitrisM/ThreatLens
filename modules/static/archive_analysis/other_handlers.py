@@ -43,6 +43,8 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+
+from core.process import run_contained
 import time
 from pathlib import Path
 
@@ -91,7 +93,9 @@ def enumerate_cab(file_path: Path) -> tuple[list[ArchiveEntry], ContainerMeta]:
         return entries, meta
 
     try:
-        proc = subprocess.run(
+        # run_contained: a timeout must reap whatever cabextract started,
+        # not just cabextract. See core/process.py.
+        proc = run_contained(
             ["cabextract", "--list", str(file_path)],
             capture_output=True, text=True, timeout=_CABEXTRACT_TIMEOUT,
             check=False,
@@ -166,7 +170,7 @@ def extract_cab_members_to_temp(
     if total > max_total_bytes:
         return
     try:
-        subprocess.run(
+        run_contained(
             ["cabextract", "-d", str(tmp_dir), "-q", str(file_path)],
             capture_output=True, timeout=_CABEXTRACT_TIMEOUT, check=False,
         )

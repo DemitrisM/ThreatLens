@@ -53,7 +53,7 @@ def test_standard_asks_floss_for_static_strings_only(tmp_path, monkeypatch):
         seen["cmd"] = cmd
         return _Proc(stdout=_doc(static_strings=3))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(sa, "run_contained", fake_run)
     sa._run_floss(tmp_path / "s.exe", binary, 300, emulation=False)
     assert "--only" in seen["cmd"] and "static" in seen["cmd"]
 
@@ -67,7 +67,7 @@ def test_deep_asks_floss_for_everything(tmp_path, monkeypatch):
         seen["cmd"] = cmd
         return _Proc(stdout=_doc(static_strings=3, decoded_strings=1))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(sa, "run_contained", fake_run)
     sa._run_floss(tmp_path / "s.exe", binary, 300, emulation=True)
     assert "--only" not in seen["cmd"]
 
@@ -94,7 +94,7 @@ def test_every_floss_failure_degrades_rather_than_raising(
     failed run has no partial output worth salvaging."""
     binary = tmp_path / "floss"
     binary.write_text("")
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: proc)
+    monkeypatch.setattr(sa, "run_contained", lambda *a, **k: proc)
     result, failure = sa._run_floss(tmp_path / "s.exe", binary, 300,
                                     emulation=True)
     assert result is None
@@ -125,7 +125,7 @@ def test_a_timed_out_emulation_retries_static_instead_of_falling_to_raw(
             raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 300))
         return _Proc(stdout=_doc(static_strings=4))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(sa, "run_contained", fake_run)
     cfg = {"floss_binary": str(binary), "floss_emulation": True,
            "floss_timeout_seconds": 300}
     result = sa.run(sample, cfg)
@@ -152,7 +152,7 @@ def test_a_timeout_must_not_render_as_a_clean_zero(tmp_path, monkeypatch):
             raise subprocess.TimeoutExpired(cmd, 300)
         return _Proc(stdout=_doc(static_strings=2))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(sa, "run_contained", fake_run)
     data = sa.run(sample, {"floss_binary": str(binary), "floss_emulation": True,
                            "floss_timeout_seconds": 300})["data"]
     assert data["floss_emulation_timed_out"] is True
@@ -172,7 +172,7 @@ def test_tight_strings_are_recorded_and_score(tmp_path, monkeypatch):
     binary.write_text("")
     sample = tmp_path / "s.exe"
     sample.write_bytes(b"MZ")
-    monkeypatch.setattr(subprocess, "run",
+    monkeypatch.setattr(sa, "run_contained",
                         lambda *a, **k: _Proc(stdout=_doc(tight_strings=6)))
     result = sa.run(sample, {"floss_binary": str(binary),
                              "floss_emulation": True})
@@ -189,7 +189,7 @@ def test_language_strings_are_recorded(tmp_path, monkeypatch):
     binary.write_text("")
     sample = tmp_path / "s.exe"
     sample.write_bytes(b"MZ")
-    monkeypatch.setattr(subprocess, "run",
+    monkeypatch.setattr(sa, "run_contained",
                         lambda *a, **k: _Proc(stdout=_doc(language_strings=9)))
     data = sa.run(sample, {"floss_binary": str(binary)})["data"]
     assert data["floss_language_strings"] == 9
@@ -203,7 +203,7 @@ def test_a_static_only_run_earns_no_obfuscation_bonus(tmp_path, monkeypatch):
     binary.write_text("")
     sample = tmp_path / "s.exe"
     sample.write_bytes(b"MZ")
-    monkeypatch.setattr(subprocess, "run",
+    monkeypatch.setattr(sa, "run_contained",
                         lambda *a, **k: _Proc(stdout=_doc(static_strings=500)))
     result = sa.run(sample, {"floss_binary": str(binary),
                              "floss_emulation": False})
@@ -290,7 +290,7 @@ def test_a_floss_crash_is_not_reported_as_a_timeout(tmp_path, monkeypatch):
             return _Proc(returncode=1, stderr=b"vivisect exploded")
         return _Proc(stdout=_doc(static_strings=3))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(sa, "run_contained", fake_run)
     data = sa.run(sample, {"floss_binary": str(binary), "floss_emulation": True,
                            "floss_timeout_seconds": 300})["data"]
     assert data["floss_emulation_timed_out"] is False, \
@@ -304,7 +304,7 @@ def test_a_missing_binary_does_not_trigger_a_pointless_retry(tmp_path, monkeypat
     sample = tmp_path / "s.exe"
     sample.write_bytes(b"MZ")
     calls = []
-    monkeypatch.setattr(subprocess, "run",
+    monkeypatch.setattr(sa, "run_contained",
                         lambda cmd, **kw: calls.append(cmd) or _Proc())
 
     data = sa.run(sample, {"floss_binary": str(tmp_path / "absent"),

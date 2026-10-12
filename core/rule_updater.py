@@ -25,6 +25,8 @@ import json
 import logging
 import shutil
 import subprocess
+
+from core.process import run_contained
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -62,7 +64,7 @@ def check_git_available() -> bool:
         cause instead of failing per source.
     """
     try:
-        proc = subprocess.run(
+        proc = run_contained(
             ["git", "--version"],
             capture_output=True,
             text=True,
@@ -97,7 +99,9 @@ def _run_git(
     # passing them through a shell would make that file an injection vector.
     cmd = ["git"] + args
     try:
-        proc = subprocess.run(
+        # run_contained: git spawns helpers of its own (credential, remote,
+        # pack), and a timeout that killed only git would leave them.
+        proc = run_contained(
             cmd,
             cwd=cwd,
             capture_output=True,

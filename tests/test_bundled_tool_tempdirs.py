@@ -131,7 +131,7 @@ def test_floss_timeout_leaves_no_extraction_dir(tmp_path, monkeypatch):
     from modules.static import string_analysis
 
     seen: list = []
-    monkeypatch.setattr(string_analysis.subprocess, "run", _timeout_recording_run(seen))
+    monkeypatch.setattr(string_analysis, "run_contained", _timeout_recording_run(seen))
 
     sample = tmp_path / "sample.exe"
     sample.write_bytes(b"MZ" + b"\x00" * 64)
@@ -150,7 +150,7 @@ def test_capa_timeout_leaves_no_extraction_dir(tmp_path, monkeypatch):
     from modules.static import capa_analysis
 
     seen: list = []
-    monkeypatch.setattr(capa_analysis.subprocess, "run", _timeout_recording_run(seen))
+    monkeypatch.setattr(capa_analysis, "run_contained", _timeout_recording_run(seen))
 
     sample = tmp_path / "sample.exe"
     sample.write_bytes(b"MZ" + b"\x00" * 64)

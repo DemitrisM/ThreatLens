@@ -132,14 +132,18 @@ def test_the_parse_runs_in_a_child_process_in_a_directory_the_module_owns(
     monkeypatch.chdir(workdir)
 
     seen = {}
-    real_run = pdf_analysis.subprocess.run
+    # The real contained runner, captured BEFORE the patch below replaces it.
+    # Reading `pdf_analysis.subprocess.run` here instead would make the spy
+    # delegate to the standard library, so this test would still pass while
+    # no longer exercising the contained path at all.
+    real_run = pdf_analysis.run_contained
 
     def _spy(cmd, *a, **kw):
         seen["cmd"] = cmd
         seen["cwd"] = kw.get("cwd")
         return real_run(cmd, *a, **kw)
 
-    monkeypatch.setattr(pdf_analysis.subprocess, "run", _spy)
+    monkeypatch.setattr(pdf_analysis, "run_contained", _spy)
     pdf_analysis.run(js_pdf, {})
 
     assert seen, "the peepdf worker was never launched"
