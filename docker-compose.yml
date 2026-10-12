@@ -24,7 +24,7 @@
 services:
   threatlens:
     build: .
-    image: threatlens:0.5.19
+    image: threatlens:0.5.20
 
     volumes:
       # Your samples, READ-ONLY. A static scan never writes to a sample, so
