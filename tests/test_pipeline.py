@@ -296,6 +296,210 @@ def test_available_provider_result_is_scored(monkeypatch, sample):
     assert report["scoring"]["total_score"] == 25
 
 
+# ----------------------------------------------------------------------
+# D-1 — a dynamic provider's score_delta is never negative.
+#
+# The rule exists because detonation can only ever prove "this happened",
+# never "nothing bad would have happened". A sample that detonated and
+# showed nothing is indistinguishable from one whose sandbox failed: dead
+# C2 infrastructure, egress denied on purpose, an emulator meeting an
+# unmodelled API. Letting any of those subtract turns "we did not see it"
+# into "it is not there", which is how a confident clean verdict gets
+# printed for malware.
+#
+# Enforced at the provider seam rather than in core/scoring.py, because
+# the guarantee has to hold for the score breakdown too — a negative row
+# in the table is the same false reassurance as a lower total. Scoring
+# identifies modules only by name, and a rule resting on the "dynamic_"
+# string prefix would be one rename from silently lapsing.
+# ----------------------------------------------------------------------
+
+def _dynamic(provider_delta, monkeypatch, static_delta=0):
+    """Arm a dynamic provider returning *provider_delta*, beside one static
+    module scoring *static_delta*. The static module is what makes the
+    subtraction visible: against a score of 0 a negative delta is hidden by
+    the engine's own clamp, so the test would pass without the fix."""
+    provider = _module(
+        lambda f, c: {"status": "success", "data": {},
+                      "score_delta": provider_delta,
+                      "reason": "nothing observed"},
+        is_available=lambda config: True,
+    )
+    monkeypatch.setattr(pl, "_MODULE_REGISTRY", {"a": "fake.a"})
+    monkeypatch.setattr(pl, "_DYNAMIC_REGISTRY", {"speakeasy": "fake.dyn"})
+    monkeypatch.setattr(
+        pl, "_load_module",
+        lambda path: provider if path == "fake.dyn" else _ok(static_delta),
+    )
+    return provider
+
+
+def test_a_negative_dynamic_delta_cannot_lower_the_score(monkeypatch, sample):
+    """The headline guarantee: arming a provider cannot reduce a verdict."""
+    _dynamic(-30, monkeypatch, static_delta=40)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["scoring"]["total_score"] == 40, (
+        "a dynamic provider subtracted from a static finding"
+    )
+
+
+def test_the_clamped_delta_is_zero_not_merely_ignored(monkeypatch, sample):
+    """Asserted on the provider result itself, because the breakdown table
+    and the JSON report both read it directly. A total that happens to be
+    right while the row still shows -30 is the same false reassurance in a
+    different place."""
+    _dynamic(-30, monkeypatch)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["dynamic"]["score_delta"] == 0
+
+
+def test_a_negative_dynamic_delta_never_reaches_the_breakdown(monkeypatch, sample):
+    """compute_score lists only non-zero contributors, so a clamped
+    provider must drop out of the table entirely rather than appear as a
+    +0 row claiming it was consulted and found nothing."""
+    _dynamic(-30, monkeypatch, static_delta=40)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    modules = [row["module"] for row in report["scoring"]["breakdown"]]
+    assert "dynamic_speakeasy" not in modules
+
+
+def test_a_positive_dynamic_delta_is_untouched(monkeypatch, sample):
+    """The rule must not become 'dynamic analysis cannot score', which
+    would pass every test above while deleting the feature."""
+    _dynamic(25, monkeypatch)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["dynamic"]["score_delta"] == 25
+    assert report["scoring"]["total_score"] == 25
+
+
+def test_a_zero_dynamic_delta_stays_zero(monkeypatch, sample):
+    """The ordinary 'detonated, observed nothing' case. Not an error, and
+    it must not be reported as one."""
+    _dynamic(0, monkeypatch)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["dynamic"]["score_delta"] == 0
+    assert report["dynamic"]["status"] == "success"
+
+
+def test_the_clamp_is_logged_with_the_provider_and_the_value(monkeypatch, sample, caplog):
+    """A provider returning a negative delta is a bug in that provider.
+    Silently correcting it would hide the bug for as long as the clamp
+    keeps working."""
+    _dynamic(-30, monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        run_pipeline(sample, {"enabled_modules": ["a"],
+                              "dynamic_provider": "speakeasy"})
+    assert "speakeasy" in caplog.text
+    assert "-30" in caplog.text
+
+
+def test_a_non_numeric_dynamic_delta_becomes_zero(monkeypatch, sample):
+    """`"-30" < 0` raises TypeError in Python 3. A provider returning a
+    string must not take the scan down — design rule 2 — and must not slip
+    past the clamp into core/scoring.py either, which would merely warn and
+    drop it."""
+    _dynamic("-30", monkeypatch, static_delta=40)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["dynamic"]["score_delta"] == 0
+    assert report["scoring"]["total_score"] == 40
+
+
+def test_a_boolean_dynamic_delta_becomes_zero(monkeypatch, sample):
+    """bool is a subclass of int, so `True` would otherwise score +1 —
+    the same trap config_loader's timeout guards were written against."""
+    _dynamic(True, monkeypatch)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["dynamic"]["score_delta"] == 0
+
+
+def test_a_nan_dynamic_delta_becomes_zero(monkeypatch, sample):
+    """NaN is the sharp one, and it fails upward.
+
+    Every comparison against NaN is False, so `nan < 0` does not catch it.
+    It then reaches core/scoring._clamp, where `min(100, nan)` returns 100
+    — the comparison that would have chosen NaN is False too — and the
+    scan reports **100, CRITICAL** on the strength of a provider bug.
+    Measured before this guard existed; raised in review 2026-10-12.
+    """
+    _dynamic(float("nan"), monkeypatch)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["dynamic"]["score_delta"] == 0
+    assert report["scoring"]["total_score"] == 0
+    assert report["scoring"]["risk_band"] == "LOW"
+
+
+def test_an_infinite_dynamic_delta_becomes_zero(monkeypatch, sample):
+    """`inf` would clamp to 100 legitimately and `-inf` to 0, so neither
+    corrupts the total — but both are provider bugs, and `-inf` erases
+    every static finding on the way, which is the D-1 violation itself."""
+    for value in (float("inf"), float("-inf")):
+        _dynamic(value, monkeypatch, static_delta=40)
+        report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                       "dynamic_provider": "speakeasy"})
+        assert report["dynamic"]["score_delta"] == 0, value
+        assert report["scoring"]["total_score"] == 40, value
+
+
+def test_a_float_delta_is_accepted_and_narrowed_to_int(monkeypatch, sample):
+    """Accepted, because a provider deserialising a sandbox's JSON hands
+    back `25.0` and zeroing that would discard a real finding. Narrowed,
+    because design rule 1 writes score_delta as an int."""
+    _dynamic(25.0, monkeypatch)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    delta = report["dynamic"]["score_delta"]
+    assert delta == 25
+    assert isinstance(delta, int), f"leaked a {type(delta).__name__}"
+
+
+def test_a_fractional_delta_keeps_the_breakdown_summing_to_the_total(monkeypatch, sample):
+    """The reason narrowing matters, raised in review.
+
+    compute_score lists every non-zero delta in the breakdown but clamps
+    the total with `int(...)`. Left as a float, +40 and +25.5 render as
+    rows above a total of 65, and the arithmetic a reader checks does not
+    hold."""
+    _dynamic(25.5, monkeypatch, static_delta=40)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    rows = report["scoring"]["breakdown"]
+    assert sum(row["score_delta"] for row in rows) == report["scoring"]["total_score"]
+    assert all(isinstance(row["score_delta"], int) for row in rows)
+
+
+def test_negative_zero_does_not_survive_as_a_negative(monkeypatch, sample):
+    """`-0.0 < 0` is False, so the negative guard does not catch it and it
+    would reach the report rendering a minus sign on a zero
+    contribution."""
+    _dynamic(-0.0, monkeypatch)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    delta = report["dynamic"]["score_delta"]
+    assert delta == 0
+    assert not str(delta).startswith("-"), f"rendered as {delta!r}"
+
+
+def test_an_enormous_integer_delta_does_not_crash_the_scan(monkeypatch, sample):
+    """Python ints are arbitrary precision; math.isfinite converts to a C
+    double and raises OverflowError past its range. Applying the
+    finiteness test to every number — rather than only to floats — turned
+    a corrupted provider value into a dead scan, breaking design rule 2.
+    Confirmed: math.isfinite(10**400) raises."""
+    _dynamic(10**400, monkeypatch)
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["scoring"]["total_score"] == 100
+    assert report["scoring"]["risk_band"] == "CRITICAL"
+
+
 def test_unknown_dynamic_provider_is_skipped(monkeypatch, sample, caplog):
     _install(monkeypatch, {"a": _ok()})
     with caplog.at_level(logging.WARNING):

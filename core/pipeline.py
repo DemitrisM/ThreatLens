@@ -23,6 +23,7 @@ module sees its predecessors' results through
 """
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Callable
@@ -286,12 +287,125 @@ def _run_dynamic_provider(
             result.setdefault("data", {})
             result.setdefault("score_delta", 0)
             result.setdefault("reason", "")
+            _clamp_dynamic_delta(result, provider_name)
             return result
         logger.warning("Dynamic provider %s returned non-dict", provider_name)
         return None
     except Exception as exc:  # noqa: BLE001
         logger.error("Dynamic provider %s failed: %s", provider_name, exc)
         return None
+
+
+def _clamp_dynamic_delta(result: dict, provider_name: str) -> None:
+    """Enforce D-1 — a dynamic provider's score_delta is never negative.
+
+    Observed behaviour adds to a score; its absence never subtracts.
+
+    Args:
+        result:        The provider's normalised result dict, mutated in
+                       place. ``score_delta`` is already defaulted by the
+                       caller, so the key is present.
+        provider_name: Used only in the warning, so a provider returning a
+                       bad delta is attributable.
+
+    Returns:
+        None. Mutates *result*.
+
+    Why the rule exists
+    -------------------
+    Detonation can only ever establish "this happened". It can never
+    establish "nothing bad would have happened", because a sample that ran
+    and did nothing is indistinguishable from one whose sandbox failed —
+    sinkholed C2, egress denied on purpose, an emulator meeting an
+    unmodelled API, a sample that detected analysis. Letting any of those
+    subtract converts "we did not see it" into "it is not there", which is
+    how a confident clean verdict gets printed for live malware. A widely
+    used open-source sandbox scores exactly that way and reports a
+    confident 0.0 for any sample its signatures do not cover.
+
+    What it buys: enabling a provider cannot lower any verdict the static
+    phases already produced, so Phase 5 is structurally incapable of
+    regressing Phases 1-4. That guarantee is why this is enforced here, at
+    the seam where a provider's result is first trusted, rather than in
+    core/scoring.py. Scoring sees a flat list and identifies modules only
+    by name, so the rule would rest on the "dynamic_" string prefix and
+    lapse silently on a rename; and clamping the total alone would still
+    leave a negative row in the breakdown table, which is the same false
+    reassurance in a different place.
+
+    A non-numeric delta is zeroed here rather than left for scoring's own
+    guard. `"-30" < 0` raises TypeError in Python 3, so the comparison
+    below cannot be reached safely without the isinstance test, and bool is
+    a subclass of int — `True` would otherwise score +1.
+
+    NaN needs its own test, and it is the sharpest case here. Every
+    comparison against NaN is False, so `nan < 0` does not catch it and the
+    value reaches scoring intact; there `min(100, nan)` returns 100,
+    because the comparison that would have chosen NaN is False too.
+    Measured: a NaN delta yields **total_score 100, CRITICAL** — a
+    maximum-severity verdict conjured from a provider bug. Raised in review
+    and confirmed before this guard was written.
+
+    A float is accepted and then narrowed to int, rather than either
+    rejected or passed through. Design rule 1 writes ``score_delta`` as an
+    int; a provider deserialising a sandbox's JSON will routinely hand back
+    ``25.0``, and rejecting that would discard a real finding — this rule's
+    own failure mode pointed the other way. Passing it through is wrong
+    too, for a reason found in review: the breakdown table lists any
+    non-zero delta while the total is clamped with `int(...)`, so a
+    fractional delta makes the rows stop summing to the total a reader is
+    shown (+40 and +25.5 rendering above a total of 65). Narrowing here
+    keeps the finding and the arithmetic.
+
+    Truncation, not rounding, to match core/scoring._clamp. A delta below
+    1.0 therefore becomes 0 and drops out of the breakdown — which is
+    correct, since it contributes nothing to the total either.
+    """
+    delta = result.get("score_delta", 0)
+
+    if not isinstance(delta, (int, float)) or isinstance(delta, bool):
+        logger.warning(
+            "Dynamic provider %s returned non-numeric score_delta %r — "
+            "treating as 0",
+            provider_name,
+            delta,
+        )
+        result["score_delta"] = 0
+        return
+
+    # Guarded on float, not applied to every number: Python ints are
+    # arbitrary precision and always finite, while math.isfinite converts
+    # to a C double and raises OverflowError past its range. A provider
+    # returning a corrupted bitfield as an int would otherwise take the
+    # scan down, breaking design rule 2. Raised in review; confirmed —
+    # math.isfinite(10**400) raises "int too large to convert to float".
+    if isinstance(delta, float) and not math.isfinite(delta):
+        logger.warning(
+            "Dynamic provider %s returned a non-finite score_delta (%r) — "
+            "treating as 0.",
+            provider_name,
+            delta,
+        )
+        result["score_delta"] = 0
+        return
+
+    if delta < 0:
+        # Warned, not silently corrected: a negative delta is a bug in the
+        # provider, and a silent clamp hides it for as long as the clamp
+        # keeps working.
+        logger.warning(
+            "Dynamic provider %s returned a negative score_delta (%s) — "
+            "clamped to 0. Absence of observed behaviour never subtracts.",
+            provider_name,
+            delta,
+        )
+        result["score_delta"] = 0
+        return
+
+    # Reached only by a finite, non-negative value. int() also normalises
+    # -0.0, which `delta < 0` does not catch (-0.0 == 0.0 is True) and
+    # which would otherwise render a negative sign on a zero contribution.
+    result["score_delta"] = int(delta)
 
 
 def _error_result(module_name: str, message: str) -> dict:
