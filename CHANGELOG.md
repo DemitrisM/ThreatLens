@@ -26,12 +26,82 @@ Everything before it is a step toward that.
 | 0.5.16 | Phase 4 closes: CI, the graceful-degradation audit and its fixes, capa's budgets measured |
 | 0.5.17 | An outside first-run review: two string-matching defects, five documentation defects, and 87 MiB that `rm -rf` never reclaimed |
 | 0.5.18 | The tool admits it executes code: PDF JavaScript disclosed and switchable, container containment measured rather than assumed |
-| 0.5.19 | *(current)* A timeout now bounds the work and not just the wait — a killed tool no longer leaves its payload running |
+| 0.5.19 | A timeout now bounds the work and not just the wait — a killed tool no longer leaves its payload running |
+| 0.5.20 | *(current)* A quoted `false` no longer arms execution — boolean settings are validated, and the execution switch fails closed |
 | 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
 | 0.7.0 | The orchestrator timeout, `msi_analysis` |
 | 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
 | 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+## 0.5.20 — 2026-10-12
+
+A safety switch that quote marks could defeat.
+
+`pdf_javascript_execution: false` disarms the V8 context that runs a PDF's
+JavaScript. `pdf_javascript_execution: "false"` did not. YAML reads the
+first as a boolean and the second as a five-character string; a non-empty
+string is truthy in Python, and the reader is spelled
+`bool(config.get("pdf_javascript_execution", True))`. So a user who typed
+the word *false* with quotes around it armed the engine they were trying to
+disarm, with nothing logged and no way to tell from the report — the
+disclosure added in 0.5.18 reports what happened, which was accurate and
+was not what was asked for.
+
+`config_loader` validated the two enumerated settings and the three
+timeouts. It validated no boolean at all.
+
+### The fallback rule is wrong for this one kind of key
+
+Everything else in `_validate` answers a bad value by substituting the
+default, which is right for a tuning key: a mistyped `capa_timeout_seconds`
+should become 240 rather than stop a scan.
+
+It inverts for an execution switch, because that switch defaults to **on**.
+Substituting the default there answers "I could not read your setting" with
+"then I will execute the sample's JavaScript" — and the value most likely to
+be unreadable is one a user wrote while trying to turn execution off.
+
+So `_EXECUTION_SWITCHES` fails **closed**: an unreadable value disarms and
+warns, naming the value. The cost of being wrong in that direction is
+bounded and visible (a warning, and `javascript_engine.enabled false` in the
+report). The cost of being wrong in the other direction is silent.
+
+Strict, not coercing. `"false"` is not read as `False`; it is rejected and
+reported. Coercion would make ThreatLens's reading of a config differ from
+YAML's, which means two settings that look alike behaving differently, and
+it leaves `"none"`, `"File"` and `"0"` to be argued about one at a time. A
+warning teaches the fix. A silent coercion teaches nothing.
+
+This costs nothing in ordinary use: YAML already parses unquoted
+`true`/`false`/`yes`/`no`/`on`/`off` into real booleans, so only a quoted
+value — or something that is not a boolean at all — reaches the check.
+
+### Added
+
+- `_BOOL_KEYS` and `_EXECUTION_SWITCHES` in `core/config_loader.py`, and a
+  validation step covering `floss_emulation`, `archive_full_recursion`,
+  `onenote_full_recursion` and `pdf_javascript_execution`.
+- Ten tests in `tests/test_config_loader.py`. Seven fail without the fix;
+  the other three are the premise — that `bool("false")` is `True`, that
+  YAML spells the unquoted forms as real booleans, and that `_BOOL_KEYS`
+  covers every boolean in `DEFAULTS` so a key added later cannot inherit
+  the trap. 1230 collected.
+
+### Fixed
+
+- `pdf_javascript_execution: "false"` armed JavaScript execution. It now
+  disarms it.
+- `archive_full_recursion: "false"` and `onenote_full_recursion: "false"`
+  enabled full-pipeline recursion over every nested member. Same trap,
+  costing time rather than safety.
+
+### Known limits
+
+The four settings are validated where config is **loaded**. A caller that
+builds a config dict by hand and passes it straight to a module — which
+tests do — bypasses the check, as it bypasses every other validation in
+this module.
 
 ## 0.5.19 — 2026-10-12
 

@@ -15,6 +15,13 @@ default, because a typo in one tuning key must not stop an analyst scanning
 a sample. The one exception is an unparseable file, which is a mistake the
 user needs to see immediately.
 
+"Replaced with the default" has its own exception, and it is a security
+one. A switch that arms execution of sample content defaults to True, so
+substituting the default for a value we could not read would arm it — on
+behalf of a user whose unreadable value was most likely an attempt to
+disarm it. Those keys are listed in ``_EXECUTION_SWITCHES`` and fail
+closed instead.
+
 This module raises its own exception types rather than ``click`` ones so
 ``core/`` carries no dependency on the CLI framework.
 """
@@ -181,6 +188,44 @@ DEFAULTS = {
 # replaced with the default rather than rejected — see _validate().
 VALID_DYNAMIC_PROVIDERS = {"none", "speakeasy", "vm_worker", "cape"}
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+# ----------------------------------------------------------------------
+# Boolean settings.
+#
+# Listed explicitly rather than derived from `isinstance(v, bool)` over
+# DEFAULTS, because the derived form would silently stop covering a key
+# whose default changed type, and this list is what the strictness below
+# is applied to.
+#
+# Why they need checking at all: YAML quotes are invisible in effect.
+# `false` is a boolean and `"false"` is a five-character string, which is
+# truthy in Python, so every reader in the codebase spelled
+# `bool(config.get(key, default))` turns a quoted "off" into "on". The
+# user typed a negation and got the positive, with nothing logged.
+# ----------------------------------------------------------------------
+_BOOL_KEYS = (
+    "floss_emulation",
+    "archive_full_recursion",
+    "onenote_full_recursion",
+    "pdf_javascript_execution",
+)
+
+#: Boolean keys that arm execution of attacker-controlled sample content.
+#:
+#: These are the one place the module's "replace a bad value with the
+#: default" rule is wrong, and deliberately so. The rule is right for a
+#: tuning key — a bad `capa_timeout_seconds` should become the working
+#: default rather than stop a scan. It inverts here: `pdf_javascript_
+#: execution` defaults to True, so falling back to the default on a value
+#: we could not read means answering "I did not understand you" with
+#: "then I will run the sample's JavaScript in V8".
+#:
+#: So these fail CLOSED. An unreadable value disarms, and says so. The
+#: cost is bounded and visible — a warning naming the value, and a report
+#: that discloses `javascript_engine.enabled false` — whereas the cost of
+#: failing open is silent and is incurred by the user who was explicitly
+#: trying to avoid it.
+_EXECUTION_SWITCHES = frozenset({"pdf_javascript_execution"})
 
 
 def _search_paths() -> list[Path]:
@@ -351,6 +396,11 @@ def _validate(config: dict) -> None:
     both the value and its replacement, then substitute the default. No
     check raises — a typo in one tuning key must not stop a scan.
 
+    One deliberate exception, in step 3: a key in _EXECUTION_SWITCHES
+    substitutes False rather than its default, because its default is
+    True and "I could not read your setting, so I will execute the
+    sample's code" is the wrong way for a safety switch to fail.
+
     Args:
         config: The config dict, mutated in place.
     """
@@ -407,7 +457,42 @@ def _validate(config: dict) -> None:
         config["floss_timeout_seconds"] = 300
 
     # ------------------------------------------------------------------
-    # Step 3: rule_sources, the one structured setting.
+    # Step 3: Boolean switches.
+    #
+    # Strict: only a real bool passes. Coercing the obvious strings
+    # ("false", "no", "off", "0") was considered and rejected — it makes
+    # the tool's reading of a config differ from YAML's, so a user
+    # comparing two settings that look alike would find they behave
+    # differently, and it leaves "File" and "none" to be argued about
+    # later. A warning naming the value teaches the fix; a silent
+    # coercion teaches nothing.
+    #
+    # Note YAML already spells the friendly forms as real booleans:
+    # unquoted true/false/yes/no/on/off all arrive here as bools. The
+    # only way to reach this branch is to have quoted one, or to have
+    # written something that is not a boolean at all.
+    # ------------------------------------------------------------------
+    for key in _BOOL_KEYS:
+        value = config.get(key, DEFAULTS[key])
+        if isinstance(value, bool):
+            continue
+        # Fail closed for an execution switch, fall back to the default
+        # for an ordinary one — see _EXECUTION_SWITCHES for why the two
+        # differ. For every non-execution key today the two are the same
+        # value (all default False); the distinction is written out so it
+        # survives a default changing.
+        fallback = False if key in _EXECUTION_SWITCHES else DEFAULTS[key]
+        logger.warning(
+            "Invalid %s %r — not a boolean, falling back to %s%s",
+            key,
+            value,
+            fallback,
+            " (execution disarmed)" if key in _EXECUTION_SWITCHES else "",
+        )
+        config[key] = fallback
+
+    # ------------------------------------------------------------------
+    # Step 4: rule_sources, the one structured setting.
     #
     # Per-source defaults are filled with setdefault so a user can name
     # just a URL and get a working source. Non-dict entries are skipped

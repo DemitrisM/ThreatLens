@@ -4,7 +4,7 @@ Static malware triage for the command line, with transparent confidence
 scoring. Every point in a score is attributable: the report says which module
 awarded it and why, so a verdict can be argued with rather than just believed.
 
-Version 0.5.19. MIT licensed.
+Version 0.5.20. MIT licensed.
 
 ## What it does
 
@@ -227,7 +227,7 @@ docker run --rm --network none \
   -v "$RULES:/app/rules/yara" \
   --tmpfs /tmp:size=2g,noexec \
   -e TL_UID=$(id -u) -e TL_GID=$(id -g) \
-  -w /data threatlens:0.5.19 scan suspicious.exe
+  -w /data threatlens:0.5.20 scan suspicious.exe
 ```
 
 `noexec` is spelled out even though Docker already applies it by default —
@@ -276,6 +276,14 @@ pdf_javascript_execution: false      # default: true
 
 That costs real detection: a PDF whose payload is assembled at runtime will
 report only the loader. It is off-by-choice, not a recommendation.
+
+**Write it unquoted.** `false` is a YAML boolean; `"false"` is a string, and
+a non-empty string is true in Python — so the quoted form used to arm the
+very thing it looks like it disables. Since 0.5.20 a value that is not a
+real boolean is refused with a warning naming it, and this setting
+specifically falls back to **off** rather than to its default, because a
+value we cannot read is not a reason to run a sample's code. The unquoted
+spellings YAML already understands — `false`, `no`, `off` — all work.
 
 **Excel 4.0 macros are interpreted.** `doc_analysis` evaluates XLM formula
 graphs to resolve obfuscated macros. It calls no Windows APIs — it is a
