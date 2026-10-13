@@ -28,6 +28,7 @@ from rich.console import Console
 from ._common import use_console
 from .archive import print_archive_indicators
 from .doc import print_doc_indicators
+from .dynamic import print_dynamic_section
 from .findings import print_capabilities, print_suspicious_strings, print_virustotal
 from .header import print_file_info, print_footer, print_header
 from .lnk import print_lnk_indicators
@@ -71,6 +72,9 @@ def print_terminal_report(
     module_results = report.get("module_results", [])
     timing = report.get("timing", {})
     file_path = report.get("file", "unknown")
+    # Read from report["dynamic"], not matched out of module_results by
+    # name prefix — see reporting/terminal_reporter/dynamic.py.
+    dynamic = report.get("dynamic")
 
     with use_console(console):
         print_header()
@@ -90,6 +94,10 @@ def print_terminal_report(
         print_lnk_indicators(module_results, detail_level)
         print_html_indicators(module_results, detail_level)
         print_pdf_indicators(module_results, detail_level)
+        # Before the generic tables: whether the sample was detonated at
+        # all frames everything a dynamic provider contributed below it,
+        # and a reader who stops early must not miss it (D-3).
+        print_dynamic_section(dynamic, detail_level)
         print_attack_table(module_results, detail_level)
         print_ioc_table(module_results, detail_level)
         print_suspicious_strings(module_results, detail_level)

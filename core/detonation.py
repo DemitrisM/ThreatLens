@@ -91,6 +91,93 @@ STATES = frozenset({OBSERVED, NOT_ATTEMPTED, FAILED})
 #: Where the state lives inside a provider result's ``data``.
 DATA_KEY = "detonation"
 
+# ----------------------------------------------------------------------
+# Egress — D-4.
+#
+# "No C2 contacted" and "no C2 configured" produce the same empty
+# network log, and only one of them is a finding. If the sandbox denied
+# outbound traffic — which it should — then silence on the wire is a
+# property of the harness, not of the sample, and a report that does not
+# say so invites exactly the wrong conclusion.
+#
+# So the denial is recorded as a fact in the report, not left implicit in
+# whatever command the operator ran. The blocked-destination list is the
+# positive form of the same disclosure: it is both an indicator list and
+# a completeness statement, because it says what the sample REACHED for
+# while proving nothing reached it.
+# ----------------------------------------------------------------------
+
+#: Outbound traffic was possible. Absence of contact is then evidence.
+EGRESS_ALLOWED = "allowed"
+
+#: Outbound traffic was blocked. Absence of contact proves NOTHING, and
+#: the report must say so rather than leaving a reader to infer it.
+EGRESS_DENIED = "denied"
+
+#: The provider did not say. Rendered as nothing at all rather than as a
+#: claim — an emulator with no network model has no honest answer here,
+#: and inventing one would be the fabrication this rule exists to stop.
+EGRESS_UNKNOWN = "unknown"
+
+EGRESS_STATES = frozenset({EGRESS_ALLOWED, EGRESS_DENIED, EGRESS_UNKNOWN})
+
+#: Where the egress block lives inside a provider result's ``data``.
+EGRESS_KEY = "egress"
+
+
+def egress(state: str, blocked: list | None = None) -> dict:
+    """Build the egress block a provider puts in its ``data``.
+
+    Args:
+        state:   One of :data:`EGRESS_ALLOWED`, :data:`EGRESS_DENIED`,
+                 :data:`EGRESS_UNKNOWN`.
+        blocked: Destinations the sample tried to reach and did not,
+                 when the provider can observe them. Meaningful only
+                 with :data:`EGRESS_DENIED`; an allowed run has nothing
+                 blocked to list.
+
+    Returns:
+        ``{"state": ..., "blocked": [...]}``.
+
+    Raises:
+        ValueError: On an unknown state, for the same reason
+            :func:`build` does — this is provider code at construction
+            time, where a typo is a bug to surface.
+    """
+    if state not in EGRESS_STATES:
+        raise ValueError(
+            f"unknown egress state {state!r} — expected one of "
+            f"{sorted(EGRESS_STATES)}"
+        )
+    return {"state": state, "blocked": list(blocked or [])}
+
+
+def egress_of(result: dict) -> tuple[str, list]:
+    """Read a result's egress policy and blocked destinations.
+
+    Args:
+        result: A provider result, or absence of one.
+
+    Returns:
+        ``(state, blocked)``. Anything unreadable answers
+        :data:`EGRESS_UNKNOWN` with an empty list, which renders as no
+        claim — never as "allowed", which would invite a reader to treat
+        an empty network log as evidence.
+    """
+    if not isinstance(result, dict):
+        return EGRESS_UNKNOWN, []
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return EGRESS_UNKNOWN, []
+    block = data.get(EGRESS_KEY)
+    if not isinstance(block, dict):
+        return EGRESS_UNKNOWN, []
+    state = block.get("state")
+    if state not in EGRESS_STATES:
+        return EGRESS_UNKNOWN, []
+    blocked = block.get("blocked")
+    return state, list(blocked) if isinstance(blocked, list) else []
+
 
 def _state_for_missing_block(status: object) -> str:
     """What a result with no detonation block means, from its status.

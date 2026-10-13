@@ -463,6 +463,30 @@
     </table>
     {% endif %}
 
+    {# ─────────── DYNAMIC ANALYSIS ───────────
+       Rendered even when the detonation FAILED: a run that observed
+       nothing and a run that was never attempted produce the same empty
+       payload, so the state is the finding (D-3). #}
+    {% if dynamic_indicators %}
+    <h2>Dynamic Analysis</h2>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 220px;">Indicator</th>
+                <th>Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for ind in dynamic_indicators %}
+            <tr>
+                <td><strong>{{ ind.label }}</strong></td>
+                <td class="sev-{{ ind.severity }}">{{ ind.value }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
     {# ─────────── OFFICE DOCUMENT INDICATORS ─────────── #}
     {% if doc_indicators %}
     <h2>Office Document Indicators</h2>

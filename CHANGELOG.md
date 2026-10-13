@@ -146,6 +146,82 @@ Four decisions worth not re-deriving:
   it did not run. A provider asserting both "skipped" and "observed" is
   self-contradictory; neither claim is believed without the other.
 
+### D-3 and D-4 — the report says what did not happen ✅
+
+**Nothing rendered `report["dynamic"]` before this.** The JSON reporter
+passed it through; the terminal and HTML reports never mentioned it. A
+provider's result reached the score through `module_results` and was
+otherwise invisible — the worst arrangement available, because it could
+move a verdict without ever explaining itself. So D-3 was not "add a
+notice to the dynamic section"; it was "build the section".
+
+`reporting/terminal_reporter/dynamic.py`, mirrored in
+`reporting/html_reporter/dynamic.py` by reusing the same row builder.
+
+**D-3 — the failed detonation is the finding.** The section renders
+whenever a provider ran, and *especially* when it failed: a run that
+observed nothing and a run that never happened produce an identical
+empty payload. A failure reads `FAILED — nothing was observed, so this
+report is static only`, with the cause on its own row, because a denied
+network and a crashed emulator lead to opposite next steps. Prepended
+and never gated on `-v`, both lessons taken from `doc_analysis`'s
+`Pass unavailable` rows: a notice at the end is the first thing
+truncation eats, and the reader most likely to mistake a partial
+analysis for a complete one is the one reading a default report.
+
+**D-4 — egress is stated, not implied.** `denied` says the absence of C2
+contact is *not* evidence; `allowed` says it *is*; `unknown` renders
+nothing at all, because an emulator with no network model has no honest
+answer and inventing one is the fabrication the rule exists to stop.
+
+Three decisions worth not re-deriving:
+
+- **A failed detonation is `warn`, not `bad`.** It is a gap in the
+  analysis, not evidence against the sample — and in a severity-sorted
+  table `bad` would rank it above real findings.
+- **No provider renders no section at all**, rather than "not attempted"
+  on every static scan, which would be true, useless, and present on
+  every report this tool has ever produced.
+- **Blocked destinations need an `observed` detonation; the egress
+  policy does not.** A blocked destination says the *sample* reached for
+  a host — behaviour, which D-2 permits only on `observed`. The policy
+  is a fact about the *harness*, true whether or not the sample ran, and
+  a failed run with a denied network is exactly when a reader is most
+  likely to misread silence. This cuts against the standing preference
+  for noise over a missed IOC, deliberately: a destination recovered
+  from a run that did not complete is the half-observed evidence D-2
+  exists to exclude, and nothing on the page would mark it unverified.
+
+#### Three defects found by rendering it, and three more by review
+
+Reading the output rather than the row list caught:
+
+- **The truncation notice was invisible exactly when it mattered.** The
+  `+N more` row was `info`, and detail 0 hides `info` rows whenever
+  something louder fired — which is precisely when a blocked list is
+  long enough to need cutting. It announced itself only on reports where
+  nothing had been truncated.
+- **The key sentence wrapped across the line break.** The egress text ran
+  long enough that `not evidence` split as `...is not` / `evidence`. A
+  test now asserts the claim survives at 66/80/100/120 columns with
+  whitespace normalised — wrapping is allowed, losing the claim is not.
+- **A non-dict `data` crashed the reporter.** Design rule 2 reaches the
+  reporters too: a replayed JSON report or a fixture arrives without
+  having been through `normalise`.
+
+Review then found:
+
+- **The Provider row vanished for a provider that names itself.** The
+  orchestrator uses `setdefault("module", f"dynamic_{name}")`, so a
+  provider returning `"module": "speakeasy"` never gains the prefix the
+  row was gated on. `removeprefix` handles both.
+- **The graceful-skip reason was dropped.** Rule 2's shape is
+  `status: "skipped"` with `data: {}` and the explanation at the top
+  level; reading only the detonation block lost the one sentence
+  explaining the gap.
+- **Blocked destinations rendered on a failed detonation** — a D-2
+  violation inside the D-3 code, now the third decision above.
+
 ### Removed
 
 - **`vm_worker`** — the provider stub, its `_DYNAMIC_REGISTRY` entry and

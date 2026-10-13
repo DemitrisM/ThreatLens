@@ -25,6 +25,7 @@ from .file_info import file_info, module_results_for_template
 from .findings import capabilities, scored_categories, suspicious_strings, virustotal
 from .lnk import lnk_indicators, lnk_property_store, lnk_shell_items
 from .onenote import onenote_indicators
+from .dynamic import dynamic_indicators
 from .pdf import pdf_indicators
 from .pe import pe_indicators
 from .recommendations import recommendations
@@ -112,6 +113,10 @@ def _build_context(report: dict) -> dict:
         "lnk_shell_items": lnk_shell_items(module_results),
         "lnk_property_store": lnk_property_store(module_results),
         "pdf_indicators": pdf_indicators(module_results),
+        # From report["dynamic"], not module_results — see
+        # reporting/terminal_reporter/dynamic.py for why the name
+        # prefix is not used to find it.
+        "dynamic_indicators": dynamic_indicators(report.get("dynamic")),
 
         "attack_mappings": attack_mappings(module_results),
         "iocs_flat": iocs_flat(module_results),
