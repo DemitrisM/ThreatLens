@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from core import detonation
 from core.scoring import compute_score
 
 logger = logging.getLogger(__name__)
@@ -140,12 +141,16 @@ def module_names() -> list[str]:
 # different contract (an is_available() gate) and a different risk
 # profile. At most one runs per scan, chosen by config, and there is
 # deliberately no --dynamic flag: arming a sandbox is a config decision,
-# not something to trip over on the command line. All three are Phase 5
-# stubs today.
+# not something to trip over on the command line. Both are Phase 5 stubs
+# today.
+#
+# `vm_worker` was removed on 2026-10-12. It existed to detonate documents
+# in a Windows VM with Office; document detonation and interaction
+# automation are out of scope, because a dedicated sandbox does them
+# properly and this tool's document coverage is static by design.
 # ----------------------------------------------------------------------
 _DYNAMIC_REGISTRY: dict[str, str] = {
     "speakeasy": "modules.dynamic.speakeasy_provider",
-    "vm_worker": "modules.dynamic.vm_worker_provider",
     "cape": "modules.dynamic.cape_provider",
 }
 
@@ -287,7 +292,11 @@ def _run_dynamic_provider(
             result.setdefault("data", {})
             result.setdefault("score_delta", 0)
             result.setdefault("reason", "")
+            # D-1 first so a negative or malformed delta is reported as the
+            # provider bug it is; D-2 may then zero the same field for a
+            # different reason, and both warnings are worth having.
             _clamp_dynamic_delta(result, provider_name)
+            detonation.normalise(result, provider_name)
             return result
         logger.warning("Dynamic provider %s returned non-dict", provider_name)
         return None

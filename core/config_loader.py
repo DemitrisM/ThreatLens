@@ -186,7 +186,11 @@ DEFAULTS = {
 
 # Allow-lists for the two enumerated settings. Anything outside these is
 # replaced with the default rather than rejected — see _validate().
-VALID_DYNAMIC_PROVIDERS = {"none", "speakeasy", "vm_worker", "cape"}
+# "vm_worker" was removed on 2026-10-12 with the provider itself:
+# document detonation is out of scope. A config still naming it now
+# warns and falls back to "none", which is the right outcome — the
+# backend it asked for does not exist.
+VALID_DYNAMIC_PROVIDERS = {"none", "speakeasy", "cape"}
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 # ----------------------------------------------------------------------

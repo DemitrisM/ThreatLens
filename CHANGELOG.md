@@ -28,11 +28,174 @@ Everything before it is a step toward that.
 | 0.5.18 | The tool admits it executes code: PDF JavaScript disclosed and switchable, container containment measured rather than assumed |
 | 0.5.19 | A timeout now bounds the work and not just the wait — a killed tool no longer leaves its payload running |
 | 0.5.20 | *(current)* A quoted `false` no longer arms execution — boolean settings are validated, and the execution switch fails closed |
-| 0.6.0 | Packaging — `install.sh`, Dockerfile, GitHub Actions CI, README |
-| 0.7.0 | The orchestrator timeout, `msi_analysis` |
-| 0.8.0 | First dynamic provider (`speakeasy`), score calibration sweep |
-| 0.9.0 | Remaining dynamic providers, benign-corpus false-positive validation |
+| 0.6.0 | **Phase 5 opens.** The D-1…D-7 scoring discipline, including the `INDETERMINATE` band — the rules that stop a sandbox failing quietly into a clean verdict. Pure static, no new dependency, and it lands before any provider exists |
+| 0.7.0 | Tier 1 — behaviour by hash, free tier confirmed. The shared rate budget it needs, and three-valued absence |
+| 0.8.0 | Tier 2 — the headless browser for HTML smuggling and ClickFix |
+| 0.8.x | Tier 3 — the Windows-binary and shellcode emulator |
+| 0.9.0 | The deferred 311-sample host/container parity sweep; score recalibration; `msi_analysis`; the orchestrator timeout |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+The 0.6.0 row replaced "Packaging — `install.sh`, Dockerfile, GitHub
+Actions CI, README" on 2026-10-12. That work closed with Phase 4, and
+`install.sh` was dropped in favour of Docker as the single shipping path,
+so the row described finished-and-partly-abandoned work. The tiers now
+match `docs/phase5_plan.md`, which is where their reasoning lives.
+
+Document detonation and interaction automation are **out of scope** —
+decided 2026-10-12. A dedicated sandbox does those properly. `vm_worker`
+is dropped and documents stay static-only, stated beside the ELF/Mach-O
+exclusion.
+
+## Unreleased — 0.6.0 in progress
+
+**The Phase 5 scoring discipline. Landing rule by rule, before any
+dynamic provider exists**, because these are what make a provider safe to
+add. Each rule is its own commit with its own tests; this section grows as
+they land and becomes the 0.6.0 entry when D-7 is in.
+
+Why the whole set exists, in one paragraph: running a sample can only ever
+establish *"this happened"*. It can never establish *"nothing bad would
+have happened"*, because a sample that ran and did nothing is
+indistinguishable from one whose sandbox failed — sinkholed C2, egress
+denied on purpose, an emulator meeting an unmodelled API, a sample that
+detected analysis. Scoring the two the same way converts "we did not see
+it" into "it is not there", which is how a confident clean verdict gets
+printed for live malware. A widely used open-source sandbox scores exactly
+that way and reports a confident 0.0 for any sample its signatures do not
+cover; this engine is additive-then-clamped and would reproduce it
+precisely if a provider were simply bolted in.
+
+Full reasoning, rule by rule: `docs/phase5_d_rules_explained.md`.
+
+### D-1 — a dynamic provider's score_delta is never negative ✅
+
+Observed behaviour adds; its absence never subtracts. What it buys:
+arming a provider cannot lower any verdict the static phases already
+produced, so Phase 5 is structurally incapable of regressing Phases 1–4.
+
+Enforced in `_clamp_dynamic_delta` at the provider seam, not in
+`core/scoring.py` — scoring sees a flat list and identifies modules by
+name only, so the rule would rest on the `dynamic_` string prefix and
+lapse on a rename, and clamping the total alone would still leave a
+negative row in the breakdown table.
+
+Four numeric traps, three found in review and all confirmed before being
+guarded:
+
+- **NaN fails upward.** Every comparison against NaN is False, so
+  `nan < 0` misses it; it reaches scoring, where `min(100, nan)` returns
+  100 for the same reason, and the scan reports **100 / CRITICAL** on the
+  strength of a provider bug.
+- **`math.isfinite` raises `OverflowError`** on an int past the C double
+  range, so the finiteness test is applied to floats only — Python ints
+  are arbitrary precision and always finite. Applying it to every number
+  turned a corrupted provider value into a dead scan (design rule 2).
+- **`-0.0 < 0` is False**, so negative zero survived the negative guard
+  and would have rendered a minus sign on a zero contribution.
+- **`bool` subclasses `int`**, so `True` would have scored +1.
+
+Floats are accepted and narrowed to `int`. Rejecting them would zero the
+`25.0` that a provider deserialising a sandbox's JSON hands back,
+discarding a real finding — this rule's own failure mode pointed the other
+way. Passing them through is wrong too: the breakdown lists any non-zero
+delta while the total is clamped with `int()`, so `+40` and `+25.5` would
+render as rows above a total of 65.
+
+14 tests, 11 of which fail without the guards.
+
+### D-2 — "did it detonate" is a fact with three values ✅
+
+`observed` / `not_attempted` / `failed`, in `core/detonation.py`, with a
+reason required on the two non-observed states. No reporter may render a
+behavioural finding unless the state is `observed`, and `observed()` is
+the single predicate that asks, so the rule is expressed once rather than
+re-derived at each call site.
+
+Two states — ran / did not run — collapse "we looked and saw nothing"
+into "we never looked". Dynamic analysis needs the third value because it
+has a failure mode static analysis does not: **the attempt itself can
+break.** It is the same distinction `doc_analysis` draws with
+`performed`/`present` and `pdf_analysis` with
+`available`/`enabled`/`executed`.
+
+Four decisions worth not re-deriving:
+
+- **The vocabulary lives in `core/`, not in
+  `modules/dynamic/provider_base.py`.** `core` has no static dependency
+  on `modules` — the registries hold dotted strings and `_load_module`
+  imports lazily, which is what lets a machine missing an optional
+  dependency still run everything else. Importing `provider_base` from
+  `core/pipeline.py` would create exactly the import that design avoids.
+- **A missing state is `failed`, not `not_attempted`.** The provider ran
+  and returned a dict, so "not attempted" would be false; and `failed` is
+  the value D-5 will count toward `INDETERMINATE`, which is the honest
+  band for "we cannot tell". A fourth `unknown` value buys nothing — every
+  reader would treat it exactly as `failed`.
+- **`state_of()` defaults the other way, to `not_attempted`.** It is
+  asked about a scan that may have armed no provider at all, where a
+  missing block means absence. `normalise()` is asked about a provider
+  that *ran*, where the same missing block means breakage. Same missing
+  key, two honest answers.
+- **A delta survives only on `observed` *and* `status: "success"`.** A
+  dynamic `score_delta` is a behavioural finding expressed as a number,
+  and a number that moves a verdict is the loudest rendering there is.
+  The status half closes a gap the review gate found on the D-1 commit:
+  nothing zeroed a delta on a non-success status, because
+  `core/scoring.py` never reads `status`, so a provider could claim
+  `{"status": "skipped", "score_delta": 25}` and score 25 while declaring
+  it did not run. A provider asserting both "skipped" and "observed" is
+  self-contradictory; neither claim is believed without the other.
+
+### Removed
+
+- **`vm_worker`** — the provider stub, its `_DYNAMIC_REGISTRY` entry and
+  its name in `VALID_DYNAMIC_PROVIDERS`. It existed to detonate documents
+  in a Windows VM with Office. **Document detonation and interaction
+  automation are out of scope as of 2026-10-12**: a dedicated sandbox does
+  them properly, and this tool's document coverage is static by design —
+  `doc_analysis` already extracts the VBA, the XLM, the template injection
+  and the OLE objects. Stated beside the ELF/Mach-O exclusion rather than
+  left as a gap. A config still naming it warns and falls back to `none`,
+  which is correct: the backend it asks for does not exist.
+
+  Consequences recorded so they are not re-derived: the Phase 5 risk list
+  drops from six failure modes to four, and D-2's `failed` reasons lose
+  "required application absent" and "interaction gate unmet".
+
+41 tests in `tests/test_detonation.py`, plus five in
+`tests/test_pipeline.py` pinning that the orchestrator calls it — the part
+a refactor drops.
+
+#### What five review rounds found, since none of it was obvious
+
+- **A gracefully skipped provider was branded a failure.** Design rule 2's
+  prescribed shape for a provider that cannot run is `status: "skipped"`
+  with empty data — and that has no detonation block, so it resolved to
+  `FAILED`. Since D-5 counts `FAILED` toward `INDETERMINATE`, every scan
+  with an unconfigured backend would have drifted toward "could not
+  determine": a false alarm caused by a provider behaving correctly.
+- **The contradiction was resolved in the wrong place.** An earlier version
+  zeroed the score when `status != "success"` but left the state at
+  `observed`. The state is what everything downstream reads, so an errored
+  provider still rendered its findings and still read as a completed
+  detonation — D-2's own failure mode surviving inside D-2. Demoting the
+  state is the fix, and it made the score rule single-sourced.
+- **`observed(None)` raised `AttributeError`.** `report["dynamic"]` is
+  `None` on every scan that armed no provider, which is nearly all of them.
+- **An unhashable state crashed the scan.** `state not in STATES` *hashes*
+  the value, and a frozenset lookup of a list or dict raises `TypeError`
+  rather than answering False — inside the one function whose docstring
+  promises it never raises.
+- **The malformed-block warning always printed `(dict)`**, because it read
+  the type back out after the block had been replaced with `{}`. The one
+  detail it exists to carry was the only thing it could not say.
+- **The parity test proved nothing.** `dict(data)` is a shallow copy, so
+  the before and after arms shared one inner dict: `normalise` mutated the
+  "before" case and the assertion compared normalised against normalised.
+  The shared fixture was also permanently demoted between iterations, so
+  after the first status the contradiction case was never exercised. Fixed
+  with `deepcopy` per arm, then confirmed by breaking `state_of` and
+  watching the test fail.
 
 ## 0.5.20 — 2026-10-12
 

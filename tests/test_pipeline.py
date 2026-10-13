@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from core import detonation as det
 from core import pipeline as pl
 from core.pipeline import (
     MODULE_ALIASES,
@@ -283,7 +284,9 @@ def test_unavailable_provider_is_skipped(monkeypatch, sample):
 
 
 def test_available_provider_result_is_scored(monkeypatch, sample):
-    provider = _module(lambda f, c: {"status": "success", "data": {},
+    provider = _module(lambda f, c: {"status": "success",
+                                     "data": {"detonation":
+                                              det.build(det.OBSERVED, "ran")},
                                      "score_delta": 25, "reason": "detonated"},
                        is_available=lambda config: True)
     monkeypatch.setattr(pl, "_MODULE_REGISTRY", {"a": "fake.a"})
@@ -320,7 +323,13 @@ def _dynamic(provider_delta, monkeypatch, static_delta=0):
     subtraction visible: against a score of 0 a negative delta is hidden by
     the engine's own clamp, so the test would pass without the fix."""
     provider = _module(
-        lambda f, c: {"status": "success", "data": {},
+        lambda f, c: {"status": "success",
+                      # D-2: a provider must report that it got to look
+                      # before any delta of its own can survive. These
+                      # tests are about D-1's handling of the number, so
+                      # the state is set to the one value that lets the
+                      # number through.
+                      "data": {"detonation": det.build(det.OBSERVED, "ran")},
                       "score_delta": provider_delta,
                       "reason": "nothing observed"},
         is_available=lambda config: True,
@@ -498,6 +507,101 @@ def test_an_enormous_integer_delta_does_not_crash_the_scan(monkeypatch, sample):
                                    "dynamic_provider": "speakeasy"})
     assert report["scoring"]["total_score"] == 100
     assert report["scoring"]["risk_band"] == "CRITICAL"
+
+
+# ----------------------------------------------------------------------
+# D-2 through the pipeline.
+#
+# core/detonation.py has its own unit tests; these pin that the
+# orchestrator actually calls it, which is the part a refactor drops.
+# ----------------------------------------------------------------------
+
+def test_a_provider_that_reports_no_state_cannot_score(monkeypatch, sample):
+    """The contract change D-2 makes: a silent provider scores nothing."""
+    provider = _module(
+        lambda f, c: {"status": "success", "data": {},
+                      "score_delta": 40, "reason": "trust me"},
+        is_available=lambda config: True,
+    )
+    monkeypatch.setattr(pl, "_MODULE_REGISTRY", {"a": "fake.a"})
+    monkeypatch.setattr(pl, "_DYNAMIC_REGISTRY", {"speakeasy": "fake.dyn"})
+    monkeypatch.setattr(pl, "_load_module",
+                        lambda path: provider if path == "fake.dyn" else _ok(0))
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["dynamic"]["score_delta"] == 0
+    assert report["dynamic"]["data"]["detonation"]["state"] == det.FAILED
+    assert report["scoring"]["total_score"] == 0
+
+
+def test_a_failed_detonation_leaves_static_findings_alone(monkeypatch, sample):
+    """D-2 zeroes the provider's own contribution, never anyone else's.
+    The static +40 is the whole verdict and must survive untouched."""
+    provider = _module(
+        lambda f, c: {"status": "success",
+                      "data": {"detonation":
+                               det.build(det.FAILED, "emulator aborted")},
+                      "score_delta": 40, "reason": "x"},
+        is_available=lambda config: True,
+    )
+    monkeypatch.setattr(pl, "_MODULE_REGISTRY", {"a": "fake.a"})
+    monkeypatch.setattr(pl, "_DYNAMIC_REGISTRY", {"speakeasy": "fake.dyn"})
+    monkeypatch.setattr(pl, "_load_module",
+                        lambda path: provider if path == "fake.dyn" else _ok(40))
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["scoring"]["total_score"] == 40
+
+
+def test_a_not_attempted_provider_scores_nothing_and_spares_the_static_verdict(monkeypatch, sample):
+    """The inapplicable-provider path, end to end.
+
+    speakeasy handed a PDF declines it: nothing was attempted, so nothing
+    may be scored — and equally, nothing about the static verdict may
+    change. D-5 will later depend on NOT_ATTEMPTED staying distinct from
+    FAILED here, since only the latter counts toward INDETERMINATE."""
+    provider = _module(
+        lambda f, c: {"status": "success",
+                      "data": {"detonation":
+                               det.build(det.NOT_ATTEMPTED, "sample is not a PE")},
+                      "score_delta": 30, "reason": "x"},
+        is_available=lambda config: True,
+    )
+    monkeypatch.setattr(pl, "_MODULE_REGISTRY", {"a": "fake.a"})
+    monkeypatch.setattr(pl, "_DYNAMIC_REGISTRY", {"speakeasy": "fake.dyn"})
+    monkeypatch.setattr(pl, "_load_module",
+                        lambda path: provider if path == "fake.dyn" else _ok(40))
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["dynamic"]["score_delta"] == 0
+    assert report["dynamic"]["data"]["detonation"]["state"] == det.NOT_ATTEMPTED
+    assert report["scoring"]["total_score"] == 40
+
+
+def test_a_gracefully_skipped_provider_is_not_recorded_as_a_failure(monkeypatch, sample):
+    """Design rule 2's shape — status "skipped", empty data — reaching
+    the orchestrator. It must come out NOT_ATTEMPTED, because D-5 counts
+    FAILED toward INDETERMINATE and an unconfigured backend is not a
+    reason to doubt a static verdict."""
+    provider = _module(
+        lambda f, c: {"status": "skipped", "data": {}, "score_delta": 0,
+                      "reason": "speakeasy is not installed"},
+        is_available=lambda config: True,
+    )
+    monkeypatch.setattr(pl, "_MODULE_REGISTRY", {"a": "fake.a"})
+    monkeypatch.setattr(pl, "_DYNAMIC_REGISTRY", {"speakeasy": "fake.dyn"})
+    monkeypatch.setattr(pl, "_load_module",
+                        lambda path: provider if path == "fake.dyn" else _ok(40))
+    report = run_pipeline(sample, {"enabled_modules": ["a"],
+                                   "dynamic_provider": "speakeasy"})
+    assert report["dynamic"]["data"]["detonation"]["state"] == det.NOT_ATTEMPTED
+    assert report["scoring"]["total_score"] == 40
+
+
+def test_vm_worker_is_no_longer_a_provider():
+    """Removed 2026-10-12 with the document-detonation scope exclusion.
+    Pinned so it is not reinstated by a copy-paste from an old doc."""
+    assert "vm_worker" not in pl._DYNAMIC_REGISTRY
 
 
 def test_unknown_dynamic_provider_is_skipped(monkeypatch, sample, caplog):
