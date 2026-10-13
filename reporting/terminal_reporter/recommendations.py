@@ -51,7 +51,11 @@ def print_recommendations(
         elif module == "capa_analysis" and status == "skipped":
             reason = result.get("reason", "")
             if reason == "capa timed out":
-                recs.append("capa timed out — retry with -p deep (180s timeout)")
+                # 900s, not 180s: `-p deep` raised capa's budget when the
+                # budgets were set from a measured distribution, and this
+                # string kept the old number — understating the real wait
+                # by twelve minutes.
+                recs.append("capa timed out — retry with -p deep (900s timeout)")
 
         elif module == "pe_analysis" and status == "success":
             if data.get("packers_detected"):

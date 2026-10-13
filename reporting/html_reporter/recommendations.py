@@ -55,7 +55,12 @@ def recommendations(module_results: list[dict], scoring: dict) -> list[str]:
         elif module == "capa_analysis" and status == "skipped":
             reason = result.get("reason", "")
             if reason == "capa timed out":
-                recs.append("capa timed out — try --deep for extended timeout (180s)")
+                # `--deep` has never existed on this surface: the cost
+                # axis is `-p deep`. 900s, not 180s — the budgets were
+                # reset from a measured 12-sample distribution, and
+                # under-promising by twelve minutes makes a user think
+                # the retry has hung.
+                recs.append("capa timed out — retry with -p deep (900s timeout)")
 
         elif module == "pe_analysis" and status == "success":
             if data.get("packers_detected"):
@@ -63,8 +68,12 @@ def recommendations(module_results: list[dict], scoring: dict) -> list[str]:
 
     band = scoring.get("risk_band", "LOW")
     if band in ("HIGH", "CRITICAL"):
+        # `--dynamic` was removed in CLI redesign Pass 1; the provider is
+        # config-only, deliberately, so that arming a sandbox is not
+        # something a user trips over on a command line. The terminal
+        # copy was corrected at the time and this mirror was missed.
         recs.append(
-            "Consider dynamic analysis (--dynamic speakeasy) for runtime behaviour"
+            "Consider dynamic analysis — set dynamic_provider in config.yaml"
         )
 
     return recs
