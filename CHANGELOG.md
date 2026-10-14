@@ -146,6 +146,53 @@ Four decisions worth not re-deriving:
   it did not run. A provider asserting both "skipped" and "observed" is
   self-contradictory; neither claim is believed without the other.
 
+### Fixed — the report advised flags the CLI does not have ✅
+
+A recommendation is the one part of a report that asks the reader to
+type a command, so a wrong flag there is worse than no advice: they
+trust it, run it, and get exit 2 from the tool that just told them to.
+
+Three defects, two found only by writing the test:
+
+- The HTML reporter advertised `--dynamic speakeasy`. That flag was
+  removed in CLI redesign Pass 1 — the provider is config-only by
+  design, so arming a sandbox is not something a user trips over on a
+  command line. The terminal copy was corrected at the time, with a
+  comment saying so; the mirror was missed.
+- The HTML reporter advertised `--deep`, which has never existed on
+  this surface. The cost axis is `-p deep`.
+- **Both** reporters quoted a 180s capa budget for `-p deep`. It has
+  been 900s since the budgets were set from a measured 12-sample
+  distribution, so the advice understated the real wait by twelve
+  minutes — long enough to conclude the retry had hung.
+
+Only the advice changed. **No timeout value was touched**: 900 is
+measured and lives in `_DEEP_OVERRIDES`; 180 was stale text. Fixing the
+measurement to match the string would have been the wrong direction.
+
+`tests/test_recommendations.py` does not pin those three strings. It
+parses every option out of both modules' string constants and checks it
+against Click's own parameter list, read from the command objects
+rather than `--help` text. The budget test asserts the real value from
+`_DEEP_OVERRIDES` positively rather than banning the one stale number.
+
+Six further defects were found in that test harness itself, all in
+review: the budget check was vacuous (it failed only on the literal
+"180"); short flags were a blind spot, so `-p deep` — the flag the fix
+introduced — was invisible to the test checking flags; `--sha256`
+matched as `--sha`; `_real_flags()` missed the root group's own options
+(`--version`); docstrings were scanned as advice, so documenting a
+removed flag would fail the test recording the removal; and `-vv`
+deliberately matches nothing, being `-v` repeated rather than a
+registered option.
+
+**Recorded while there:** the two reporters cannot be compared
+directly, because the terminal module prints and the HTML module
+returns a list. There is no shared builder, which is *why* the mirror
+drifts — the advice is written twice. The test compares the set of
+flags they name, which is where both defects lived. A shared builder is
+the real fix and is a refactor, not a bug fix.
+
 ### D-3 and D-4 — the report says what did not happen ✅
 
 **Nothing rendered `report["dynamic"]` before this.** The JSON reporter

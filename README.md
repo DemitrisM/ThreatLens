@@ -556,14 +556,18 @@ the `.lnk` size ceiling — are grouped and commented in `config.docker.yaml`.
 
 ## Tests
 
-**1220 tests collected**, and that is the number to check — it is the one the
+**1331 tests collected**, and that is the number to check — it is the one the
 environment cannot change. How many of them *run* depends on what is present:
 
 | where | passed | skipped |
 |---|---|---|
-| host, malware corpus present | 1219 | 1 |
-| host, no corpus | 1196 | 24 |
-| inside the image, no corpus | 1197 | 23 |
+| host, malware corpus present | 1330 | 1 |
+| host, no corpus | 1307 | 24 |
+| inside the image, no corpus | — | — |
+
+The image row is blank on purpose: the image currently lags the source
+tree, so any figure printed here would describe an older build. It is
+re-measured at the next image build.
 
 23 of the skips are the tests that scan real samples. The 24th needs
 `pcodedmp` on `PATH`, which the image has and a bare host may not — that is
