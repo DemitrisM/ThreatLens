@@ -74,8 +74,22 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
 ]
+# Dynamic analysis — Speakeasy emulates native Windows PEs on Linux.
+# Deliberately an extra and never core: a static-only install must remain
+# possible and verifiable, which is weaker if the emulator installs anyway.
+#
+# setuptools<81 is a HARD requirement, not housekeeping. Speakeasy pins
+# unicorn==1.0.2 — a hard equality, so the patched 2.x carrying the
+# sandbox-escape fix cannot be installed alongside it — and unicorn 1.0.2
+# imports both distutils (removed from the stdlib in Python 3.12, PEP 632)
+# and pkg_resources (dropped by setuptools 81). Without this pin
+# `pip install .[dynamic]` reports success, the worker cannot import, and
+# EVERY sample silently reports "not attempted".
+#
+# Same ceiling the fast-hashing extra needs above, for a different reason.
 dynamic = [
-    "speakeasy-emulator>=1.5.9",
+    "speakeasy-emulator>=1.5.11",
+    "setuptools<81",
 ]
 
 [project.scripts]

@@ -389,16 +389,35 @@ def test_no_descriptors_leak_across_runs():
     def _open_fds():
         return len(os.listdir(f"/proc/{os.getpid()}/fd"))
 
+    # The invariant is that descriptors must not ACCUMULATE. Asserting
+    # exact equality instead was fragile in a way that took a while to
+    # diagnose: an unrelated earlier test can leave a file object alive,
+    # and whether the garbage collector reclaims it *during* this loop
+    # depends on how many tests ran first. When it does, the count FALLS
+    # — and an equality assertion reports that as "leaked descriptors",
+    # pointing the reader at the one piece of code that is behaving.
+    # Measured while chasing exactly that: baseline 7, after the loop 5.
+    import gc
+
+    # Collect first, so a pending finaliser cannot close a descriptor mid
+    # loop and make the baseline unrepresentative.
+    gc.collect()
     baseline = _open_fds()
     for _ in range(20):
         run_contained(["/bin/echo", "x"], timeout=10, capture_output=True)
-    assert _open_fds() == baseline, "clean runs leaked descriptors"
+    assert _open_fds() <= baseline, "clean runs leaked descriptors"
 
+    # Re-snapshot. If the first loop ended BELOW the baseline, carrying the
+    # old number forward would hand the second loop that difference as
+    # slack — it could then leak two descriptors in three runs and still
+    # satisfy the assertion.
+    gc.collect()
+    baseline = _open_fds()
     for _ in range(3):
         with pytest.raises(subprocess.TimeoutExpired):
             run_contained(["/bin/sh", "-c", "echo hi; sleep 30"],
                           timeout=1, capture_output=True)
-    assert _open_fds() == baseline, "timed-out runs leaked descriptors"
+    assert _open_fds() <= baseline, "timed-out runs leaked descriptors"
 
 
 # --------------------------------------------------------------------------

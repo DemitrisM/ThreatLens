@@ -28,6 +28,7 @@ This module raises its own exception types rather than ``click`` ones so
 
 import copy
 import logging
+import math
 import os
 import stat
 from pathlib import Path
@@ -100,6 +101,13 @@ DEFAULTS = {
     "log_level": "WARNING",
     "module_timeout_seconds": 60,
     "capa_timeout_seconds": 240,
+    # Speakeasy's INNER, graceful budgets. The outer hard-kill bound is
+    # derived in the provider as inner + 30 and is deliberately not a key:
+    # an outer bound below the inner one would make the graceful path
+    # unreachable, so every sample would report a failed detonation and the
+    # emulator would look broken rather than misconfigured.
+    "speakeasy_timeout_seconds": 60,
+    "speakeasy_max_api_count": 20000,
     # FLOSS gets its own budget rather than the generic one. 300s is
     # measured, not copied: the slowest of the 30 corpus PEs emulated in
     # 271.1s, so 300 covers all of them. It is also harmless on the
@@ -449,6 +457,30 @@ def _validate(config: dict) -> None:
             "Invalid capa_timeout_seconds %r — falling back to 240", capa_timeout
         )
         config["capa_timeout_seconds"] = 240
+
+    # Same three-part guard again.
+    # Four-part guard here, not three: `nan <= 0` is False and `inf <= 0`
+    # is False, so both slip past the usual shape. inf would then disable
+    # the outer kill entirely (design rule 5), and nan reaches math.ceil in
+    # the worker and raises. The same trap D-1's tests pin for score deltas.
+    speakeasy_timeout = config.get("speakeasy_timeout_seconds", 60)
+    if not isinstance(speakeasy_timeout, (int, float)) or isinstance(
+        speakeasy_timeout, bool
+    ) or not math.isfinite(speakeasy_timeout) or speakeasy_timeout <= 0:
+        logger.warning(
+            "Invalid speakeasy_timeout_seconds %r — falling back to 60",
+            speakeasy_timeout,
+        )
+        config["speakeasy_timeout_seconds"] = 60
+
+    # Same guard, but an API ceiling is a count: a float would reach
+    # unicorn's uc_emu_start, which takes a c_uint64, and raise there.
+    api_count = config.get("speakeasy_max_api_count", 20000)
+    if not isinstance(api_count, int) or isinstance(api_count, bool) or api_count <= 0:
+        logger.warning(
+            "Invalid speakeasy_max_api_count %r — falling back to 20000", api_count
+        )
+        config["speakeasy_max_api_count"] = 20000
 
     # Same three-part guard again.
     floss_timeout = config.get("floss_timeout_seconds", 300)
