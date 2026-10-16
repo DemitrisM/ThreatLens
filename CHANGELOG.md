@@ -27,13 +27,28 @@ Everything before it is a step toward that.
 | 0.5.17 | An outside first-run review: two string-matching defects, five documentation defects, and 87 MiB that `rm -rf` never reclaimed |
 | 0.5.18 | The tool admits it executes code: PDF JavaScript disclosed and switchable, container containment measured rather than assumed |
 | 0.5.19 | A timeout now bounds the work and not just the wait — a killed tool no longer leaves its payload running |
-| 0.5.20 | *(current)* A quoted `false` no longer arms execution — boolean settings are validated, and the execution switch fails closed |
-| 0.6.0 | **Phase 5 opens.** The D-1…D-7 scoring discipline, including the `INDETERMINATE` band — the rules that stop a sandbox failing quietly into a clean verdict. Pure static, no new dependency, and it lands before any provider exists |
-| 0.7.0 | Tier 1 — behaviour by hash, free tier confirmed. The shared rate budget it needs, and three-valued absence |
+| 0.5.20 | A quoted `false` no longer arms execution — boolean settings are validated, and the execution switch fails closed |
+| 0.6.0 | *(current)* **Phase 5 opens.** The D-1…D-4 scoring discipline — the rules that stop a sandbox failing quietly into a clean verdict — **and the Speakeasy PE emulator that uses them**. See the note below: this absorbed what was planned for 0.8.x |
+| 0.7.0 | Tier 1 — behaviour by hash, free tier confirmed. The shared rate budget it needs, and three-valued absence. **Now the better source of real dynamic evidence** — see 0.6.0's measurements |
 | 0.8.0 | Tier 2 — the headless browser for HTML smuggling and ClickFix |
-| 0.8.x | Tier 3 — the Windows-binary and shellcode emulator |
+| 0.8.x | ~~Tier 3 — the Windows-binary and shellcode emulator~~ — **delivered early, in 0.6.0** |
 | 0.9.0 | The deferred 311-sample host/container parity sweep; score recalibration; `msi_analysis`; the orchestrator timeout |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
+
+**The tier order was not followed, and the reason is worth keeping.** The
+plan was hash-based behaviour first, then the browser, then the emulator
+last. The emulator landed first instead, because it is the tier that
+works on a sample nobody has ever submitted — which is the case this tool
+exists for. Measuring it then produced the finding that reorders the
+rest: emulation yields almost no *behaviour* on this corpus (0 of 21
+samples executed generated code), so hash-based behaviour from real
+sandboxes is now the stronger next tier rather than a cheaper warm-up.
+Two items from the plan are **dropped, not deferred**: raw-shellcode
+emulation, which needs an architecture that cannot be inferred from a
+headerless file, and memory-dump unpacking, which measured 0/21.
+
+`INDETERMINATE` was renamed **`INCOMPLETE`** — plainer for a reader — and
+is **not** in 0.6.0. It is D-5 and remains planned.
 
 The 0.6.0 row replaced "Packaging — `install.sh`, Dockerfile, GitHub
 Actions CI, README" on 2026-10-12. That work closed with Phase 4, and
@@ -46,12 +61,11 @@ decided 2026-10-12. A dedicated sandbox does those properly. `vm_worker`
 is dropped and documents stay static-only, stated beside the ELF/Mach-O
 exclusion.
 
-## Unreleased — 0.6.0 in progress
+## 0.6.0 — the scoring discipline, and the first provider that uses it
 
-**The Phase 5 scoring discipline. Landing rule by rule, before any
-dynamic provider exists**, because these are what make a provider safe to
-add. Each rule is its own commit with its own tests; this section grows as
-they land and becomes the 0.6.0 entry when D-7 is in.
+**The Phase 5 scoring discipline, landing rule by rule before any dynamic
+provider existed**, because these are what make a provider safe to add —
+followed by the provider itself.
 
 Why the whole set exists, in one paragraph: running a sample can only ever
 establish *"this happened"*. It can never establish *"nothing bad would
@@ -66,6 +80,61 @@ cover; this engine is additive-then-clamped and would reproduce it
 precisely if a provider were simply bolted in.
 
 Full reasoning, rule by rule: `docs/phase5_d_rules_explained.md`.
+
+### The Speakeasy provider
+
+Emulates native Windows PEs through Mandiant Speakeasy, **out-of-process
+to the analyser**, and feeds the rules above rather than bypassing them.
+
+**Out-of-process is the mitigation, not tidiness.** `speakeasy-emulator`
+pins `unicorn==1.0.2` with a hard equality, and that version carries a
+published sandbox escape; the patched 2.x cannot be installed alongside
+it — `pip` reports `ResolutionImpossible`. The emulator therefore ships
+vulnerable or not at all, so the blast radius is bounded instead: a
+short-lived worker with no credentials in its environment, inside a
+container that already drops privileges and mounts `/tmp` noexec. It is
+also the only hard timeout available, because a hang inside a native
+library never returns to the Python loop that would check a deadline.
+
+**One rule decides the state: `observed` requires observations.** How a
+run ended is a reason attached to the state, never what decides it.
+Measured: `ArkeiStealer.exe` emulates to zero API calls *and* a fault, so
+a mapping keyed on the ending reports "observed, nothing malicious" — a
+clean dynamic verdict on live malware.
+
+**Measured, and it changed the plan twice.** Across all 21 native PE
+candidates (6.7% of the corpus; 30 are PE, 9 of those .NET):
+
+| | |
+|---|---|
+| executed dynamically generated code | **0 / 21** |
+| unpacked payload recoverable | **0 / 21** |
+| resolved imports at runtime | **13 / 21** |
+
+Emulation ends after roughly 1.5s against a 20s budget — it stops before
+the unpacking routines complete rather than running out of time. The
+planned memory-dump and unpacking feature was **dropped on this evidence
+rather than built blind**. What survived is the recovery of
+runtime-resolved imports, which partially repairs a real static blind
+spot: a packer hides its imports behind `GetProcAddress`, so
+`pe_analysis` sees a hollow table and can only say the binary *looks*
+packed. `Amadey2.exe` resolved 41. Reported and deliberately **not
+scored** — legitimate packed software resolves imports the same way and
+there is no benign corpus to measure the false-positive rate against.
+
+Full measurement: `docs/measurement_speakeasy_yield.md`.
+
+**`setuptools<81` is a hard requirement**, not housekeeping: `unicorn`
+1.0.2 imports both `distutils` (removed from the stdlib in Python 3.12)
+and `pkg_resources` (dropped by setuptools 81). Without the pin the
+install reports success, the worker cannot import, and every sample
+silently reports "not attempted". The runtime now agrees with the
+builder, which already pinned `<81` for `ssdeep`.
+
+**Not done here:** D-5's `INCOMPLETE` band, and the cumulative budget.
+Speakeasy's limits apply per entry point and this worker cannot halt it
+part-way, so nothing claims cumulative enforcement — the outer kill is
+the real bound and a timed-out run reports as the failure it is.
 
 ### D-1 — a dynamic provider's score_delta is never negative ✅
 

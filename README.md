@@ -4,7 +4,7 @@ Static malware triage for the command line, with transparent confidence
 scoring. Every point in a score is attributable: the report says which module
 awarded it and why, so a verdict can be argued with rather than just believed.
 
-Version 0.5.20. MIT licensed.
+Version 0.6.0. MIT licensed.
 
 ## What it does
 
@@ -227,7 +227,7 @@ docker run --rm --network none \
   -v "$RULES:/app/rules/yara" \
   --tmpfs /tmp:size=2g,noexec \
   -e TL_UID=$(id -u) -e TL_GID=$(id -g) \
-  -w /data threatlens:0.5.20 scan suspicious.exe
+  -w /data threatlens:0.6.0 scan suspicious.exe
 ```
 
 `noexec` is spelled out even though Docker already applies it by default —
@@ -532,6 +532,8 @@ The settings you are most likely to touch:
 | `floss_emulation` | `false` | `-p deep` turns it on. Costs ~26x |
 | `enabled_modules` | all 13 | What `standard` and `deep` run |
 | `dynamic_provider` | `none` | Config-only; there is no CLI flag |
+| `speakeasy_timeout_seconds` | `60` | Emulation budget. The hard kill is this **+30**, derived and not configurable |
+| `speakeasy_max_api_count` | `20000` | Emulated API calls. Both budgets are per entry point |
 | `rule_sources` | signature-base | Repos `rules update` clones |
 
 Per-format caps — archive recursion and bomb thresholds, OneNote blob limits,
@@ -539,8 +541,24 @@ the `.lnk` size ceiling — are grouped and commented in `config.docker.yaml`.
 
 ## Limitations, stated plainly
 
-- **Static only.** No sandbox, no detonation. A packer that only unpacks at
-  runtime will limit what any module can see.
+- **Static by default; no sandbox either way.** With `dynamic_provider:
+  none` — the default — nothing from the sample is run as a program. Setting
+  it to `speakeasy` adds **emulation**, not a sandbox: the sample's
+  instructions are interpreted in software, on Linux, with synthetic Windows
+  APIs and no real network. It applies to **native Windows PEs only** —
+  .NET assemblies and raw shellcode are stated exclusions.
+- **Emulation yields far less than it sounds like it should.** Measured on
+  all 21 native PE candidates in the project corpus: **none** executed
+  dynamically generated code, so no unpacked payload was recoverable, and
+  runs ended after roughly 1.5s against a 20s budget — stopping before the
+  unpacking routines completed rather than running out of time. What it does
+  recover is runtime-resolved imports, in 13 of 21 samples, which partly
+  repairs a known blind spot in static import-table analysis against packed
+  binaries. **A packer that only unpacks at runtime still limits what any
+  module can see.**
+- **An emulation that records nothing is reported as a failure, never as
+  clean.** Three states — `observed`, `failed`, `not attempted` — and only
+  `observed` can contribute to the score.
 - **x86-64 Linux.** See above.
 - **YARA coverage is whatever `rules update` fetched.** Only `signature-base`
   is enabled by default.
