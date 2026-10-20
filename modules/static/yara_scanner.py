@@ -106,15 +106,29 @@ def run(file_path: Path, config: dict) -> dict:
 
     if not rules_dir.is_dir():
         logger.info("YARA rules directory not found at %s — skipping", rules_dir)
-        return _result("skipped", {}, 0, "YARA rules directory not found")
+        return _result(
+            "skipped", {}, 0,
+            f"YARA rules directory not found at {rules_dir} — "
+            "run `threatlens rules update`",
+        )
 
     # An empty or missing rules directory is a skip rather than an error:
     # a fresh clone has no rules until `threatlens rules update` runs, and
     # that is a setup state, not a failure.
+    #
+    # The reason NAMES that command, because a reason string is advice. A
+    # reader told only "no rule files" has to already know what populates
+    # them, and until they do the scan is a whole detection technique short
+    # with nothing in the report saying how to change that. A freshly
+    # rebuilt container is in exactly this state: the rules live in a named
+    # volume that the image does not carry.
     rule_files = _find_rule_files(rules_dir)
     if not rule_files:
         logger.info("No YARA rule files found in %s — skipping", rules_dir)
-        return _result("skipped", {}, 0, "No YARA rule files in rules directory")
+        return _result(
+            "skipped", {}, 0,
+            "No YARA rule files — run `threatlens rules update`",
+        )
 
     # Compiled per scan because the externals describe *this* file — see
     # the module docstring. compile_errors is carried into the result even

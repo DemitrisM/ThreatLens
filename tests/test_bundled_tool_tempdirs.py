@@ -157,9 +157,12 @@ def test_capa_timeout_leaves_no_extraction_dir(tmp_path, monkeypatch):
     capa = tmp_path / "capa"
     capa.write_text("#!/bin/sh\n")
 
-    result, timed_out = capa_analysis._run_capa(sample, capa, timeout=1)
+    result, outcome = capa_analysis._run_capa(sample, capa, timeout=1)
 
-    assert timed_out is True
+    # `outcome` replaced a `timed_out` boolean when capa gained a third
+    # answer: a format it declines is neither a timeout nor a failure, and
+    # reporting it as one told readers to debug a working install.
+    assert outcome == capa_analysis._TIMEOUT
     assert result is None
     assert seen and seen[0] is not None, "capa was not given a private TMPDIR"
     assert not Path(seen[0]).exists(), "capa extraction directory leaked"

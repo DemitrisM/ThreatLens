@@ -243,11 +243,17 @@ def run(file_path: Path, config: dict) -> dict:
     # Phase 2: Run capa. Distinguish a timeout from every other failure
     # only in the reason string — the caller's handling is identical, but
     # "capa timed out" tells the analyst to retry with -p deep, whereas
-    # "capa analysis failed" tells them to check the install.
+    # "capa analysis failed" tells them to check the install — and
+    # "not applicable" tells them to do nothing at all, which is the right
+    # advice for the archives and documents this tool scans far more often
+    # than it scans PEs.
     # ------------------------------------------------------------------
-    capa_json, timed_out = _run_capa(file_path, capa_path, timeout, extra_args)
+    capa_json, outcome = _run_capa(file_path, capa_path, timeout, extra_args)
     if capa_json is None:
-        reason = "capa timed out" if timed_out else "capa analysis failed"
+        reason = {
+            _TIMEOUT: "capa timed out",
+            _UNSUPPORTED: "Not applicable — capa analyses PE and shellcode",
+        }.get(outcome, "capa analysis failed")
         return {
             "module": "capa_analysis",
             "status": "skipped",
@@ -301,10 +307,23 @@ def run(file_path: Path, config: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+#: capa's exit code for a format it does not handle. MEASURED with the
+#: bundled v9.4.0 binary: a RAR and a PDF both exit 16 with "Input file
+#: does not appear to be a supported file". It is a refusal, not a fault —
+#: the distinction the caller needs to avoid blaming the install.
+_EXIT_UNSUPPORTED_FORMAT = 16
+
+#: What _run_capa could not give the caller, and whose fault it was.
+_OK = "ok"
+_TIMEOUT = "timeout"
+_UNSUPPORTED = "unsupported"
+_FAILED = "failed"
+
+
 def _run_capa(
     file_path: Path, capa_path: Path, timeout: int,
     extra_args: list[str] | None = None,
-) -> tuple[dict | None, bool]:
+) -> tuple[dict | None, str]:
     """Invoke capa with --json and return the parsed JSON output.
 
     capa exits with code 0 when rules match, 1 when no rules match (but
@@ -322,9 +341,14 @@ def _run_capa(
                    which carries both internally.
 
     Returns:
-        (parsed_json_dict_or_None, timed_out) — timed_out is True only when
-        subprocess.TimeoutExpired was raised; False for all other failures.
-        The caller needs the two apart only to phrase its reason string.
+        ``(parsed_json_or_None, outcome)``. ``outcome`` is one of ``ok``,
+        ``timeout``, ``unsupported`` or ``failed``, and exists because the
+        caller's reason string is advice: "timed out" means retry with a
+        bigger budget, "failed" means check the install, and
+        **"unsupported" means neither — capa looked at the file and
+        correctly declined it.** Collapsing the last into the second sent
+        analysts to debug a working installation every time they scanned
+        an archive or a document.
     """
     # stdout carries the JSON document and stderr the progress bar, so both
     # are captured: letting stderr through would corrupt `-f json | jq`
@@ -358,10 +382,10 @@ def _run_capa(
             timeout,
             file_path.name,
         )
-        return None, True
+        return None, _TIMEOUT
     except OSError as exc:
         logger.warning("capa invocation failed: %s — skipping", exc)
-        return None, False
+        return None, _FAILED
 
     # capa exit codes:
     #   0  — success, rules matched
@@ -373,6 +397,16 @@ def _run_capa(
     # independent in capa: code 14 in particular is a *warning* about the
     # sample's format, and discarding its JSON would blind the tool to the
     # AutoIt and .NET droppers that trigger it. So this branch only logs.
+    # Checked FIRST, before the branch below logs that a parse will be
+    # attempted — because for a refusal none will be, and saying so was
+    # untrue for every archive and document scanned.
+    if proc.returncode == _EXIT_UNSUPPORTED_FORMAT:
+        logger.info(
+            "capa does not support this file type (%s) — skipping",
+            file_path.name,
+        )
+        return None, _UNSUPPORTED
+
     if proc.returncode not in (0, 1, 14) and proc.returncode is not None:
         # Slice the bytes before decoding: a capa crash can put megabytes of
         # traceback on stderr, and errors="replace" guarantees the decode
@@ -386,21 +420,20 @@ def _run_capa(
             stderr_snippet[:200],
         )
 
-    # Empty stdout is common for formats capa refuses outright (documents,
-    # archives, ELF without the right backend). It is not an error worth a
-    # warning — the module simply has nothing to say about the file.
+    # Empty stdout from any other exit code is a genuine surprise: capa ran
+    # and neither produced a result nor declined the file.
     if not proc.stdout:
         logger.info("capa produced no output — no capabilities detected")
-        return None, False
+        return None, _FAILED
 
     # json.loads accepts bytes directly, so stdout is never decoded here:
     # capa emits UTF-8 and letting json handle it avoids a second copy of
     # what can be a multi-megabyte result document.
     try:
-        return json.loads(proc.stdout), False
+        return json.loads(proc.stdout), _OK
     except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("Failed to parse capa JSON output: %s", exc)
-        return None, False
+        return None, _FAILED
 
 
 def _parse_capa_output(capa_json: dict) -> tuple[list[str], list[dict]]:
