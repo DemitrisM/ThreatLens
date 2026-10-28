@@ -16,6 +16,7 @@ it. They earn their weight in combination with the structural indicators.
 """
 
 import re
+import struct
 
 # Default DOS stub message in MS toolchain output.
 _DEFAULT_DOS_STUB = b"This program cannot be run in DOS mode."
@@ -32,6 +33,20 @@ _SUSPICIOUS_PDB_TOKENS = re.compile(
     r"trojan|malware|exploit|bypass|uac|amsi|defender|killdef)\b",
     re.IGNORECASE,
 )
+
+
+#: The Rich header's "DanS" marker, and where pefile insists it lives.
+#: parse_rich_header slices its record data from a hardcoded 0x80, so
+#: the checksum has to be computed against that same offset or it is
+#: measuring one region and comparing it against another.
+_RICH_DANS = 0x536E6144
+_RICH_MARKER_OFFSET = 0x80
+#: DanS plus the three repeated key dwords that confirm the key.
+_RICH_MARKER_END = _RICH_MARKER_OFFSET + 16
+
+#: e_lfanew, excluded from the byte sum by the algorithm.
+_E_LFANEW_OFFSET = 0x3C
+_E_LFANEW_END = 0x40
 
 
 def _rol32(value: int, bits: int) -> int:
@@ -51,6 +66,74 @@ def _rol32(value: int, bits: int) -> int:
     # A rotate by zero is returned unchanged: `value >> 32` would shift
     # the whole value out rather than being a no-op.
     return ((value << bits) | (value >> (32 - bits))) & 0xFFFFFFFF if bits else value
+
+
+def _rich_checksum_mismatch(
+    raw: bytes, values: list[int], stored_checksum: int
+) -> bool | None:
+    """Recompute the Rich header checksum and compare it with the stored one.
+
+    Args:
+        raw:             The whole file.
+        values:          pefile's flat ``[comp_id, count, ...]`` list.
+        stored_checksum: The key recovered from the header.
+
+    Returns:
+        True when the recomputed value disagrees with the stored one,
+        False when they agree, and **None when the question could not be
+        answered** — which the caller must not treat as tampering.
+
+    The linker computes::
+
+        csum = offset of the DanS marker
+        for each byte b of the DOS header and stub before that marker,
+            excluding the e_lfanew field:  csum += rol32(b, i & 31)
+        for each (comp_id, count) pair:    csum += rol32(comp_id,
+                                                         count & 31)
+
+    This was previously computed over ``rh["clear_data"]`` seeded with
+    ``e_lfanew``, on the belief that ``clear_data`` is the DOS header
+    and stub with the Rich header zeroed. It is not — pefile returns
+    the **decrypted Rich header body** there. Region and seed were both
+    wrong, and the check reported "likely tampered" on every genuine
+    Microsoft binary measured, seven of seven.
+
+    The marker is verified in place rather than searched for. 0x80 is
+    pefile's own constant — ``parse_rich_header`` slices its record data
+    from exactly there, so ``values`` comes from 0x80 whatever the file
+    says. An earlier draft scanned for the first dword XORing to DanS,
+    which was a tamper-detection **bypass**: the marker is a single
+    dword, so planting a copy earlier in the stub moved the computation
+    off the real header. pefile cannot be relied on to reject a bad
+    marker either — when its own check fails it appends a warning and
+    carries on, returning a populated dict with a garbage values list.
+    """
+    if len(raw) < _RICH_MARKER_END:
+        return None
+    try:
+        marker = struct.unpack_from("<4I", raw, _RICH_MARKER_OFFSET)
+        key = stored_checksum & 0xFFFFFFFF
+        if (marker[0] ^ key) != _RICH_DANS or marker[1:] != (key, key, key):
+            return None
+
+        csum = _RICH_MARKER_OFFSET
+        for i in range(_RICH_MARKER_OFFSET):
+            if _E_LFANEW_OFFSET <= i < _E_LFANEW_END:
+                continue
+            csum = (csum + _rol32(raw[i], i & 0x1F)) & 0xFFFFFFFF
+        # `values` is flat — [comp_id, count, comp_id, count, ...] — so
+        # the pairs are taken by stride. Unpacking it as tuples would
+        # raise TypeError, and the handler below would turn that into
+        # "not corrupted" on every binary, disabling the check in
+        # silence.
+        for j in range(0, len(values) - 1, 2):
+            comp_id = values[j] & 0xFFFFFFFF
+            count = values[j + 1] & 0xFFFFFFFF
+            csum = (csum + _rol32(comp_id, count & 0x1F)) & 0xFFFFFFFF
+        return (csum & 0xFFFFFFFF) != key
+    except Exception:  # noqa: BLE001
+        # A failed computation is not evidence of tampering.
+        return None
 
 
 def _analyse_rich_header(pe: "pefile.PE") -> dict:
@@ -98,43 +181,18 @@ def _analyse_rich_header(pe: "pefile.PE") -> dict:
     # ------------------------------------------------------------------
     # Recompute the checksum and compare.
     #
-    # This is the whole point of the function. The checksum doubles as
-    # the XOR key for the header, so a crypter that rewrites the region
-    # without recomputing it leaves a mismatch behind — evidence the
-    # binary was modified after the linker finished with it.
+    # The checksum doubles as the XOR key for the header, so a crypter
+    # that rewrites the region without recomputing it leaves a mismatch
+    # behind — evidence the binary was modified after the linker
+    # finished with it. None means the question could not be answered,
+    # which is not the same as tampering and must not score.
     # ------------------------------------------------------------------
-    # Verify the Rich header checksum. The linker computes:
-    #   csum = e_lfanew
-    #   for each byte b in dos_header_and_stub (excluding e_lfanew bytes):
-    #       csum += rol32(b, i)
-    #   for each (comp_id, count) pair:
-    #       csum += rol32(comp_id, count & 0x1f)
-    # pefile exposes ``clear_data`` which is the dos header+stub region
-    # with the Rich header itself zeroed out, ready for the rolling sum.
-    clear_data = rh.get("clear_data")
-    if clear_data and stored_checksum is not None and values:
-        try:
-            # Force a writable copy and zero out the e_lfanew field
-            # (offsets 0x3C..0x3F) — the standard checksum skips them.
-            buf = bytearray(clear_data)
-            for k in range(0x3C, 0x40):
-                if k < len(buf):
-                    buf[k] = 0
-            csum = pe.DOS_HEADER.e_lfanew & 0xFFFFFFFF
-            # Each byte is rotated by its own offset, so the sum depends
-            # on position as well as content.
-            for i, b in enumerate(buf):
-                csum = (csum + _rol32(b, i & 0x1F)) & 0xFFFFFFFF
-            # Pairs of (comp_id, count).
-            for j in range(0, len(values) - 1, 2):
-                comp_id = values[j] & 0xFFFFFFFF
-                count = values[j + 1] & 0xFFFFFFFF
-                csum = (csum + _rol32(comp_id, count & 0x1F)) & 0xFFFFFFFF
-            info["corrupted"] = (csum != (stored_checksum & 0xFFFFFFFF))
-        except Exception:  # noqa: BLE001
-            # A failed computation is not evidence of tampering, so this
-            # resets the flag rather than leaving it ambiguous.
-            info["corrupted"] = False
+    if stored_checksum is not None and values:
+        verdict = _rich_checksum_mismatch(
+            getattr(pe, "__data__", b""), values, stored_checksum
+        )
+        if verdict is not None:
+            info["corrupted"] = verdict
 
     # ------------------------------------------------------------------
     # Summarise the toolchain.
@@ -158,6 +216,48 @@ def _analyse_rich_header(pe: "pefile.PE") -> dict:
             key=lambda x: -x["objects"],
         )[:6]
     return info
+
+
+#: IMAGE_DEBUG_TYPE_REPRO. Emitted by the Microsoft toolchain under
+#: /Brepro (the default since VS2015), and the only reliable marker
+#: that TimeDateStamp holds a build hash rather than a date.
+_IMAGE_DEBUG_TYPE_REPRO = 16
+
+
+def _has_repro_debug_entry(pe: "pefile.PE") -> bool:
+    """Report whether the PE declares a reproducible (/Brepro) build.
+
+    Args:
+        pe: A parsed ``pefile.PE`` object.
+
+    Returns:
+        True when a type-16 debug directory entry is present.
+
+    This is deliberately NOT folded into ``_extract_debug_info``. That
+    function returns on the first CodeView entry it finds, and a real
+    Microsoft binary's debug types run ``[2, 12, 13, 16, 20]`` — type 2
+    is CodeView and comes first, so a type-16 test inside that loop
+    would never be reached on exactly the files this exists for.
+
+    pefile omits ``DIRECTORY_ENTRY_DEBUG`` entirely rather than leaving
+    it empty when a PE has no debug directory, so the attribute is
+    checked rather than assumed; an AttributeError escaping here would
+    degrade every debug-less PE to an error.
+
+    A debug entry is attacker-writable, so this establishes what the
+    file CLAIMS about its own build, not a fact about the timestamp.
+    What it licenses is "this field is a build hash per the REPRO
+    entry", never "this timestamp is trustworthy".
+    """
+    if not hasattr(pe, "DIRECTORY_ENTRY_DEBUG"):
+        return False
+    try:
+        for entry in pe.DIRECTORY_ENTRY_DEBUG:
+            if getattr(entry.struct, "Type", None) == _IMAGE_DEBUG_TYPE_REPRO:
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
 
 
 def _analyse_dos_stub(pe: "pefile.PE") -> dict:

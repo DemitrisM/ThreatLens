@@ -163,6 +163,7 @@ from .signing import _check_pe_checksum, _check_signature, _extract_certificate_
 from .structure import (
     _analyse_overlay,
     _check_entry_point,
+    _classify_importless,
     _find_embedded_pe,
     _has_tls_callbacks,
 )
@@ -304,18 +305,47 @@ def _analyse_pe(pe: "pefile.PE") -> tuple[dict, int, list[str]]:
     # live in this single branch. Handling zero separately further down
     # would double-count it, since any threshold covering "very small"
     # necessarily covers "none".
-    if not is_dotnet and total_imports == 0:
-        score_delta += 10
-        reasons.append(
-            "Empty import table — the binary resolves every API at runtime "
-            "or unpacks itself before doing anything"
-        )
-    elif not is_dotnet and total_imports < 5:
-        score_delta += 5
-        reasons.append(
-            f"Very small import table ({total_imports} functions) — "
-            "likely dynamic API resolution or packed"
-        )
+    #
+    # Before concluding "packed", the benign explanations are tested.
+    # A forwarder DLL and a resource-only DLL both legitimately have no
+    # imports, and both are common in System32 — two of the seven
+    # benign PE controls measured are resource-only. Where one holds,
+    # the module says so and scores nothing, because the observation
+    # means something ordinary rather than something hostile.
+    #
+    # The wording keys on the classification, not on which branch was
+    # taken: an API-set forwarder has ZERO imports, so a per-branch
+    # string would call it resource-only and reintroduce exactly the
+    # false reason this is here to remove.
+    if not is_dotnet and total_imports < 5:
+        benign_shape = _classify_importless(pe, total_imports)
+        if benign_shape == "resource_only":
+            reasons.append(
+                "No imports — resource-only DLL (no executable section)"
+            )
+        elif benign_shape == "forwarder":
+            if total_imports == 0:
+                reasons.append(
+                    "No imports — forwarder DLL (every export redirects "
+                    "elsewhere)"
+                )
+            else:
+                reasons.append(
+                    f"Very small import table ({total_imports} functions) — "
+                    "forwarder DLL (every export redirects elsewhere)"
+                )
+        elif total_imports == 0:
+            score_delta += 10
+            reasons.append(
+                "Empty import table — the binary resolves every API at runtime "
+                "or unpacks itself before doing anything"
+            )
+        else:
+            score_delta += 5
+            reasons.append(
+                f"Very small import table ({total_imports} functions) — "
+                "likely dynamic API resolution or packed"
+            )
 
     # --- Process-injection / hollowing API combo ---
     # Two or more of the hollowing-API set co-occurring is a strong

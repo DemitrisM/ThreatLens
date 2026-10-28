@@ -31,6 +31,9 @@ _MACHINE_TYPES = {
 }
 
 
+from .metadata import _has_repro_debug_entry
+
+
 def _extract_headers(pe: "pefile.PE") -> dict:
     """Extract key PE header fields.
 
@@ -41,6 +44,9 @@ def _extract_headers(pe: "pefile.PE") -> dict:
         A dict of header fields. Addresses are hex strings for display,
         while ``compile_timestamp_raw`` keeps the integer so
         ``_check_timestamp`` can do arithmetic on it without reparsing.
+        ``reproducible_build`` says whether the file declares a /Brepro
+        build, which is what tells ``_check_timestamp`` that the raw
+        value is a content hash rather than a date.
     """
     file_header = pe.FILE_HEADER
     optional_header = pe.OPTIONAL_HEADER
@@ -58,15 +64,45 @@ def _extract_headers(pe: "pefile.PE") -> dict:
     # ------------------------------------------------------------------
     # Compile timestamp.
     timestamp_raw = file_header.TimeDateStamp
-    try:
-        compile_time = datetime.fromtimestamp(timestamp_raw, tz=timezone.utc).isoformat()
-    except (OSError, ValueError, OverflowError):
-        compile_time = f"Invalid timestamp ({timestamp_raw})"
+
+    # ------------------------------------------------------------------
+    # A deterministic build puts a content hash here, not a date.
+    #
+    # Rendering it as a date is a false statement about the file, and
+    # suppressing the forged-timestamp SCORE alone would not fix it:
+    # the JSON report, the HTML report and the -vv dump all read this
+    # string, so they would go on presenting a hash as a compile date.
+    # Measured: roughly 27% of such hashes land on a plausible date by
+    # chance, and one of the two files this was diagnosed against reads
+    # as 1994.
+    #
+    # compile_timestamp is already a display string with a non-date
+    # branch below, and compile_timestamp_raw keeps the integer, so
+    # nothing downstream loses information.
+    # ------------------------------------------------------------------
+    reproducible_build = _has_repro_debug_entry(pe)
+    # `and timestamp_raw` for the same reason _check_timestamp keeps
+    # its zero test first: a zeroed field is zeroed, not a hash, and
+    # rendering it "Build hash 0x00000000" would be the second false
+    # statement about it. Go always zeroes this field, and MSVC can.
+    if reproducible_build and timestamp_raw:
+        compile_time = (
+            f"Build hash 0x{timestamp_raw:08x} "
+            f"(reproducible build, not a date)"
+        )
+    else:
+        try:
+            compile_time = datetime.fromtimestamp(
+                timestamp_raw, tz=timezone.utc
+            ).isoformat()
+        except (OSError, ValueError, OverflowError):
+            compile_time = f"Invalid timestamp ({timestamp_raw})"
 
     return {
         "machine": machine_str,
         "compile_timestamp": compile_time,
         "compile_timestamp_raw": timestamp_raw,
+        "reproducible_build": reproducible_build,
         "entry_point": hex(optional_header.AddressOfEntryPoint),
         "image_base": hex(optional_header.ImageBase),
         "number_of_sections": file_header.NumberOfSections,
@@ -95,6 +131,29 @@ def _check_timestamp(headers: dict) -> tuple[int, str]:
     raw_ts = headers.get("compile_timestamp_raw", 0)
     if raw_ts == 0:
         return 0, ""
+
+    # ------------------------------------------------------------------
+    # Step 1a: A deterministic build's timestamp is not a date at all.
+    #
+    # This sits ABOVE both anomaly branches rather than inside them.
+    # TimeDateStamp holds a content hash under /Brepro, so roughly 27%
+    # of values land between 1990 and 2026 purely by chance and read as
+    # ordinary compile dates — checking only the "impossible" branches
+    # would leave those silently misreported. All seven benign PE
+    # controls carry the REPRO entry; only four are future-dated.
+    #
+    # It sits BELOW the zeroed check because zero is zero, not a hash,
+    # and describing it as a build hash would be its own false
+    # statement.
+    #
+    # Scores nothing in either direction: if the field is a hash, no
+    # reading of it as a date is meaningful.
+    # ------------------------------------------------------------------
+    if headers.get("reproducible_build"):
+        return 0, (
+            "Compile timestamp is a build hash, not a date "
+            "(reproducible build) — not scored"
+        )
 
     # ------------------------------------------------------------------
     # Step 2: A value datetime cannot represent at all is out of range for
