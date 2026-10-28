@@ -631,6 +631,11 @@ def build_verdict(module_results: list[dict], scoring: dict) -> str:
                 add(W_NETWORK, "known malware-hosting infrastructure")
             if "unc_or_webdav_target" in flags:
                 add(W_NETWORK, "UNC/WebDAV shortcut target")
+            # W_HINT, not W_NETWORK: this is a +5 signal and the list is
+            # sorted by weight, so ranking it with the +20 remote-share
+            # finding would push stronger indicators down the verdict.
+            if "http_url_target" in flags:
+                add(W_HINT, "an http(s) URL as the shortcut target")
             if data.get("machine_id"):
                 add(W_WEAK, f"built on host '{data['machine_id']}'")
 

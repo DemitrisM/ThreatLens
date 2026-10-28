@@ -113,6 +113,33 @@ def test_lnk_padding_evasion_leads_the_verdict():
     assert "ZDI-CAN-25373" in verdict
 
 
+def test_an_http_shortcut_target_reaches_the_verdict():
+    """A new flag with no verdict entry fails OPEN, which is silent.
+
+    The lookup table simply omits an unrecognised flag, so splitting
+    unc_or_webdav_target without registering its replacement would drop
+    the finding from the verdict line with nothing to show it had gone.
+    That is the regression this test exists for, which is why it lives
+    here rather than in the module's own tests.
+    """
+    data = {
+        "indicator_flags": ["http_url_target"],
+        "target_basename": "fwlink",
+    }
+    verdict = build_verdict([result("lnk_analysis", data)], MEDIUM)
+    assert "an http(s) URL as the shortcut target" in verdict
+
+
+def test_the_remote_share_verdict_still_names_a_share():
+    """The paired case — the UNC wording must stay true of UNC only."""
+    data = {
+        "indicator_flags": ["unc_or_webdav_target"],
+        "target_basename": "p.exe",
+    }
+    verdict = build_verdict([result("lnk_analysis", data)], HIGH)
+    assert "UNC/WebDAV" in verdict
+
+
 def test_real_samples_all_produce_a_verdict(
     report_redline, report_rar, report_xlsm, report_onenote, report_html,
     report_pdf, report_lnk,

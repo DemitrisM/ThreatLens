@@ -1239,3 +1239,116 @@ def test_an_overlay_beginning_exactly_at_the_read_cap_is_still_reported(tmp_path
     assert overlay["size"] == len(payload)
     assert overlay["truncated"] is True
     assert "overlay_present" in result["data"]["indicator_flags"]
+
+
+# ---------------------------------------------------------------------------
+# A3 — an https:// target is not a remote share
+#
+# One boolean treated a "\\" prefix and an "http(s)://" prefix as the
+# same condition, raising a flag named for the UNC case worth +20 with
+# the reason "Target is a UNC or WebDAV path". WebDAV delivery — a
+# shortcut mounting \\host@SSL\ over HTTPS — earns that weight. An
+# ordinary internet shortcut does not, and the reason is false about it.
+#
+# Measured: two benign Microsoft go.microsoft.com/fwlink shortcuts off a
+# real Windows 11 install scored 28 and were classified MALICIOUS.
+# ---------------------------------------------------------------------------
+
+#: A real fwlink control's target.
+_FWLINK = "https://go.microsoft.com/fwlink/?linkid=2132062"
+
+#: Three distinct non-zero FILETIMEs, so timestamps_fabricated stays
+#: quiet and the target flag can be scored on its own.
+_REAL_TIMES = {"creation": 0x01D9A1B2C3D4E5F6,
+               "access": 0x01D9A1B2C3D4E600,
+               "write": 0x01D9A1B2C3D4E700}
+
+
+def test_an_https_target_is_not_called_a_unc_or_webdav_path():
+    flags = _flags_for(relative_path=_FWLINK, **_REAL_TIMES)
+    assert "http_url_target" in flags
+    assert "unc_or_webdav_target" not in flags
+
+
+def test_an_https_target_scores_five_not_twenty():
+    """The weight change pinned directly, not just the band it lands in."""
+    flags = _flags_for(relative_path=_FWLINK, **_REAL_TIMES)
+    assert "timestamps_fabricated" not in flags, flags
+    assert score_lnk(flags)[0] == 5
+
+
+def test_the_benign_fwlink_shape_is_no_longer_malicious():
+    """The measured false positive, reproduced end to end.
+
+    Zeroed header timestamps are what build_lnk produces by default and
+    what the real controls carry, so this is the 28-point shape: +20 for
+    the misread target and +8 for the timestamps.
+    """
+    flags = _flags_for(relative_path=_FWLINK)
+    assert "timestamps_fabricated" in flags
+    delta, _reason, _fired, classification = score_lnk(flags)
+    assert delta == 13
+    assert classification == "SUSPICIOUS"
+
+
+def test_a_unc_target_keeps_the_original_weight():
+    """The paired case. WebDAV delivery is the technique the rule is for.
+
+    Asserted on the rule's own fired line rather than the total, because
+    this shape also earns the +30 webdav_remote_exec rule — which it
+    should, and which is not what this test is about.
+    """
+    flags = _flags_for(relative_path="\\\\attacker.com@SSL\\DavWWWRoot\\p.exe",
+                       **_REAL_TIMES)
+    assert "unc_or_webdav_target" in flags
+    assert "http_url_target" not in flags
+    fired = score_lnk(flags)[2]
+    assert "Target is a UNC or WebDAV path (+20)" in fired
+
+
+def test_a_plain_unc_share_still_scores_twenty_for_its_target():
+    """Without the @SSL WebDAV shape, so the +20 stands on its own."""
+    flags = _flags_for(relative_path="\\\\server\\share\\p.exe", **_REAL_TIMES)
+    fired = score_lnk(flags)[2]
+    assert "Target is a UNC or WebDAV path (+20)" in fired
+    assert not any("http(s) URL" in line for line in fired)
+
+
+def test_a_net_name_still_raises_the_remote_share_flag():
+    from modules.static.lnk_analysis import command as command_module
+    from modules.static.lnk_analysis.parser import LinkInfoData
+
+    parsed = parse_bytes(build_lnk(relative_path="payload.exe", **_REAL_TIMES))
+    parsed.link_info = LinkInfoData(net_name="\\\\server\\share",
+                                    common_path_suffix="payload.exe")
+    flags = derive_flags(parsed, command_module.analyse(parsed))
+    assert "unc_or_webdav_target" in flags
+
+
+def test_a_webdav_share_named_by_url_is_not_scored_twice():
+    """The exclusion case, and the reason the two flags are exclusive.
+
+    A WebDAV shortcut can hold an http(s) URL in its NetName, so the
+    resolved target starts with "http" while net_name is also truthy.
+    Raising both flags would score one target at 20 + 5 = 25 — exactly
+    the MALICIOUS threshold — and give two reasons that contradict each
+    other about the same path.
+    """
+    from modules.static.lnk_analysis import command as command_module
+    from modules.static.lnk_analysis.parser import LinkInfoData
+
+    parsed = parse_bytes(build_lnk(relative_path="p.exe", **_REAL_TIMES))
+    parsed.link_info = LinkInfoData(net_name="http://evil.example.com/share",
+                                    common_path_suffix="payload.exe")
+    cmd = command_module.analyse(parsed)
+    assert cmd.target_is_url, "fixture must actually resolve to a URL target"
+
+    flags = derive_flags(parsed, cmd)
+    assert "unc_or_webdav_target" in flags
+    assert "http_url_target" not in flags
+
+    # Exactly one target rule fires. Both would be 20 + 5 = 25.
+    fired = score_lnk(flags)[2]
+    target_rules = [line for line in fired
+                    if "UNC or WebDAV" in line or "http(s) URL" in line]
+    assert target_rules == ["Target is a UNC or WebDAV path (+20)"], target_rules

@@ -163,6 +163,12 @@ COMBO_RULES: list[tuple[frozenset[str], int, str]] = [
     (frozenset({"args_padding_light"}), 5,
      "Runs of whitespace in the arguments"),
 
+    # Deliberately far below unc_or_webdav_target's 20. A shortcut
+    # pointing at a web page is ordinary; what earns the higher weight
+    # is mounting a remote share, not naming a URL.
+    (frozenset({"http_url_target"}), 5,
+     "Target is an http(s) URL rather than a local program"),
+
     # Deliberately low — see the module docstring.
     (frozenset({"lolbin_target"}), 5,
      "Target is a living-off-the-land binary"),

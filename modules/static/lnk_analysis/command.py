@@ -250,7 +250,8 @@ class CommandAnalysis:
     target_basename: str = ""
     is_lolbin: bool = False
     target_in_user_dir: bool = False
-    target_is_remote: bool = False
+    target_is_unc: bool = False
+    target_is_url: bool = False
     target_disagreement: bool = False
     command_line: str = ""
     categories: set[str] = field(default_factory=set)
@@ -453,8 +454,16 @@ def analyse(parsed, file_name: str = "") -> CommandAnalysis:  # noqa: ANN001
 
     target_lower = out.target.lower()
     out.target_in_user_dir = any(marker in target_lower for marker in _USER_WRITABLE)
-    out.target_is_remote = target_lower.startswith("\\\\") or \
-        target_lower.startswith("http://") or target_lower.startswith("https://")
+    # Kept apart rather than folded into one "remote" boolean. A UNC or
+    # WebDAV path mounts a remote share — the \\host@SSL\ delivery shape
+    # — while an http(s) target is an ordinary internet shortcut, which
+    # Windows ships by the hundred. One flag for both meant two benign
+    # Microsoft fwlink shortcuts were classified MALICIOUS, and the
+    # reason given for it, "Target is a UNC or WebDAV path", was simply
+    # false about them.
+    out.target_is_unc = target_lower.startswith("\\\\")
+    out.target_is_url = (target_lower.startswith("http://")
+                         or target_lower.startswith("https://"))
 
     arguments = parsed.arguments or ""
     out.command_line = f"{out.target} {arguments}".strip()

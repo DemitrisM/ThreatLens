@@ -89,10 +89,19 @@ def derive_flags(
         flags.add("lolbin_target")
     if cmd.target_in_user_dir:
         flags.add("target_in_user_dir")
-    if cmd.target_is_remote:
+    # The two target flags are mutually exclusive on purpose. A WebDAV
+    # shortcut can carry an http(s) URL in its NetName, so both
+    # conditions can hold at once — and raising both would score one
+    # target twice, 20 + 5 = 25, which is exactly the MALICIOUS
+    # threshold, while giving two reasons that contradict each other.
+    # The remote-share reading wins because it is the stronger claim.
+    remote_share = cmd.target_is_unc or bool(
+        parsed.link_info and parsed.link_info.net_name
+    )
+    if remote_share:
         flags.add("unc_or_webdav_target")
-    if parsed.link_info and parsed.link_info.net_name:
-        flags.add("unc_or_webdav_target")
+    elif cmd.target_is_url:
+        flags.add("http_url_target")
     if cmd.args_smuggled_in_target:
         flags.add("args_smuggled_in_target")
 
