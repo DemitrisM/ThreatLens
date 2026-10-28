@@ -34,6 +34,25 @@ def print_score_banner(
     con.print()
     con.print(f"  {score_bar(score, band)}  [{colour}]{score}/100  {band}[/{colour}]")
 
+    # The band is no longer a pure function of the score, so when it was
+    # raised the report has to say so. Without this line a reader sees
+    # 21/100 carrying a MEDIUM band and has no way to learn why, which
+    # trades one unexplained contradiction for another.
+    floor = scoring.get("band_floor")
+    if floor:
+        modules = floor.get("modules") or []
+        named = ", ".join(modules)
+        noun = "module" if len(modules) == 1 else "modules"
+        # `[warn]`, the semantic token, rather than the hue that
+        # rich_style() resolves it to. theme.rich_theme() is attached to
+        # both console singletons, so the name is what design rule 8
+        # asks markup to carry; interpolating the resolved colour would
+        # put a hue back into the tag and bypass the registration.
+        con.print(
+            f"  [warn]Band raised from {floor.get('raised_from', 'LOW')}: "
+            f"{named} {noun} classified this file MALICIOUS[/warn]"
+        )
+
     verdict = build_verdict(module_results, scoring)
     if verdict:
         con.print()

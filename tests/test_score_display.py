@@ -155,3 +155,71 @@ def test_findings_reason_is_untruncated_at_detail_two(report_redline):
 
     assert render(2).count("Q") > LIMITS["reason_chars"]
     assert render(0).count("Q") <= LIMITS["reason_chars"]
+
+
+# ----------------------------------------------------------------------
+# B2 — the banner must explain a band the score alone does not justify
+#
+# The band stopped being a pure function of the score, so a reader who
+# sees 21/100 carrying MEDIUM has to be told why in the report itself.
+# Nothing else renders band_floor, and the branch only runs on a floored
+# sample, so without a test here a markup or wording fault would escape
+# until a real floored file was printed.
+# ----------------------------------------------------------------------
+
+def _render(scoring, module_results=()):
+    from rich.console import Console
+
+    from reporting.theme import rich_theme
+    from reporting.terminal_reporter.score import print_score_banner
+
+    console = Console(theme=rich_theme(), width=100, no_color=True,
+                      force_terminal=False)
+    with console.capture() as cap:
+        print_score_banner(scoring, list(module_results), console=console)
+    return cap.get()
+
+
+def test_a_floored_band_explains_itself():
+    out = _render({
+        "total_score": 21,
+        "risk_band": "MEDIUM",
+        "breakdown": [],
+        "band_floor": {"modules": ["archive_analysis"], "raised_from": "LOW"},
+    })
+    assert "21/100" in out
+    assert "MEDIUM" in out
+    assert "Band raised from LOW" in out
+    assert "archive_analysis" in out
+    assert "MALICIOUS" in out
+    # Markup must resolve, not leak into the rendered text.
+    assert "[warn]" not in out and "[/warn]" not in out
+
+
+def test_several_modules_are_named_and_pluralised():
+    out = _render({
+        "total_score": 18,
+        "risk_band": "MEDIUM",
+        "breakdown": [],
+        "band_floor": {"modules": ["archive_analysis", "doc_analysis"],
+                       "raised_from": "LOW"},
+    })
+    assert "archive_analysis, doc_analysis" in out
+    assert "modules classified" in out
+
+
+def test_one_module_reads_singular():
+    out = _render({
+        "total_score": 18,
+        "risk_band": "MEDIUM",
+        "breakdown": [],
+        "band_floor": {"modules": ["doc_analysis"], "raised_from": "LOW"},
+    })
+    assert "module classified" in out
+    assert "modules classified" not in out
+
+
+def test_an_unfloored_banner_says_nothing_extra():
+    """The paired case: no band_floor, no explanation line."""
+    out = _render({"total_score": 21, "risk_band": "LOW", "breakdown": []})
+    assert "Band raised" not in out

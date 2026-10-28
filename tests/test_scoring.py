@@ -165,3 +165,140 @@ def test_missing_reason_becomes_empty_string():
 )
 def test_clamp(value, expected):
     assert _clamp(value, 0, 100) == expected
+
+
+# ----------------------------------------------------------------------
+# B2 — a module's own MALICIOUS verdict floors the aggregate band
+#
+# Four modules publish a classification of their own, and the aggregate
+# used to contradict it. archive_analysis caps at +60 but real archives
+# top out near +18 while MEDIUM begins at 31, so no archive finding of
+# any severity could reach MEDIUM alone: a working CVE-2025-8088
+# exploit dropping into the Startup folder banded LOW, four lines above
+# its own module calling it MALICIOUS.
+#
+# Measured before this was written, on the development splits:
+# flooring on MALICIOUS promotes 76 of 144 missed malicious files and 0
+# of 279 verified-clean controls. Flooring on SUSPICIOUS as well would
+# promote two benign Microsoft shortcuts, which is why it does not.
+# ----------------------------------------------------------------------
+
+def _classified(module, delta, *, classification=None, status="success", data=None):
+    if data is None:
+        data = {}
+    if classification is not None:
+        data = {**data, "classification": classification}
+    return {"module": module, "status": status, "data": data,
+            "score_delta": delta, "reason": f"{module} says so"}
+
+
+def test_a_malicious_module_floors_a_low_band():
+    """The CVE-2025-8088 archive shape: 21/100 with archive MALICIOUS."""
+    out = compute_score([
+        _classified("archive_analysis", 18, classification="MALICIOUS"),
+        _classified("string_analysis", 3),
+    ])
+    assert out["total_score"] == 21
+    assert out["risk_band"] == "MEDIUM"
+    assert out["band_floor"]["modules"] == ["archive_analysis"]
+    assert out["band_floor"]["raised_from"] == "LOW"
+
+
+def test_a_very_low_score_is_still_floored():
+    """The ZIP case study scored 12 with its module reporting MALICIOUS."""
+    out = compute_score([_classified("archive_analysis", 12,
+                                 classification="MALICIOUS")])
+    assert out["risk_band"] == "MEDIUM"
+
+
+def test_a_suspicious_module_does_not_floor_the_band():
+    """The benign fwlink shape, and the measured reason for excluding it.
+
+    Both benign Microsoft shortcut controls classify SUSPICIOUS at 13.
+    Flooring on SUSPICIOUS would promote them, which is the promotion
+    the first false-positive measurement vetoed this change over.
+    """
+    out = compute_score([_classified("lnk_analysis", 13,
+                                 classification="SUSPICIOUS")])
+    assert out["risk_band"] == "LOW"
+    assert "band_floor" not in out
+
+
+def test_every_malicious_module_is_named():
+    """An archive carrying a malicious document has two modules objecting.
+
+    Naming only the first would drop the other from the report's own
+    explanation of its band.
+    """
+    out = compute_score([
+        _classified("archive_analysis", 10, classification="MALICIOUS"),
+        _classified("doc_analysis", 8, classification="MALICIOUS"),
+    ])
+    assert out["band_floor"]["modules"] == ["archive_analysis", "doc_analysis"]
+
+
+def test_an_errored_module_classification_does_not_floor():
+    """A classification from a run that failed is not a finding.
+
+    An errored module can leave a stale data block behind from a
+    partial run.
+    """
+    out = compute_score([
+        _classified("archive_analysis", 0, classification="MALICIOUS",
+                status="error"),
+    ])
+    assert out["risk_band"] == "LOW"
+    assert "band_floor" not in out
+
+
+def test_a_successful_module_without_a_classification_does_not_raise():
+    """Most modules publish no classification at all.
+
+    file_intake runs first on every scan and never does, so subscripting
+    data["classification"] would raise on the first module and take down
+    a scan the others had completed — which design rule 2 forbids.
+    """
+    out = compute_score([
+        _classified("file_intake", 0, data={"sha256": "a" * 64}),
+        _classified("ioc_extractor", 5),
+    ])
+    assert out["risk_band"] == "LOW"
+    assert "band_floor" not in out
+
+
+def test_a_skipped_module_with_no_data_does_not_raise():
+    out = compute_score([
+        {"module": "pe_analysis", "status": "skipped", "data": None,
+         "score_delta": 0, "reason": "not a PE"},
+    ])
+    assert out["risk_band"] == "LOW"
+
+
+def test_an_already_medium_band_is_not_marked_as_floored():
+    """The floor only ever raises LOW, so nothing to report here.
+
+    An implementation testing only "is any module MALICIOUS" would
+    announce a raised band on a score that reached MEDIUM by itself.
+    """
+    out = compute_score([
+        _classified("doc_analysis", 35, classification="MALICIOUS"),
+    ])
+    assert out["risk_band"] == "MEDIUM"
+    assert "band_floor" not in out
+
+
+def test_a_high_band_is_never_lowered_to_medium():
+    """A floor that could lower a band would not be a floor."""
+    out = compute_score([
+        _classified("doc_analysis", 60, classification="MALICIOUS"),
+    ])
+    assert out["risk_band"] == "HIGH"
+    assert "band_floor" not in out
+
+
+def test_a_critical_band_is_untouched():
+    out = compute_score([
+        _classified("doc_analysis", 90, classification="MALICIOUS"),
+    ])
+    assert out["risk_band"] == "CRITICAL"
+    assert "band_floor" not in out
