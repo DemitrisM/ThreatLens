@@ -337,6 +337,14 @@ tools is worth between **0 and 9 points**, and **the risk band did not move on
 any of them** — 100 against 91 on `Amadey.exe`, 100 against 93 on
 `RedLineStealer.exe`, and no difference at all on the other four.
 
+> **The scores quoted just above predate the scoring fixes of
+> 2026-10-28 and need re-measuring.** Several executable indicators were corrected in that
+> round — a digital signature was being counted as an encrypted payload,
+> a reproducible build as a forged timestamp, a Rich header as tampered —
+> so the absolute scores have moved. The *conclusion* that the two tools
+> are worth little on these samples has not been retested either way.
+> See `docs/measurement_m2_post_fix.md`.
+
 The reason those four tie is worth knowing, because it is not that capa found
 nothing — it is that capa was cut off. Measured across 12 real PEs, capa takes
 **11 to 734 seconds**, and the old defaults (120s, or 180s under `-p deep`)

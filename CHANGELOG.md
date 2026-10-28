@@ -32,7 +32,7 @@ Everything before it is a step toward that.
 | 0.7.0 | Tier 1 — behaviour by hash, free tier confirmed. The shared rate budget it needs, and three-valued absence. **Now the better source of real dynamic evidence** — see 0.6.0's measurements |
 | 0.8.0 | Tier 2 — the headless browser for HTML smuggling and ClickFix |
 | 0.8.x | ~~Tier 3 — the Windows-binary and shellcode emulator~~ — **delivered early, in 0.6.0** |
-| 0.9.0 | The deferred 311-sample host/container parity sweep; score recalibration; `msi_analysis`; the orchestrator timeout |
+| 0.9.0 | The deferred 311-sample host/container parity sweep; `msi_analysis`; the orchestrator timeout. **Score recalibration landed early** — see Unreleased, below |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
 
 **The tier order was not followed, and the reason is worth keeping.** The
@@ -60,6 +60,169 @@ Document detonation and interaction automation are **out of scope** —
 decided 2026-10-12. A dedicated sandbox does those properly. `vm_worker`
 is dropped and documents stay static-only, stated beside the ELF/Mach-O
 exclusion.
+
+## Unreleased — the detector stops misreading ordinary Windows structures
+
+**Ships as 0.6.1 when the image is rebuilt.** The version is deliberately
+not bumped yet: it lives in `cli/__version__`, the Compose image tag and
+the README's `docker run` line, a test pins the three together, and the
+built artefact is still `threatlens:0.6.0`. Moving the number before the
+image would manufacture the drift that Chapter 7 already records as a
+reproducibility defect.
+
+Six fixes and one behaviour change, every one measured against frozen
+development splits before and after. Figures, method, scripts and raw
+per-sample rows: `docs/measurement_m2_post_fix.md`. The session record,
+including what the review gate caught: `docs/history_final_dev_session.md`.
+
+| | Before | After |
+|---|---|---|
+| Verified-clean files banding MEDIUM or above | 8/276 — 2.9% | **5/279 — 1.8%** |
+| Verified-clean files banding HIGH | **2** | **0** |
+| Benign executables at MEDIUM or above | **6 of 7** | **3 of 7** |
+| Benign files a module calls MALICIOUS | **2** | **0** |
+| Malicious detection at MEDIUM or above | 102/246 — 41.5% | **178/246 — 72.4%** |
+
+**Fewer false positives and seventy-six more detections at the same
+time** — these did not trade against each other.
+
+### An unseen hash no longer lowers the score
+
+A 404 from the hash-lookup service means nobody has ever submitted the
+file, which is the *expected* state for a targeted or freshly built
+sample — precisely the case this tool exists for — and it scored **-5**
+for it. Absence of observation lowering a risk score is the error rule
+D-1 exists to forbid; D-1 was written for dynamic providers and the
+reasoning applies here unchanged.
+
+Two further paths carried the same error and were found while fixing it.
+A file **no engine could evaluate** took the full -5, because the engine
+count summed `type-unsupported`, `failure` and timeouts alongside real
+verdicts — so an unsupported file looked like seventy engines clearing
+it. The ratio said `0/70` for the same reason, which is indistinguishable
+from an all-clear. Both now count verdict-bearing engines only, and the
+guard sits *before* the scoring function so the deliberate -5 for a
+genuinely seen-and-clean file is untouched.
+
+Declared, not fixed: a lone engine reporting `undetected` while
+sixty-nine cannot read the file still earns -5. Correcting it needs a
+minimum-coverage threshold measured against the corpus rather than
+invented.
+
+### An `https://` shortcut target is not a remote share
+
+One boolean treated a `\\` prefix and an `http(s)://` prefix as the same
+condition, raising a flag named for the UNC case worth **+20** with the
+reason *"Target is a UNC or WebDAV path"*. WebDAV delivery — a shortcut
+mounting `\\host@SSL\` over HTTPS without ever writing a file to disk —
+earns that weight. An ordinary internet shortcut does not, and the reason
+was false about it.
+
+Two Microsoft `go.microsoft.com/fwlink` shortcuts taken off a real
+Windows 11 install scored 28 and were classified MALICIOUS. They now
+score 13 and classify SUSPICIOUS.
+
+The two flags are mutually exclusive, which matters more than it looks: a
+WebDAV shortcut can carry an `http(s)` URL in its `NetName`, and raising
+both would score one target twice at 20 + 5 = **25** — exactly the
+MALICIOUS threshold — while giving two reasons that contradict each other
+about the same path.
+
+Measured and worth recording: `unc_or_webdav_target` fires on **none** of
+the 24 malicious development shortcuts. Before the split, that +20 rule
+was firing only on benign files.
+
+### Four ordinary Windows PE structures no longer read as malicious
+
+**A digital signature counted as an encrypted payload.** On a signed PE
+the bytes past the last section *are* the Authenticode certificate table,
+which is cryptographic and so high-entropy by construction — so every
+signed binary without a real overlay was penalised **+10 for being
+signed**, while the same reason string also reported that it was signed.
+Two statements about the same bytes.
+
+Bounds checks alone were not enough, and the first attempt was itself an
+evasion: an unsigned sample need only point the Security directory at its
+overlay with exact bounds, or prepend eight static header bytes, to have
+the whole payload excised as a "signature". The region must now parse as
+a `WIN_CERTIFICATE` table whose bodies are DER PKCS#7 carrying the
+signedData OID. The walk is capped, because its step is a length field
+the sample controls. `ACRStealer.exe` keeps its genuine 4.8 MB overlay at
+entropy 7.9994.
+
+**A reproducible build reported as a forged timestamp.** Since VS2015 the
+Microsoft toolchain writes a content hash into `TimeDateStamp` under
+`/Brepro`, flagged by a type-16 debug entry, so absurd far-future values
+are normal. Four of seven controls were future-dated and scored +5 each.
+The guard sits above both date branches rather than inside them, because
+roughly 27% of such hashes land on a plausible date by chance — one
+control's reads as 1994. The rendered header says so too: suppressing
+only the score would leave every JSON and HTML consumer presenting a hash
+as a compile date.
+
+**The Rich header checksum was computed over the wrong bytes**, firing
+*"present but checksum mismatch — likely tampered"* on all seven benign
+Microsoft controls. Two compounding errors, both in the byte sum that
+precedes the comp-ID records. That sum must cover the DOS header and
+stub with `e_lfanew` excluded; it was taken over the parser's decrypted
+Rich header *body* instead, and seeded with `e_lfanew` rather than the
+marker's offset. The per-record `rol32(comp_id, count & 0x1F)` term was
+correct throughout and still runs — it is added to the corrected byte
+sum, not in place of it.
+This one **gained** detection rather than only removing noise — the
+indicator went from firing on everything carrying a Rich header to
+flagging 2 of 11 malicious PEs and 0 of 7 benign.
+
+**A resource-only DLL read as packed.** "Empty import table" plus "entry
+point in unusual section" scored **+20** on two controls that are
+resource-only DLLs — a resource directory, no imports, no exports, no
+entry point and no executable section at all. Forwarder DLLs produce the
+same observation for an equally ordinary reason. "No executable section"
+alone would not have been safe to rely on: with `NX_COMPAT` clear,
+32-bit Windows still executes from a section lacking the execute
+characteristic, and TLS callbacks run before and independently of the
+entry point — so both must be absent before "nothing starts" is true.
+
+### A module's MALICIOUS verdict now floors the aggregate band
+
+The archive module caps at +60, but real archives top out near +18 while
+MEDIUM begins at 31 — so **no archive finding of any severity could reach
+MEDIUM on its own.** A working CVE-2025-8088 exploit dropping an
+executable into the Startup folder banded LOW, four lines above its own
+module calling it MALICIOUS. The case studies found the same
+contradiction in four of twelve files, across three modules.
+
+A module's own MALICIOUS verdict now raises a LOW band to MEDIUM: **+76
+of the 144 missed malicious files, and 0 of 279 benign controls.**
+SUSPICIOUS deliberately does not, because it would promote the same two
+benign Microsoft shortcuts the first false-positive measurement vetoed
+this whole change over.
+
+**The measurement is what authorises it, and it cut both ways.** The
+first run *cancelled* this change; fixing the misread behind its two
+benign promotions removed the obstacle; the re-run authorised it. Both
+figures were predicted offline from recorded breakdowns and then
+reproduced exactly by re-running the two arms against the implementation.
+
+The band therefore stops being a pure function of the score, so the
+report says so rather than leaving a reader to wonder:
+
+```
+  █████░░░░░░░░░░░░░░░░░  21/100  MEDIUM
+  Band raised from LOW: archive_analysis module classified this file MALICIOUS
+```
+
+Stated rather than hidden: the archive and OneNote modules still have
+**no benign controls at all**, and archive is 33 of the 76 promotions. The
+change is evidenced for documents and shortcuts and unevidenced where
+most of its benefit lands.
+
+### Tests
+
+90 added, from 1404 to 1494. Each fix has a test that fails against the
+unfixed code and a paired test guarding the opposite direction; the
+failures were verified by restoring the original module and re-running,
+not assumed.
 
 ## 0.6.0 — the scoring discipline, and the first provider that uses it
 
