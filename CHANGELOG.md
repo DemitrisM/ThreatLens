@@ -28,11 +28,12 @@ Everything before it is a step toward that.
 | 0.5.18 | The tool admits it executes code: PDF JavaScript disclosed and switchable, container containment measured rather than assumed |
 | 0.5.19 | A timeout now bounds the work and not just the wait — a killed tool no longer leaves its payload running |
 | 0.5.20 | A quoted `false` no longer arms execution — boolean settings are validated, and the execution switch fails closed |
-| 0.6.0 | *(current)* **Phase 5 opens.** The D-1…D-4 scoring discipline — the rules that stop a sandbox failing quietly into a clean verdict — **and the Speakeasy PE emulator that uses them**. See the note below: this absorbed what was planned for 0.8.x |
+| 0.6.0 | **Phase 5 opens.** The D-1…D-4 scoring discipline — the rules that stop a sandbox failing quietly into a clean verdict — **and the Speakeasy PE emulator that uses them**. See the note below: this absorbed what was planned for 0.8.x |
+| 0.6.1 | *(current)* **The detector stops misreading ordinary Windows structures.** Six scoring fixes and one banding change, measured on frozen development splits: false positives 2.9% to 1.8%, detection 41.5% to 72.4% |
 | 0.7.0 | Tier 1 — behaviour by hash, free tier confirmed. The shared rate budget it needs, and three-valued absence. **Now the better source of real dynamic evidence** — see 0.6.0's measurements |
 | 0.8.0 | Tier 2 — the headless browser for HTML smuggling and ClickFix |
 | 0.8.x | ~~Tier 3 — the Windows-binary and shellcode emulator~~ — **delivered early, in 0.6.0** |
-| 0.9.0 | The deferred 311-sample host/container parity sweep; `msi_analysis`; the orchestrator timeout. **Score recalibration landed early** — see Unreleased, below |
+| 0.9.0 | The deferred 311-sample host/container parity sweep; `msi_analysis`; the orchestrator timeout. **Score recalibration landed early** — see 0.6.1, below |
 | 1.0.0 | Static + dynamic, packaged, documented, calibrated |
 
 **The tier order was not followed, and the reason is worth keeping.** The
@@ -61,14 +62,15 @@ decided 2026-10-12. A dedicated sandbox does those properly. `vm_worker`
 is dropped and documents stay static-only, stated beside the ELF/Mach-O
 exclusion.
 
-## Unreleased — the detector stops misreading ordinary Windows structures
+## 0.6.1 — the detector stops misreading ordinary Windows structures
 
-**Ships as 0.6.1 when the image is rebuilt.** The version is deliberately
-not bumped yet: it lives in `cli/__version__`, the Compose image tag and
-the README's `docker run` line, a test pins the three together, and the
-built artefact is still `threatlens:0.6.0`. Moving the number before the
-image would manufacture the drift that Chapter 7 already records as a
-reproducibility defect.
+**Released with the image rebuild, and in that order on purpose.** The
+version lives in `cli/__version__`, the Compose image tag and the README's
+`docker run` line, and a test pins the three together. It was held at
+0.6.0 until the image was rebuilt from this source, because moving the
+number first would have manufactured the drift that Chapter 7 already
+records as a reproducibility defect: an artefact one commit behind the
+code it claims to be.
 
 Six fixes and one behaviour change, every one measured against frozen
 development splits before and after. Figures, method, scripts and raw

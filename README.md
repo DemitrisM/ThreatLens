@@ -4,7 +4,7 @@ Static malware triage for the command line, with transparent confidence
 scoring. Every point in a score is attributable: the report says which module
 awarded it and why, so a verdict can be argued with rather than just believed.
 
-Version 0.6.0. MIT licensed.
+Version 0.6.1. MIT licensed.
 
 ## What it does
 
@@ -227,7 +227,7 @@ docker run --rm --network none \
   -v "$RULES:/app/rules/yara" \
   --tmpfs /tmp:size=2g,noexec \
   -e TL_UID=$(id -u) -e TL_GID=$(id -g) \
-  -w /data threatlens:0.6.0 scan suspicious.exe
+  -w /data threatlens:0.6.1 scan suspicious.exe
 ```
 
 `noexec` is spelled out even though Docker already applies it by default —
