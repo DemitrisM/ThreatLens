@@ -120,10 +120,15 @@ def run(file_path: Path, config: dict) -> dict:
     # ── Handle response status codes ──
     if resp.status_code == 404:
         # An unknown hash is the expected state for a targeted or newly
-        # built sample, so this is the LEAST reassuring "clean" result
-        # the module can produce. It scores -5 and says so, rather than
-        # being reported as a pass.
-        # Hash not in VT database — not necessarily clean.
+        # built sample — precisely the case this tool exists for. Nobody
+        # has looked, so nothing was learned and the score does not move.
+        #
+        # It scored -5 until 0.6.x, which granted a discount for being
+        # too new to have been reported: absence of observation lowering
+        # a risk score, which is the error rule D-1 forbids on the
+        # dynamic side. The reason is scoped to THIS FILE rather than to
+        # the score, because _lookup_embedded_hashes runs below and can
+        # still add for a flagged payload inside it.
         primary_404 = {
             "module": "virustotal",
             "status": "success",
@@ -132,15 +137,21 @@ def run(file_path: Path, config: dict) -> dict:
                 "found": False,
                 "detection_ratio": "0/0",
                 "malicious": 0,
+                "suspicious": 0,
                 "undetected": 0,
                 "total_engines": 0,
+                # Kept in step with _parse_response's data dict: both
+                # paths return status "success", so a consumer must not
+                # have to branch on `found` to read a key.
+                "verdict_engines": 0,
                 "threat_label": None,
                 "first_seen": None,
                 "community_score": None,
                 "permalink": f"https://www.virustotal.com/gui/file/{sha256}",
             },
-            "score_delta": -5,
-            "reason": "Hash not seen on VirusTotal — not necessarily clean",
+            "score_delta": 0,
+            "reason": "Hash not seen on VirusTotal — nothing was learned "
+                      "about this file",
         }
         inner_lookups, inner_delta, inner_reason = _lookup_embedded_hashes(
             config, api_key, timeout, max_retries,
@@ -285,9 +296,11 @@ def _lookup_embedded_hashes(
         attrs = (body.get("data") or {}).get("attributes") or {}
         stats = attrs.get("last_analysis_stats") or {}
         detections = stats.get("malicious", 0) + stats.get("suspicious", 0)
+        # Verdict-bearing engines only, matching _parse_response: an
+        # engine reporting type-unsupported did not clear the payload,
+        # and counting it in the denominator says it did.
         total = sum(stats.get(k, 0) for k in
-                    ("malicious", "suspicious", "undetected",
-                     "harmless", "type-unsupported", "failure"))
+                    ("malicious", "suspicious", "undetected", "harmless"))
         label = (attrs.get("popular_threat_classification", {})
                       .get("suggested_threat_label"))
         results.append({
@@ -409,12 +422,27 @@ def _parse_response(body: dict, sha256: str) -> dict:
     harmless = stats.get("harmless", 0)
     type_unsupported = stats.get("type-unsupported", 0)
     failure = stats.get("failure", 0)
-    total_engines = malicious + suspicious + undetected + harmless + type_unsupported + failure
+    # Timeouts are engines that tried and gave up, so they belong in the
+    # responding count even though they reached no verdict. Leaving them
+    # out made an all-timeout response look like total_engines == 0,
+    # which the zero-verdict branch below would report as "queued" —
+    # the opposite of what happened.
+    timed_out = stats.get("timeout", 0) + stats.get("confirmed-timeout", 0)
+    total_engines = (malicious + suspicious + undetected + harmless
+                     + type_unsupported + failure + timed_out)
 
     # "suspicious" is counted alongside "malicious": an engine reporting
     # a heuristic hit is still an engine objecting to the file.
     # Combined detection count (malicious + suspicious)
     detections = malicious + suspicious
+
+    # Engines that actually reached a conclusion, which is not the same
+    # as engines that responded. total_engines sums type-unsupported and
+    # failure too, so quoting it as the denominator turns "sixty-nine
+    # engines could not read this file" into "sixty-nine engines found
+    # nothing wrong with it". Both counts are published: the ratio uses
+    # this one, and total_engines stays available beside it.
+    verdict_engines = malicious + suspicious + undetected + harmless
 
     # Threat classification
     classification = attrs.get("popular_threat_classification", {})
@@ -434,19 +462,56 @@ def _parse_response(body: dict, sha256: str) -> dict:
     data = {
         "sha256": sha256,
         "found": True,
-        "detection_ratio": f"{detections}/{total_engines}",
+        "detection_ratio": f"{detections}/{verdict_engines}",
         "malicious": malicious,
         "suspicious": suspicious,
         "undetected": undetected,
         "total_engines": total_engines,
+        "verdict_engines": verdict_engines,
         "threat_label": threat_label,
         "first_seen": first_seen,
         "community_score": community_score,
         "permalink": f"https://www.virustotal.com/gui/file/{sha256}",
     }
 
-    # ── Scoring ──
-    score_delta, reason = _compute_score(detections, total_engines, threat_label)
+    # ------------------------------------------------------------------
+    # Scoring.
+    #
+    # A file nobody could evaluate is scored before _compute_score sees
+    # it, because that function's -5 for "0 detections" assumes engines
+    # actually returned verdicts. Two cases reach here without any:
+    # a queued file (all stats zero) and an unsupported one, where ~70
+    # engines report "type-unsupported" and nothing else.
+    #
+    # Counting verdict-bearing engines is what separates them from a
+    # genuine all-clear. total_engines cannot: it sums type-unsupported
+    # and failure alongside the real verdicts, so an unsupported file
+    # looks like seventy engines clearing the sample.
+    # ------------------------------------------------------------------
+    if verdict_engines == 0:
+        # The two cases are reported differently because they mean
+        # different things to an analyst: nobody has scanned it yet
+        # versus everybody tried and could not. Saying "0 unsupported or
+        # failed" about a queued file explains nothing.
+        if total_engines == 0:
+            detail = "analysis is queued"
+        else:
+            detail = f"{total_engines} could not evaluate the file"
+        return {
+            "module": "virustotal",
+            "status": "success",
+            "data": data,
+            "score_delta": 0,
+            "reason": (
+                f"VirusTotal: no engine returned a verdict "
+                f"({detail}) — nothing was learned about this file"
+            ),
+        }
+
+    # verdict_engines, not total_engines: _compute_score documents its
+    # second argument as "engines that returned any verdict", and the
+    # call used to hand it the inflated sum instead.
+    score_delta, reason = _compute_score(detections, verdict_engines, threat_label)
 
     return {
         "module": "virustotal",
